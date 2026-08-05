@@ -1,0 +1,82 @@
+{
+  "schema_version": "1",
+  "catalog_version": "2026.08.05.1",
+  "verified_at": "2026-08-03T00:00:00Z",
+  "providers": {
+    "openai": {
+      "aliases": [],
+      "protocol": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "auth": { "scheme": "bearer", "header": "Authorization" },
+      "operations": {
+        "list_models": { "method": "GET", "path": "/models" },
+        "text_generation": { "method": "POST", "path": "/responses" }
+      },
+      "provider_request_id_header": "x-request-id"
+    },
+    "anthropic": {
+      "aliases": ["claude"],
+      "protocol": "anthropic",
+      "base_url": "https://api.anthropic.com",
+      "auth": { "scheme": "api_key", "header": "x-api-key" },
+      "api_version_header": { "name": "anthropic-version", "value": "2023-06-01" },
+      "operations": {
+        "list_models": { "method": "GET", "path": "/v1/models" },
+        "text_generation": { "method": "POST", "path": "/v1/messages" }
+      },
+      "provider_request_id_header": "request-id"
+    },
+    "gemini": {
+      "aliases": ["google", "google-gemini"],
+      "protocol": "gemini",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "auth": { "scheme": "api_key", "header": "x-goog-api-key" },
+      "operations": {
+        "list_models": { "method": "GET", "path": "/models" },
+        "text_generation": { "method": "POST", "path": "/models/{model}:generateContent" }
+      },
+      "provider_request_id_header": null
+    },
+    "deepseek": {
+      "aliases": [],
+      "protocol": "openai-compatible",
+      "base_url": "https://api.deepseek.com",
+      "auth": { "scheme": "bearer", "header": "Authorization" },
+      "operations": {
+        "list_models": { "method": "GET", "path": "/models" },
+        "text_generation": { "method": "POST", "path": "/chat/completions" }
+      },
+      "provider_request_id_header": null
+    },
+    "perplexity": {
+      "aliases": ["pplx"],
+      "protocol": "openai-compatible",
+      "base_url": "https://api.perplexity.ai",
+      "auth": { "scheme": "bearer", "header": "Authorization" },
+      "operations": {
+        "list_models": { "method": "GET", "path": "/v1/models" },
+        "text_generation": { "method": "POST", "path": "/v1/sonar" }
+      },
+      "provider_request_id_header": null,
+      "model_discovery": "catalog",
+      "model_discovery_note": "GET /v1/models is scoped to the Agent API: it returns vendor-prefixed router models (anthropic/..., perplexity/sonar) that POST /v1/sonar rejects. Sonar models are not API-discoverable, so they are maintained here. The list call still runs to validate the credential. Verified live 2026-08-05.",
+      "models": [
+        { "id": "sonar", "categories": ["text_generation"] },
+        { "id": "sonar-pro", "categories": ["text_generation"] },
+        { "id": "sonar-reasoning-pro", "categories": ["text_generation"] }
+      ],
+      "min_max_output_tokens": 16
+    },
+    "moonshot": {
+      "aliases": ["kimi"],
+      "protocol": "openai-compatible",
+      "base_url": "https://api.moonshot.ai/v1",
+      "auth": { "scheme": "bearer", "header": "Authorization" },
+      "operations": {
+        "list_models": { "method": "GET", "path": "/models" },
+        "text_generation": { "method": "POST", "path": "/chat/completions" }
+      },
+      "provider_request_id_header": null
+    }
+  }
+}

@@ -1,0 +1,47 @@
+# KeyCall live-verification targets — TOML format.
+# Same fields as the TXT format: provider (required), key (required),
+# protocol, name, base_url.
+#
+# Copy to keycall-test-keys.toml, fill in real keys, then:
+#   keycall verify --source ./keycall-test-keys.toml
+#   keycall verify --source ./keycall-test-keys.toml --generate
+#
+# Use dedicated low-budget test keys, not production credentials.
+# chmod 600 the real file. Delete it when done — KeyCall never will.
+
+[[targets]]
+provider = "openai"
+key = "sk-REPLACE-ME"
+name = "openai-test"
+
+[[targets]]
+provider = "anthropic"
+key = "sk-ant-REPLACE-ME"
+name = "claude-test"
+
+[[targets]]
+provider = "gemini"
+key = "REPLACE-ME"
+name = "gemini-test"
+
+[[targets]]
+provider = "deepseek"
+key = "REPLACE-ME"
+name = "deepseek-test"
+
+[[targets]]
+provider = "perplexity"
+key = "REPLACE-ME"
+name = "pplx-test"
+
+[[targets]]
+provider = "moonshot"
+key = "REPLACE-ME"
+name = "kimi-test"
+
+# [[targets]]
+# provider = "my-lab"
+# protocol = "openai-compatible"
+# base_url = "https://llm.example.edu/v1"
+# key = "REPLACE-ME"
+# name = "my lab"

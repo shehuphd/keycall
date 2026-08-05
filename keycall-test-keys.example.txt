@@ -1,0 +1,21 @@
+# KeyCall live-verification targets — TXT format.
+# One target per line: field=value pairs, quotes optional (needed if a value
+# contains spaces). Lines starting with # are comments.
+#
+# Fields: provider (required), key (required), protocol, name, base_url
+# protocol is only needed for custom openai-compatible targets.
+#
+# Copy to keycall-test-keys.txt, fill in real keys, then:
+#   keycall verify --source ./keycall-test-keys.txt
+#   keycall verify --source ./keycall-test-keys.txt --generate
+#
+# Use dedicated low-budget test keys, not production credentials.
+# chmod 600 the real file. Delete it when done — KeyCall never will.
+
+provider=openai key=sk-REPLACE-ME name=openai-test
+provider=anthropic key=sk-ant-REPLACE-ME name=claude-test
+provider=gemini key=REPLACE-ME name=gemini-test
+provider=deepseek key=REPLACE-ME name=deepseek-test
+provider=perplexity key=REPLACE-ME name=pplx-test
+provider=moonshot key=REPLACE-ME name=kimi-test
+# protocol=openai-compatible provider=my-lab base_url=https://llm.example.edu/v1 key=REPLACE-ME name="my lab"

@@ -1,0 +1,49 @@
+# Internal design docs (PRD, naming decisions, research) — not part of the public package.
+/internal/
+
+# macOS and system files.
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+__MACOSX/
+Thumbs.db
+Desktop.ini
+
+# Local environment and tool state.
+.env
+.env.*
+.claude/
+.codex/
+
+# Live-test credential files (the .example templates stay tracked).
+keycall-test-keys.*
+!keycall-test-keys.example.*
+
+# Internal documentation (README.md stays tracked).
+*.md
+!README.md
+
+# Python build/runtime artifacts.
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build/package artifacts and logs.
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.log
+
+# Editor/project metadata.
+.idea/
+.vscode/
