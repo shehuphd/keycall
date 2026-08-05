@@ -315,6 +315,7 @@ class KeyCall(_BaseClient):
         max_output_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
+        web_search: bool = False,
     ) -> InvocationResult:
         return self.invoke(
             TextGenerationRequest(
@@ -323,6 +324,7 @@ class KeyCall(_BaseClient):
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                web_search=web_search,
             )
         )
 
@@ -484,6 +486,7 @@ class AsyncKeyCall(_BaseClient):
         max_output_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
+        web_search: bool = False,
     ) -> InvocationResult:
         return await self.invoke(
             TextGenerationRequest(
@@ -492,5 +495,6 @@ class AsyncKeyCall(_BaseClient):
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                web_search=web_search,
             )
         )

@@ -7,6 +7,7 @@ from ._errors import ErrorCode, KeyCallError
 from ._types import (
     AudioInput,
     AudioOutput,
+    Citation,
     EmbeddingOutput,
     FileInput,
     FileOutput,
@@ -28,12 +29,13 @@ from ._types import (
     VideoOutput,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AsyncKeyCall",
     "AudioInput",
     "AudioOutput",
+    "Citation",
     "EmbeddingOutput",
     "ErrorCode",
     "FileInput",

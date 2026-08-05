@@ -17,6 +17,7 @@ from ._enums import ModelCategory, Operation
 __all__ = [
     "AudioInput",
     "AudioOutput",
+    "Citation",
     "EmbeddingOutput",
     "FileInput",
     "FileOutput",
@@ -196,6 +197,15 @@ class TextGenerationRequest:
     max_output_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None
+    web_search: bool = False
+    """Enable the provider's native web search/retrieval tool. A bare
+    boolean, not a general tool-calling surface — every provider that
+    supports this takes it as one on/off switch, and adding configurable
+    tool schemas is a bigger primitive KeyCall doesn't need until a real
+    caller needs more than search. Providers without a native search tool
+    (DeepSeek, Moonshot, custom targets) raise UNSUPPORTED_OPERATION rather
+    than silently ignoring the request. Perplexity's Sonar always searches
+    regardless of this flag; setting it False there is a no-op, warned."""
 
     def __post_init__(self) -> None:
         if not self.model or not isinstance(self.model, str):
@@ -260,6 +270,21 @@ class ModelDiscovery:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class Citation:
+    """One normalized web-search source, across whichever shape the
+    provider actually returned it in (OpenAI's text annotations, Anthropic's
+    per-block citations, Gemini's grounding chunks, Perplexity's
+    search_results). ``url`` is what the provider gave KeyCall — for
+    Gemini this is a vertexaisearch.cloud.google.com redirect, not the
+    direct source, by Google's own design; it resolves correctly when
+    followed, KeyCall does not pre-resolve it."""
+
+    url: str
+    title: str | None = None
+    cited_text: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class InvocationResult:
     provider: str
     model: str
@@ -269,6 +294,7 @@ class InvocationResult:
     round_trip_duration_ms: float
     provider_request_id: str | None = None
     finish_reason: str | None = None
+    citations: tuple[Citation, ...] = ()
     warnings: tuple[str, ...] = ()
 
     @property

@@ -110,6 +110,18 @@ class ProviderAdapter(ABC):
                 provider=self.resolved.provider,
                 operation=Operation.TEXT_GENERATION.value,
             )
+        if request.web_search:
+            from .._capabilities import WEB_SEARCH_PROVIDERS
+
+            if self.resolved.provider not in WEB_SEARCH_PROVIDERS:
+                raise KeyCallError(
+                    f"provider {self.resolved.provider!r} has no native web search "
+                    "tool; web_search is supported on: "
+                    + ", ".join(sorted(WEB_SEARCH_PROVIDERS)),
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    provider=self.resolved.provider,
+                    operation=Operation.TEXT_GENERATION.value,
+                )
 
     @staticmethod
     def sampling_fields(request: TextGenerationRequest) -> dict[str, float]:

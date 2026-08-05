@@ -10,6 +10,7 @@ from .._enums import Operation
 from .._errors import ErrorCode, KeyCallError
 from .._transport import RequestSpec
 from .._types import (
+    Citation,
     InvocationResult,
     Model,
     OutputPart,
@@ -66,6 +67,8 @@ class OpenAIAdapter(ProviderAdapter):
         if request.max_output_tokens is not None:
             body["max_output_tokens"] = request.max_output_tokens
         body.update(self.sampling_fields(request))
+        if request.web_search:
+            body["tools"] = [{"type": "web_search"}]
         return RequestSpec(method=op["method"], path=op["path"], json_body=body)
 
     def parse_generation_response(
@@ -85,6 +88,7 @@ class OpenAIAdapter(ProviderAdapter):
             )
         parts: list[OutputPart] = []
         warnings: list[str] = []
+        citations: list[Citation] = []
         for item in payload.get("output", []):
             if not isinstance(item, dict):
                 continue
@@ -93,10 +97,18 @@ class OpenAIAdapter(ProviderAdapter):
                 for content in item.get("content", []):
                     if isinstance(content, dict) and content.get("type") == "output_text":
                         parts.append(TextOutput(text=str(content.get("text", ""))))
+                        for note in content.get("annotations") or []:
+                            if isinstance(note, dict) and note.get("type") == "url_citation":
+                                citations.append(
+                                    Citation(
+                                        url=str(note.get("url", "")),
+                                        title=note.get("title"),
+                                    )
+                                )
                     elif isinstance(content, dict):
                         parts.append(UnknownOutput(provider_kind=str(content.get("type", "?"))))
-            elif item_type == "reasoning":
-                continue  # reasoning traces are not output content
+            elif item_type in ("reasoning", "web_search_call"):
+                continue  # traces of server-side work, not output content
             elif item_type:
                 parts.append(UnknownOutput(provider_kind=item_type))
 
@@ -129,5 +141,6 @@ class OpenAIAdapter(ProviderAdapter):
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=headers.get("x-request-id"),
             finish_reason=str(finish) if finish else None,
+            citations=tuple(citations),
             warnings=tuple(warnings),
         )

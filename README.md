@@ -2,10 +2,11 @@
 
 One consistent interface for validating AI-provider API keys, listing and filtering the models available to them, and making normalized calls, so every product stops rebuilding the same model-picker filters and provider wrappers.
 
-**Status: early release (0.1.0).** Key validation, model listing and filtering,
-and text generation all work and are live-verified against every supported
-provider. Streaming, tool calling, structured output, and non-text modalities
-are not implemented yet. The API is settled but may still shift before 1.0.
+**Status: early release (0.2.0).** Key validation, model listing and filtering,
+text generation, and native web search with normalized citations all work and
+are live-verified against every supported provider. Streaming, structured
+output, general tool calling, and non-text modalities are not implemented yet.
+The API is settled but may still shift before 1.0.
 
 Docs: [USAGE.md](USAGE.md) for the full API and CLI reference · [CHANGELOG.md](CHANGELOG.md) for version history.
 
@@ -31,6 +32,7 @@ print(result.round_trip_duration_ms)
 - **No credential storage.** Keys live in memory for the client's lifetime, wrapped in a redacting type that keeps them out of reprs, logs, traces, exceptions, and pickles. Your app decides how to store them.
 - **Model filtering built in.** Text-generation models by default; embeddings, image, audio, and other categories on request; unknown models never silently enter the default picker.
 - **Typed errors.** Invalid key, rate limit, provider outage, timeout, and malformed response are distinguishable, never collapsed into "invalid key."
+- **Web search with citations.** `web_search=True` turns on the provider's native search tool (OpenAI, Anthropic, Gemini; Perplexity always searches) and returns sources normalized to one `Citation` shape.
 - **Hardened transport.** TLS always verified, redirects refused, response sizes capped, SSRF and DNS-rebinding guards on custom endpoints, and generation is never silently retried.
 
 ## Provider support
@@ -65,6 +67,21 @@ check.
 Because of quirks like these, `keycall verify --generate` walks the filtered
 models in provider order and prints the outcome of every attempt until one
 succeeds, so drift stays visible rather than being masked by a silent retry.
+
+## Local viewer
+
+```bash
+keycall view --source ./keys.toml
+```
+
+Opens a token-protected local web app over your loaded targets: a dashboard
+with live key checks, a sortable model browser with category filters, a
+playground for real generation calls (web search included), and a verify
+report. Keys never leave the server process and never appear in the browser.
+
+Or double-click / run a launcher from a fresh clone — it creates the venv,
+installs KeyCall, finds your key file, and starts the viewer:
+`launch.command` (macOS), `launch.sh` (Linux/macOS), `launch.bat` (Windows).
 
 ## Verifying keys from the command line
 

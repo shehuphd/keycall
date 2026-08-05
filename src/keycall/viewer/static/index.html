@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KeyCall Viewer</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <h1>KeyCall <span class="muted">viewer</span></h1>
+    <div id="health" class="muted"></div>
+  </header>
+
+  <nav id="tabs">
+    <button data-tab="dashboard" class="active">Dashboard</button>
+    <button data-tab="models">Models</button>
+    <button data-tab="playground">Playground</button>
+    <button data-tab="verify">Verify</button>
+  </nav>
+
+  <main>
+    <section id="dashboard" class="tab active">
+      <p class="muted">Loaded targets. Click one to check its key and see its model count.</p>
+      <table id="dashboard-table">
+        <thead><tr><th>Name</th><th>Provider</th><th>Status</th><th>Text models</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="models" class="tab">
+      <div class="controls">
+        <select id="models-target"></select>
+        <select id="models-category">
+          <option value="">All categories</option>
+        </select>
+        <button id="models-refresh">Refresh</button>
+      </div>
+      <div id="models-status" class="muted"></div>
+      <table id="models-table">
+        <thead><tr><th>Model ID</th><th>Categories</th><th>Source</th><th>Context</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="playground" class="tab">
+      <div class="controls">
+        <select id="pg-target"></select>
+        <select id="pg-model"></select>
+      </div>
+      <div class="controls">
+        <input id="pg-system" type="text" placeholder="System prompt (optional)">
+      </div>
+      <textarea id="pg-prompt" rows="4" placeholder="Your prompt…"></textarea>
+      <div class="controls">
+        <label><input id="pg-search" type="checkbox"> Web search</label>
+        <label>max tokens <input id="pg-maxtok" type="number" value="256" min="1" style="width:5rem"></label>
+        <button id="pg-run">Generate</button>
+      </div>
+      <div id="pg-result"></div>
+    </section>
+
+    <section id="verify" class="tab">
+      <div class="controls">
+        <label><input id="verify-generate" type="checkbox"> Also generate (one bounded call per target)</label>
+        <button id="verify-run">Run verify</button>
+      </div>
+      <div id="verify-status" class="muted"></div>
+      <div id="verify-results"></div>
+    </section>
+  </main>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

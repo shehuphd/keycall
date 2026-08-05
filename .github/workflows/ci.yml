@@ -59,7 +59,13 @@ jobs:
           wheel = sorted(glob.glob("dist/*.whl"))[-1]
           names = zipfile.ZipFile(wheel).namelist()
           missing = [
-              f for f in ("keycall/_catalog/catalog.json", "keycall/py.typed")
+              f for f in (
+                  "keycall/_catalog/catalog.json",
+                  "keycall/py.typed",
+                  "keycall/viewer/static/index.html",
+                  "keycall/viewer/static/app.js",
+                  "keycall/viewer/static/styles.css",
+              )
               if f not in names
           ]
           if missing:

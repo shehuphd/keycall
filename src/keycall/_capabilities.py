@@ -30,3 +30,15 @@ _SAMPLING_REJECTING = (
 def rejects_sampling_params(model_id: str) -> bool:
     lowered = model_id.lower()
     return any(pattern.match(lowered) for pattern in _SAMPLING_REJECTING)
+
+
+# Web search support is an adapter property, not a per-model one: the
+# provider either exposes a native server-side search tool on its
+# generation surface or it doesn't. Live-verified 2026-08-05: OpenAI
+# (web_search tool, Responses), Anthropic (web_search_20250305, Messages),
+# Gemini (google_search tool, generateContent), Perplexity (Sonar always
+# searches). DeepSeek and Moonshot document no equivalent; custom
+# OpenAI-compatible targets can't be assumed to have one (registry research
+# section 9: capabilities must be declared or verified, never inferred from
+# the protocol label).
+WEB_SEARCH_PROVIDERS = frozenset({"openai", "anthropic", "gemini", "perplexity"})

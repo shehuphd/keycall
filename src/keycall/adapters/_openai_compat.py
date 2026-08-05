@@ -15,6 +15,7 @@ from .._enums import Operation
 from .._errors import ErrorCode, KeyCallError
 from .._transport import RequestSpec
 from .._types import (
+    Citation,
     InvocationResult,
     Model,
     OutputPart,
@@ -90,7 +91,20 @@ class OpenAICompatibleAdapter(ProviderAdapter):
             )
         parts: list[OutputPart] = []
         warnings: list[str] = []
+        citations: list[Citation] = []
         finish_reason = None
+        by_url: dict[str, Citation] = {}
+        for entry in payload.get("search_results") or []:
+            if isinstance(entry, dict) and entry.get("url"):
+                by_url[str(entry["url"])] = Citation(
+                    url=str(entry["url"]),
+                    title=entry.get("title"),
+                    cited_text=entry.get("snippet"),
+                )
+        for url in payload.get("citations") or []:
+            if isinstance(url, str) and url not in by_url:
+                by_url[url] = Citation(url=url)
+        citations.extend(by_url.values())
         choices = payload.get("choices")
         if isinstance(choices, list) and choices:
             choice = choices[0]
@@ -123,5 +137,6 @@ class OpenAICompatibleAdapter(ProviderAdapter):
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=None,  # not documented for compat targets
             finish_reason=str(finish_reason) if finish_reason else None,
+            citations=tuple(citations),
             warnings=tuple(warnings),
         )

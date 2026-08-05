@@ -146,6 +146,37 @@ Anthropic Opus 4.7+, Opus 5+, Sonnet 5+). Passing `temperature` or `top_p`
 for those raises `MODEL_NOT_SUITABLE` before any network call, omit the
 parameters for those models.
 
+## Web search
+
+Providers with a native server-side search tool can ground a generation in
+live web results:
+
+```python
+result = client.generate_text(
+    model="gpt-4o-mini",
+    messages=[Message(role="user", content=[TextInput(text="What's new in Python?")])],
+    web_search=True,
+)
+
+for citation in result.citations:
+    print(citation.url, citation.title, citation.cited_text)
+```
+
+| Provider | Mechanism | Citation URLs |
+|---|---|---|
+| OpenAI | `web_search` tool (Responses API) | direct source URLs |
+| Anthropic | `web_search_20250305` tool | direct source URLs, with `cited_text` |
+| Gemini | `google_search` tool | Google `vertexaisearch` redirect links (by Google's design; they resolve to the source when followed) |
+| Perplexity | Sonar always searches — the flag is a no-op | direct source URLs, with snippets |
+
+DeepSeek, Moonshot, and custom OpenAI-compatible targets have no native
+search tool: `web_search=True` raises `UNSUPPORTED_OPERATION` before any
+network call rather than silently ignoring the request.
+
+`result.citations` is a tuple of `Citation(url, title, cited_text)`,
+normalized across all four provider response shapes. Fields the provider
+didn't supply are `None`.
+
 ## Error handling
 
 Every failure raises `KeyCallError` with a typed `code`:
@@ -246,6 +277,38 @@ A broadly readable file or one inside a git repository produces a warning;
 targets verified, `1` at least one failed, `2` usage or source error.
 
 Use dedicated low-budget test keys, and `chmod 600` the file.
+
+## The viewer
+
+```bash
+keycall view --source ./keys.toml
+```
+
+Starts a local, token-protected web app over the loaded targets and opens it
+in your browser. Four tabs:
+
+- **Dashboard** — every loaded target; click one for a live key check and its
+  text-model count.
+- **Models** — browse a target's full model list, filtered by category
+  (text, image, embedding, and so on), with classification source and context
+  limits. `Refresh` bypasses the cache.
+- **Playground** — pick a target and model, write a prompt (optional system
+  prompt), toggle web search, and run a real generation. Results show text,
+  timing, token usage, finish reason, and rendered citation links.
+- **Verify** — run the same walk as `keycall verify` (optionally with
+  generation) across every target and read the per-model attempt report.
+
+Options: `--host` (default `127.0.0.1`), `--port` (default: pick a free one),
+`--no-open` to skip the browser launch. Sources are the same TXT/JSON/TOML/
+`env:VAR` formats `verify` accepts.
+
+Security properties, in brief: a fresh auth token is generated per run,
+required on every API request, printed once to your terminal, and never
+written to disk. Keys are held in the server process only — the browser sees
+target ids and display names, never credentials. All responses carry a
+`default-src 'self'` CSP, so the page can make no external requests. The
+server binds localhost by default; treat `--host` values beyond that as
+deliberately exposing live credentials to your network.
 
 ## Tracing (optional)
 

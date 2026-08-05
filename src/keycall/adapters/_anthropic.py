@@ -10,6 +10,7 @@ from .._enums import Operation
 from .._errors import ErrorCode, KeyCallError
 from .._transport import RequestSpec
 from .._types import (
+    Citation,
     InvocationResult,
     Model,
     OutputPart,
@@ -95,6 +96,8 @@ class AnthropicAdapter(ProviderAdapter):
         if system_texts:
             body["system"] = "\n\n".join(system_texts)
         body.update(self.sampling_fields(request))
+        if request.web_search:
+            body["tools"] = [{"type": "web_search_20250305", "name": "web_search"}]
         return RequestSpec(method=op["method"], path=op["path"], json_body=body)
 
     def parse_generation_response(
@@ -114,11 +117,26 @@ class AnthropicAdapter(ProviderAdapter):
             )
         parts: list[OutputPart] = []
         warnings: list[str] = []
+        citations: list[Citation] = []
         for block in payload.get("content", []):
-            if isinstance(block, dict) and block.get("type") == "text":
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type == "text":
                 parts.append(TextOutput(text=str(block.get("text", ""))))
-            elif isinstance(block, dict):
-                parts.append(UnknownOutput(provider_kind=str(block.get("type", "?"))))
+                for note in block.get("citations") or []:
+                    if isinstance(note, dict) and note.get("url"):
+                        citations.append(
+                            Citation(
+                                url=str(note["url"]),
+                                title=note.get("title"),
+                                cited_text=note.get("cited_text"),
+                            )
+                        )
+            elif block_type in ("thinking", "server_tool_use", "web_search_tool_result"):
+                continue  # traces of server-side work, not output content
+            else:
+                parts.append(UnknownOutput(provider_kind=str(block_type or "?")))
 
         usage_raw = payload.get("usage")
         if isinstance(usage_raw, dict):
@@ -141,6 +159,7 @@ class AnthropicAdapter(ProviderAdapter):
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=headers.get("request-id"),
             finish_reason=payload.get("stop_reason"),
+            citations=tuple(citations),
             warnings=tuple(warnings),
         )
 

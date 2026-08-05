@@ -1,14 +1,11 @@
-"""keycall CLI: live credential verification (PRD section 14.2).
+"""keycall CLI: live credential verification and the local viewer.
 
-Each target gets one model-list call. With --generate, KeyCall walks the
-filtered text models in provider order and reports the outcome of every
-attempt until one succeeds or the attempt budget runs out.
-
-This is *reported* fallthrough, not the silent fallthrough PRD section 14.3
+`verify` walks filtered text models in provider order and reports the
+outcome of every attempt until one succeeds or the attempt budget runs out
+(the walk itself lives in `_verify_core.py`, shared with the viewer). This
+is *reported* fallthrough, not the silent fallthrough PRD section 14.3
 forbids: each skipped model is printed with the reason it was skipped, so
-provider drift (retired models still advertised, modality mismatches, quota
-walls) stays visible instead of being masked. A credential failure stops
-immediately — no point trying more models with a key the provider rejected.
+provider drift stays visible instead of being masked.
 
 Keys never appear in output.
 """
@@ -18,107 +15,60 @@ from __future__ import annotations
 import argparse
 import sys
 
-from ._enums import ModelCategory
-from ._errors import ErrorCode, KeyCallError
 from ._sanitize import safe_display_name
-from ._sources import SourceError, Target, load_targets, remind_deletion
-
-_GENERATION_PROMPT = "Reply with the single word: ok"
-_GENERATION_MAX_TOKENS = 16
-_DEFAULT_ATTEMPTS = 8
-
-# The credential itself is the problem: stop immediately, since no other
-# model will fare better with a key the provider has rejected.
-_CREDENTIAL_FAILURES = frozenset(
-    {ErrorCode.INVALID_API_KEY, ErrorCode.PERMISSION_DENIED}
-)
-# Everything else is model-scoped and worth trying the next candidate for.
-# Rate limits included, deliberately: providers meter per model and tier, so
-# a 429 on one model says nothing about the next (Gemini free tier gives
-# 2.5-pro zero quota while flash-latest answers fine). Exhausting the budget
-# on rate limits is reported as unverified, never as a failed adapter
-# (PRD 14.2: rate limits are distinct from adapter incompatibility).
+from ._sources import SourceError, load_targets, remind_deletion
+from ._verify_core import DEFAULT_ATTEMPTS, VerifyResult, run_verify
 
 
-def _verify_target(
-    target: Target, *, generate: bool, attempts: int = _DEFAULT_ATTEMPTS
-) -> tuple[bool, list[str]]:
-    """Returns (ok, report_lines). Never raises for provider failures."""
-    from ._client import KeyCall
-    from ._types import Message, TextInput
-
-    label = target.display_name
-    lines = []
-    try:
-        with KeyCall(
-            provider=target.provider,
-            api_key=target.key,
-            protocol=target.protocol,
-            base_url=target.base_url,
-        ) as client:
-            # Verification must hit the live provider, never cached data.
-            discovery = client.list_models(
-                categories={ModelCategory.TEXT_GENERATION}, refresh=True
-            )
-            text_models = discovery.models
-            lines.append(
-                f"✓ {label} ({client.provider}): key accepted, "
-                f"{len(text_models)} text model(s)"
-            )
-            if not generate:
-                return True, lines
-            if not text_models:
-                lines.append(f"✗ {label}: no text models available to generate with")
-                return False, lines
-
-            messages = [Message(role="user", content=[TextInput(text=_GENERATION_PROMPT)])]
-            rate_limited = False
-            for position, candidate in enumerate(text_models[:attempts]):
-                try:
-                    result = client.generate_text(
-                        model=candidate.id,
-                        messages=messages,
-                        max_output_tokens=_GENERATION_MAX_TOKENS,
-                    )
-                except KeyCallError as error:
-                    lines.append(
-                        f"  ✗ {candidate.id} (position {position}): "
-                        f"{error.code.value} — {error.message}"
-                    )
-                    if error.code in _CREDENTIAL_FAILURES:
-                        lines.append(f"✗ {label}: credential rejected")
-                        return False, lines
-                    if error.code is ErrorCode.RATE_LIMITED:
-                        rate_limited = True
-                    continue
-                usage = result.usage.total_tokens
-                skipped = f", {position} advertised model(s) skipped" if position else ""
-                lines.append(
-                    f"✓ {label}: generated with {candidate.id} "
-                    f"(filtered position {position}{skipped}, "
-                    f"{result.round_trip_duration_ms:.0f} ms, "
-                    f"total tokens: {usage if usage is not None else 'unreported'})"
-                )
-                return True, lines
-
-            tried = min(attempts, len(text_models))
-            if rate_limited:
-                lines.append(
-                    f"! {label}: generation unverified — quota/rate limited "
-                    f"({tried} attempted of {len(text_models)})"
-                )
-            else:
-                lines.append(
-                    f"✗ {label}: no advertised text model was invocable "
-                    f"({tried} attempted of {len(text_models)})"
-                )
-            return False, lines
-    except KeyCallError as error:
+def _render(result: VerifyResult) -> list[str]:
+    lines: list[str] = []
+    if not result.listed_ok:
         lines.append(
-            f"✗ {label} ({target.provider}): {error.code.value} — {error.message}"
-            + (" [retryable]" if error.retryable else "")
+            f"✗ {result.label} ({result.provider}): "
+            f"{result.list_error_code} — {result.list_error_message}"
         )
-        return False, lines
+        return lines
+
+    lines.append(
+        f"✓ {result.label} ({result.provider}): key accepted, "
+        f"{result.text_model_count} text model(s)"
+    )
+    if not result.generate_requested:
+        return lines
+    if result.outcome == "no_text_models":
+        lines.append(f"✗ {result.label}: no text models available to generate with")
+        return lines
+
+    for attempt in result.attempts:
+        if attempt.ok:
+            skipped = f", {attempt.position} advertised model(s) skipped" if attempt.position else ""
+            usage = attempt.total_tokens if attempt.total_tokens is not None else "unreported"
+            lines.append(
+                f"✓ {result.label}: generated with {attempt.model_id} "
+                f"(filtered position {attempt.position}{skipped}, "
+                f"{attempt.round_trip_duration_ms:.0f} ms, total tokens: {usage})"
+            )
+        else:
+            lines.append(
+                f"  ✗ {attempt.model_id} (position {attempt.position}): "
+                f"{attempt.error_code} — {attempt.error_message}"
+            )
+
+    if result.outcome == "credential_rejected":
+        lines.append(f"✗ {result.label}: credential rejected")
+    elif result.outcome == "rate_limited_unverified":
+        tried = len(result.attempts)
+        lines.append(
+            f"! {result.label}: generation unverified — quota/rate limited "
+            f"({tried} attempted of {result.text_model_count})"
+        )
+    elif result.outcome == "no_model_invocable":
+        tried = len(result.attempts)
+        lines.append(
+            f"✗ {result.label}: no advertised text model was invocable "
+            f"({tried} attempted of {result.text_model_count})"
+        )
+    return lines
 
 
 def _run_verify(args: argparse.Namespace) -> int:
@@ -141,9 +91,9 @@ def _run_verify(args: argparse.Namespace) -> int:
 
     all_ok = True
     for target in targets:
-        ok, lines = _verify_target(target, generate=args.generate, attempts=args.attempts)
-        all_ok = all_ok and ok
-        for line in lines:
+        result = run_verify(target, generate=args.generate, attempts=args.attempts)
+        all_ok = all_ok and (result.generate_ok if args.generate else result.listed_ok)
+        for line in _render(result):
             print(safe_display_name(line, max_length=300))
 
     if args.source:
@@ -154,41 +104,73 @@ def _run_verify(args: argparse.Namespace) -> int:
     return 0 if all_ok else 1
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="keycall")
-    subparsers = parser.add_subparsers(dest="command")
+def _run_view(args: argparse.Namespace) -> int:
+    try:
+        targets, warnings = load_targets(
+            args.source or "-",
+            provider=args.provider,
+            protocol=args.protocol,
+            base_url=args.base_url,
+        )
+    except SourceError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
 
-    verify = subparsers.add_parser(
-        "verify", help="verify credentials against live providers"
-    )
-    verify.add_argument(
+    for warning in warnings:
+        print(f"warning: {warning.message}", file=sys.stderr)
+
+    try:
+        from .viewer import run as run_viewer
+    except ImportError:
+        print("keycall view is under construction and not functional yet", file=sys.stderr)
+        return 2
+
+    return run_viewer(targets, host=args.host, port=args.port, open_browser=not args.no_open)
+
+
+def _add_source_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
         "--source",
         "-s",
         help="TXT/JSON/TOML target file, env:VAR_NAME, or omit for interactive prompt",
     )
-    verify.add_argument("--provider", help="provider name (env:/interactive sources)")
-    verify.add_argument("--protocol", help="protocol override (custom targets)")
-    verify.add_argument("--base-url", dest="base_url", help="base URL (custom targets)")
+    parser.add_argument("--provider", help="provider name (env:/interactive sources)")
+    parser.add_argument("--protocol", help="protocol override (custom targets)")
+    parser.add_argument("--base-url", dest="base_url", help="base URL (custom targets)")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="keycall")
+    subparsers = parser.add_subparsers(dest="command")
+
+    verify = subparsers.add_parser("verify", help="verify credentials against live providers")
+    _add_source_args(verify)
     verify.add_argument(
-        "--generate",
-        action="store_true",
-        help="also make one bounded text generation per target",
+        "--generate", action="store_true", help="also make one bounded text generation per target"
     )
     verify.add_argument(
         "--attempts",
         type=int,
-        default=_DEFAULT_ATTEMPTS,
-        help=f"max models to try per target with --generate (default {_DEFAULT_ATTEMPTS})",
+        default=DEFAULT_ATTEMPTS,
+        help=f"max models to try per target with --generate (default {DEFAULT_ATTEMPTS})",
     )
     verify.add_argument(
-        "--strict-credentials",
-        action="store_true",
-        help="treat credential-file warnings as errors",
+        "--strict-credentials", action="store_true", help="treat credential-file warnings as errors"
+    )
+
+    view = subparsers.add_parser("view", help="open the local web viewer for a target source")
+    _add_source_args(view)
+    view.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
+    view.add_argument("--port", type=int, default=0, help="port (default: pick a free one)")
+    view.add_argument(
+        "--no-open", action="store_true", help="don't open a browser tab automatically"
     )
 
     args = parser.parse_args(argv)
     if args.command == "verify":
         return _run_verify(args)
+    if args.command == "view":
+        return _run_view(args)
     parser.print_help()
     return 0
 

@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.2.0] — 2026-08-05
+
+### Added
+
+- **Web search** (`web_search=True` on `generate_text()` / `TextGenerationRequest`):
+  enables the provider's native server-side search tool — OpenAI (`web_search`,
+  Responses API), Anthropic (`web_search_20250305`), Gemini (`google_search` on
+  `generateContent`). Perplexity's Sonar always searches; the flag is accepted
+  as a no-op there. Providers without a native search tool (DeepSeek, Moonshot,
+  custom targets) raise `UNSUPPORTED_OPERATION` before any network call rather
+  than silently ignoring the request. Live-verified against all four providers.
+- **`Citation` type and `InvocationResult.citations`**: web-search sources
+  normalized to one shape (`url`, `title`, `cited_text`) across OpenAI's text
+  annotations, Anthropic's per-block citations, Gemini's grounding chunks, and
+  Perplexity's `citations`/`search_results` (previously discarded). Gemini
+  citation URLs are Google's own vertexaisearch redirect links by design.
+- **Launch scripts** (`launch.command`, `launch.sh`, `launch.bat`): one-click
+  viewer startup from a fresh clone on any OS — path-independent, resolves the
+  interpreter explicitly, validates or rebuilds the venv, and locates the key
+  file.
+- **Local web viewer** (`keycall view --source ./keys.toml`): dashboard of
+  loaded targets with live key checks, model catalog browser with category
+  filters, playground for real generation calls (including web search with
+  rendered citations), and a verify report — all in the browser. Standard
+  library only; static assets ship in the wheel. A per-run auth token is
+  mandatory on every API request (printed once, never persisted), credentials
+  stay server-side (the browser only ever sees target ids and names), and the
+  page carries a `default-src 'self'` CSP.
+
+### Changed
+
+- `keycall verify`'s model walk extracted to a structured core
+  (`VerifyResult`/`ModelAttempt`) shared between the CLI and the viewer.
+
 ## [0.1.0] — 2026-08-05
 
 First release. Key validation, model discovery and filtering, and text
@@ -120,5 +154,6 @@ generation, live-verified against every supported provider.
   bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
-[Unreleased]: https://github.com/shehuphd/keycall/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/shehuphd/keycall/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/shehuphd/keycall/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/shehuphd/keycall/releases/tag/v0.1.0

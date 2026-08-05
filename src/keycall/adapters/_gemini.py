@@ -17,6 +17,7 @@ from .._enums import ModelCategory, Operation
 from .._errors import ErrorCode, KeyCallError
 from .._transport import RequestSpec
 from .._types import (
+    Citation,
     InvocationResult,
     Model,
     OutputPart,
@@ -152,6 +153,8 @@ class GeminiAdapter(ProviderAdapter):
             generation_config["topP"] = request.top_p
         if generation_config:
             body["generationConfig"] = generation_config
+        if request.web_search:
+            body["tools"] = [{"google_search": {}}]
         path = op["path"].format(model=quote(_strip_prefix(request.model), safe=""))
         return RequestSpec(method=op["method"], path=path, json_body=body)
 
@@ -172,6 +175,7 @@ class GeminiAdapter(ProviderAdapter):
             )
         parts: list[OutputPart] = []
         warnings: list[str] = []
+        citations: list[Citation] = []
         finish_reason = None
         candidates = payload.get("candidates")
         if isinstance(candidates, list) and candidates:
@@ -186,6 +190,16 @@ class GeminiAdapter(ProviderAdapter):
                         elif isinstance(part, dict):
                             kind = next(iter(part.keys()), "?")
                             parts.append(UnknownOutput(provider_kind=str(kind)))
+                grounding = candidate.get("groundingMetadata")
+                if isinstance(grounding, dict):
+                    # web.uri is a vertexaisearch.cloud.google.com redirect,
+                    # by Google's design; title names the real source.
+                    for chunk in grounding.get("groundingChunks") or []:
+                        web = chunk.get("web") if isinstance(chunk, dict) else None
+                        if isinstance(web, dict) and web.get("uri"):
+                            citations.append(
+                                Citation(url=str(web["uri"]), title=web.get("title"))
+                            )
 
         usage_raw = payload.get("usageMetadata")
         if isinstance(usage_raw, dict):
@@ -209,6 +223,7 @@ class GeminiAdapter(ProviderAdapter):
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=payload.get("responseId"),
             finish_reason=str(finish_reason) if finish_reason else None,
+            citations=tuple(citations),
             warnings=tuple(warnings),
         )
 
