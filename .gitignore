@@ -20,9 +20,12 @@ Desktop.ini
 keycall-test-keys.*
 !keycall-test-keys.example.*
 
-# Internal documentation (README.md stays tracked).
+# Internal documentation (top-level project docs stay tracked).
 *.md
 !README.md
+!USAGE.md
+!CHANGELOG.md
+!CONTRIBUTING.md
 
 # Python build/runtime artifacts.
 __pycache__/

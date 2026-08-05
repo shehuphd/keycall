@@ -2,9 +2,14 @@
 
 One consistent interface for validating AI-provider API keys, listing and filtering the models available to them, and making normalized calls, so every product stops rebuilding the same model-picker filters and provider wrappers.
 
-**Status: pre-alpha scaffold.** The public types, provider registry, and security boundaries are in place; the adapter and transport layer (live model listing and text generation) is under construction. Nothing here makes a network call yet.
+**Status: early release (0.1.0).** Key validation, model listing and filtering,
+and text generation all work and are live-verified against every supported
+provider. Streaming, tool calling, structured output, and non-text modalities
+are not implemented yet. The API is settled but may still shift before 1.0.
 
-## What v1 will do
+Docs: [USAGE.md](USAGE.md) for the full API and CLI reference · [CHANGELOG.md](CHANGELOG.md) for version history.
+
+## Quick start
 
 ```python
 from keycall import KeyCall, Message, ModelCategory, TextInput
@@ -26,8 +31,9 @@ print(result.round_trip_duration_ms)
 - **No credential storage.** Keys live in memory for the client's lifetime, wrapped in a redacting type that keeps them out of reprs, logs, traces, exceptions, and pickles. Your app decides how to store them.
 - **Model filtering built in.** Text-generation models by default; embeddings, image, audio, and other categories on request; unknown models never silently enter the default picker.
 - **Typed errors.** Invalid key, rate limit, provider outage, timeout, and malformed response are distinguishable, never collapsed into "invalid key."
+- **Hardened transport.** TLS always verified, redirects refused, response sizes capped, SSRF and DNS-rebinding guards on custom endpoints, and generation is never silently retried.
 
-## Provider support (v1 targets)
+## Provider support
 
 Live-verified 2026-08-05 (one model-list call plus one bounded generation per provider):
 
@@ -59,6 +65,22 @@ check.
 Because of quirks like these, `keycall verify --generate` walks the filtered
 models in provider order and prints the outcome of every attempt until one
 succeeds, so drift stays visible rather than being masked by a silent retry.
+
+## Verifying keys from the command line
+
+```bash
+keycall verify --source ./keys.toml
+```
+
+```bash
+keycall verify --source ./keys.toml --generate
+```
+
+`--generate` also makes one small bounded call per target. Sources can be TXT,
+JSON, or TOML, an explicit `env:VAR_NAME` reference, or an interactive prompt.
+See `keycall-test-keys.example.toml` for the format and
+[USAGE.md](USAGE.md#the-verify-cli) for the full reference. Keys never appear
+in output, and KeyCall never writes to or deletes your credential file.
 
 ## Development
 

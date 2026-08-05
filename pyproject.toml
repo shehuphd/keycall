@@ -12,7 +12,7 @@ license = "AGPL-3.0-or-later"
 authors = [{ name = "Mo Shehu" }]
 keywords = ["llm", "api-keys", "openai", "anthropic", "gemini", "model-picker"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",

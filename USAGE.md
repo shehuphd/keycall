@@ -1,0 +1,278 @@
+# KeyCall Usage
+
+Full reference for the Python API and the `keycall` CLI. For a quick
+overview, see [README.md](README.md); for version history, [CHANGELOG.md](CHANGELOG.md).
+
+## Installation
+
+```bash
+pip install keycall
+```
+
+Python 3.10+. Optional extras: `pip install "keycall[traceact]"` for tracing.
+
+## Clients
+
+Construct one client per provider and credential. Identity is fixed at
+construction; switching provider, key, protocol, or base URL means
+constructing a new client.
+
+```python
+from keycall import KeyCall
+
+with KeyCall(provider="openai", api_key=secret) as client:
+    ...
+```
+
+Async is identical except for `await`:
+
+```python
+from keycall import AsyncKeyCall
+
+async with AsyncKeyCall(provider="anthropic", api_key=secret) as client:
+    discovery = await client.list_models()
+```
+
+Supported provider names: `openai`, `anthropic`, `gemini`, `deepseek`,
+`perplexity`, `moonshot`. Aliases: `claude`, `google`, `google-gemini`,
+`pplx`, `kimi`.
+
+### Custom OpenAI-compatible endpoints
+
+An unknown provider name requires an explicit protocol and base URL:
+
+```python
+client = KeyCall(
+    provider="university-lab",
+    protocol="openai-compatible",
+    api_key=secret,
+    base_url="https://llm.example.edu/v1",
+)
+```
+
+Rules for `base_url`: absolute HTTPS, no query string, fragment, or
+userinfo. Plain HTTP is allowed only for localhost with
+`allow_insecure_localhost=True`. Literal private/internal IP addresses
+require `allow_private_network=True`. Hostnames are DNS-pinned per request:
+KeyCall resolves once, refuses to proceed if any resolved address is
+private, and connects to the validated address while TLS still verifies the
+original hostname.
+
+### Constructor options
+
+| Parameter | Default | Purpose |
+|---|---|---|
+| `provider` | required | Provider name or custom label |
+| `api_key` | required | The credential; wrapped in a redacting type immediately |
+| `protocol` | from registry | Wire protocol; only needed for custom targets |
+| `base_url` | from registry | Only for custom targets |
+| `connect_timeout` | `10.0` | Seconds |
+| `read_timeout` | `60.0` | Seconds |
+| `max_response_bytes` | 10 MB | Response bodies are read incrementally against this cap |
+| `trust_env` | `True` | Set `False` to ignore `HTTP_PROXY`/`HTTPS_PROXY` |
+| `allow_insecure_localhost` | `False` | Permit `http://localhost` targets |
+| `allow_private_network` | `False` | Permit literal private-IP targets |
+
+## Listing and filtering models
+
+```python
+from keycall import ModelCategory
+
+discovery = client.list_models()                                    # text models (default)
+images = client.list_models(categories={ModelCategory.IMAGE_GENERATION})
+both = client.list_models(
+    categories={ModelCategory.TEXT_GENERATION, ModelCategory.IMAGE_GENERATION}
+)
+```
+
+Categories: `TEXT_GENERATION`, `IMAGE_GENERATION`, `EMBEDDING`,
+`TRANSCRIPTION`, `SPEECH_GENERATION`, `VIDEO_GENERATION`, `REALTIME`,
+`UNKNOWN`. Models KeyCall cannot classify are `UNKNOWN` and appear only when
+you request that category explicitly, never in the default text picker.
+
+`ModelDiscovery` fields: `models`, `provider`, `categories`, `fetched_at`,
+`from_cache`, `catalog_version`, `warnings`. Each `Model` carries `id`,
+`provider`, `categories`, `display_name`, `context_limit`,
+`classification_source`, and `warnings`.
+
+Results are cached in-process for 5 minutes, keyed by an HMAC fingerprint of
+the credential. Force a live call with `client.list_models(refresh=True)`,
+always do this when verifying a newly entered key.
+
+A successful listing proves the credential works for discovery. It does not
+prove every listed model can be invoked; some providers advertise retired or
+quota-walled models with no lifecycle field to filter on.
+
+## Generating text
+
+```python
+from keycall import Message, TextInput
+
+result = client.generate_text(
+    model=discovery.models[0].id,
+    messages=[
+        Message(role="system", content=[TextInput(text="Be concise.")]),
+        Message(role="user", content=[TextInput(text="Hello.")]),
+    ],
+    max_output_tokens=200,
+    temperature=0.7,   # optional; omitted from the wire when unset
+    top_p=0.9,         # optional
+)
+
+result.text                      # concatenated text output, or None
+result.usage.input_tokens        # None means "provider didn't report", not zero
+result.usage.total_tokens
+result.round_trip_duration_ms
+result.finish_reason
+result.provider_request_id
+```
+
+`messages` accepts any sequence of `Message` objects, a plain list is fine.
+Roles are `"system"`, `"user"`, `"assistant"`. Dicts and bare strings are
+not accepted; there is one canonical representation.
+
+The lower-level path accepts a typed request, useful when you build requests
+in one place and execute them in another:
+
+```python
+from keycall import TextGenerationRequest
+
+request = TextGenerationRequest(model="...", messages=[...], max_output_tokens=64)
+result = client.invoke(request)
+```
+
+Some models reject sampling parameters outright (OpenAI o-series and gpt-5;
+Anthropic Opus 4.7+, Opus 5+, Sonnet 5+). Passing `temperature` or `top_p`
+for those raises `MODEL_NOT_SUITABLE` before any network call, omit the
+parameters for those models.
+
+## Error handling
+
+Every failure raises `KeyCallError` with a typed `code`:
+
+```python
+from keycall import ErrorCode, KeyCallError
+
+try:
+    discovery = client.list_models(refresh=True)
+except KeyCallError as error:
+    if error.code is ErrorCode.INVALID_API_KEY:
+        show_settings_error("That key was rejected.")
+    elif error.retryable:
+        schedule_retry(after=error.retry_after)
+    else:
+        log(error.code.value, error.message)
+```
+
+| Code | Meaning | Retryable |
+|---|---|---|
+| `INVALID_API_KEY` | Provider rejected the credential | no |
+| `PERMISSION_DENIED` | Key valid but not allowed (includes billing) | no |
+| `RATE_LIMITED` | Rate or quota limit; `retry_after` set when provided | yes |
+| `PROVIDER_UNAVAILABLE` | 5xx or overload | yes |
+| `NETWORK_ERROR` | Could not reach the provider | yes |
+| `TIMEOUT` | No response within the timeout | yes |
+| `INVALID_PROVIDER_RESPONSE` | Malformed body, redirect, or oversized response | no |
+| `MODEL_NOT_AVAILABLE` | Model missing, retired, or rejected by name | no |
+| `MODEL_NOT_SUITABLE` | Model can't serve this request (e.g. sampling params) | no |
+| `UNSUPPORTED_PROVIDER` | Unknown name or invalid custom target | no |
+| `UNSUPPORTED_OPERATION` | Request shape not supported in this version | no |
+| `CATALOG_UPDATE_REQUIRED` | Bundled catalog too old for this client | no |
+
+Error messages are sanitized: no credentials, no raw request bodies, no
+unsanitized provider text.
+
+Retry behavior: model listing gets a small bounded retry budget for transient
+failures, honoring `Retry-After`. Generation is never retried by KeyCall,
+since no supported provider documents generation idempotency, so retrying an
+ambiguous failure risks a second charge. `retryable` tells *you* whether a
+retry is reasonable at your layer.
+
+## The verify CLI
+
+Live credential verification, one model-list call per target:
+
+```bash
+keycall verify --source ./keys.toml
+```
+
+Add one bounded generation per target:
+
+```bash
+keycall verify --source ./keys.toml --generate
+```
+
+With `--generate`, KeyCall walks the filtered text models in provider order
+and reports every attempt until one succeeds (default budget 8, adjustable
+with `--attempts`). Skipped models are printed with reasons, so retired
+models, modality mismatches, and per-model quota walls stay visible.
+
+### Sources
+
+TOML:
+
+```toml
+[[targets]]
+provider = "openai"
+key = "sk-..."
+name = "my-openai-key"
+```
+
+TXT (one target per line, `#` for comments, quotes optional):
+
+```text
+provider=openai key=sk-... name=my-openai-key
+protocol=openai-compatible provider=my-lab base_url=https://llm.example.edu/v1 key=...
+```
+
+JSON: `{"targets": [{"provider": "...", "key": "..."}]}`.
+
+Environment variable (single target, provider required):
+
+```bash
+keycall verify --source env:MY_OPENAI_KEY --provider openai
+```
+
+Interactive (no `--source`): prompts for provider and a hidden key.
+
+Fields: `provider` and `key` required; `protocol`, `base_url`, `name`
+optional. Repeating a provider creates independent targets.
+
+### Behavior and exit codes
+
+Keys never appear in output. Credential files are never modified or deleted.
+A broadly readable file or one inside a git repository produces a warning;
+`--strict-credentials` turns those warnings into errors. Exit codes: `0` all
+targets verified, `1` at least one failed, `2` usage or source error.
+
+Use dedicated low-budget test keys, and `chmod 600` the file.
+
+## Tracing (optional)
+
+If the host application configures [TraceAct](https://github.com/traceact/traceact),
+KeyCall emits `keycall.list_models` and `keycall.text_generation` spans with
+safe fields only: provider, model IDs, counts, status, durations, token
+totals. Prompts, responses, and credentials are never captured, and KeyCall
+pins input capture off with the `api_keys`/`ai_prompts` redaction presets on
+its spans regardless of global settings.
+
+```python
+import traceact
+
+traceact.configure(project="my-app", sinks=[traceact.JsonlSink("traces.jsonl")])
+# KeyCall spans now flow to your sink. Without configure(), KeyCall emits nothing.
+```
+
+KeyCall never calls `configure()` itself and works identically with TraceAct
+absent.
+
+## Security model in one paragraph
+
+The raw key enters at exactly one boundary (the client constructor), is
+wrapped in a redacting type immediately, and is revealed at exactly one call
+site (the transport layer's header builder). It cannot be pickled, copied,
+printed, or read back off the client. Everything provider-originated is
+sanitized before it reaches you; redirects are refused; response sizes are
+capped; custom endpoints face HTTPS, private-address, and DNS-rebinding
+guards. KeyCall stores nothing: where your keys live is your application's
+decision.
