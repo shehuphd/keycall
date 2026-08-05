@@ -19,6 +19,25 @@
     <button data-tab="verify">Verify</button>
   </nav>
 
+  <div id="fatal" class="hidden"></div>
+
+  <section id="source-panel" class="hidden">
+    <div class="card">
+      <h2>No key targets loaded</h2>
+      <p class="muted">Enter the path to a key file on this machine (TOML, JSON,
+      or TXT — see
+      <a href="https://github.com/shehuphd/keycall/blob/main/keycall-test-keys.example.toml"
+         target="_blank" rel="noopener noreferrer"><code>keycall-test-keys.example.toml</code></a>
+      for the format). The file is read by the local server; keys never enter
+      the browser.</p>
+      <div class="controls">
+        <input id="source-path" type="text" placeholder="./keycall-keys.toml">
+        <button id="source-load">Load</button>
+      </div>
+      <div id="source-status" class="muted"></div>
+    </div>
+  </section>
+
   <main>
     <section id="dashboard" class="tab active">
       <p class="muted">Loaded targets. Click one to check its key and see its model count.</p>

@@ -40,10 +40,8 @@ if [ -z "$SOURCE" ]; then
     done
 fi
 if [ -z "$SOURCE" ]; then
-    echo "No key source found. Copy keycall-test-keys.example.toml to" >&2
-    echo "keycall-keys.toml, add your keys, then rerun (or pass a path:" >&2
-    echo "./launch.sh path/to/keys.toml)." >&2
-    exit 1
+    # No key file found — the viewer opens with a prompt to load one.
+    exec .venv/bin/python -m keycall._cli view
 fi
 
 exec .venv/bin/python -m keycall._cli view --source "$SOURCE"

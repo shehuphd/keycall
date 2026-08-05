@@ -142,3 +142,20 @@ th.sort-desc::after { content: " ↓"; }
 /* Source column hides when every row carries the same value. */
 #models-table.hide-source th:nth-child(3),
 #models-table.hide-source td:nth-child(3) { display: none; }
+
+.hidden { display: none !important; }
+#source-panel { padding: 3rem 1.5rem; max-width: 640px; }
+#source-panel h2 { margin: 0 0 0.5rem; font-size: 1.05rem; }
+#fatal {
+  margin: 3rem auto;
+  max-width: 560px;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--err);
+  border-radius: 8px;
+  color: var(--err);
+}
+
+/* Selected text stays legible on any surface, including code chips. */
+::selection { background: var(--accent); color: var(--accent-fg); }
+
+a { color: var(--accent); }

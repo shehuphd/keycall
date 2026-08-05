@@ -14,11 +14,13 @@ from typing import Any
 
 from .._enums import ModelCategory
 from .._errors import KeyCallError
+from .._sources import SourceError, load_targets
 from .._types import Message, TextGenerationRequest, TextInput
 from .._verify_core import DEFAULT_ATTEMPTS, run_verify
 from ._registry import Registry
 
 __all__ = [
+    "add_source",
     "browse_models",
     "check_target",
     "error_body",
@@ -180,3 +182,22 @@ def verify_target(
     body["attempts"] = [_attempt_dict(a) for a in result.attempts]
     body["target_id"] = target_id
     return body
+
+
+def add_source(registry: Registry, body: dict[str, Any]) -> dict[str, Any]:
+    """Load a key file by filesystem path, server-side. The browser only
+    ever sends the path; the keys are read and held in this process."""
+    path = body.get("path")
+    if not path or not isinstance(path, str) or path.strip() in ("", "-"):
+        return {"error": {"code": "bad_request", "message": "a file path is required"}}
+    try:
+        targets, warnings = load_targets(path.strip())
+    except SourceError as error:
+        return {"error": {"code": "bad_source", "message": str(error)}}
+    try:
+        registry.add_targets(targets)
+    except KeyCallError as error:
+        return error_body(error)
+    result = list_targets(registry)
+    result["warnings"] = [w.message for w in warnings]
+    return result

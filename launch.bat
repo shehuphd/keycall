@@ -40,10 +40,9 @@ if "%SOURCE%"=="" (
     if exist internal\keycall-test-keys.toml set "SOURCE=internal\keycall-test-keys.toml"
 )
 if "%SOURCE%"=="" (
-    echo No key source found. Copy keycall-test-keys.example.toml to
-    echo keycall-keys.toml, add your keys, then rerun ^(or pass a path:
-    echo launch.bat path\to\keys.toml^).
-    exit /b 1
+    rem No key file found - the viewer opens with a prompt to load one.
+    .venv\Scripts\python.exe -m keycall._cli view
+    exit /b %errorlevel%
 )
 
 .venv\Scripts\python.exe -m keycall._cli view --source "%SOURCE%"

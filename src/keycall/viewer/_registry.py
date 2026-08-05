@@ -44,15 +44,31 @@ class Registry:
     def __init__(self, targets: list[Target], *, httpx_transport=None) -> None:
         self._lock = threading.Lock()
         self._entries: dict[int, _Entry] = {}
-        for index, target in enumerate(targets):
-            client = KeyCall(
-                provider=target.provider,
-                api_key=target.key,
-                protocol=target.protocol,
-                base_url=target.base_url,
-                httpx_transport=httpx_transport,
+        self._next_id = 0
+        self._httpx_transport = httpx_transport
+        self.add_targets(targets)
+
+    def add_targets(self, targets: list[Target]) -> None:
+        """Open a client per target and register it. Raises KeyCallError if
+        a target fails resolution (unknown provider etc.) — nothing is
+        partially added in that case because we resolve all before adding."""
+        clients = [
+            (
+                target,
+                KeyCall(
+                    provider=target.provider,
+                    api_key=target.key,
+                    protocol=target.protocol,
+                    base_url=target.base_url,
+                    httpx_transport=self._httpx_transport,
+                ),
             )
-            self._entries[index] = _Entry(target=target, client=client)
+            for target in targets
+        ]
+        with self._lock:
+            for target, client in clients:
+                self._entries[self._next_id] = _Entry(target=target, client=client)
+                self._next_id += 1
 
     def views(self) -> list[TargetView]:
         return [

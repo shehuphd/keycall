@@ -92,21 +92,73 @@ document.querySelectorAll("#tabs button").forEach((btn) => {
 
 // --- boot -------------------------------------------------------------------
 
-async function boot() {
-  const health = await api("/api/health");
-  el("health").textContent = `keycall ${health.version} · ${health.targets} target(s)`;
+function showFatal(message) {
+  const box = el("fatal");
+  box.textContent = message;
+  box.classList.remove("hidden");
+  document.querySelector("main").classList.add("hidden");
+  el("tabs").classList.add("hidden");
+  el("source-panel").classList.add("hidden");
+}
 
+function toggleEmptyState(isEmpty) {
+  el("source-panel").classList.toggle("hidden", !isEmpty);
+  document.querySelector("main").classList.toggle("hidden", isEmpty);
+  el("tabs").classList.toggle("hidden", isEmpty);
+}
+
+async function refreshTargets() {
   const data = await api("/api/targets");
+  if (data.error) {
+    showFatal(`${data.error.code}: ${data.error.message}`);
+    return;
+  }
   TARGETS = data.targets || [];
-
+  const version = el("health").textContent.split(" ")[1] || "";
+  el("health").textContent = `keycall ${version} · ${TARGETS.length} target(s)`;
   renderDashboard();
   fillTargetSelects();
-  attachSort(el("dashboard-table"));
-  attachSort(el("models-table"));
+  toggleEmptyState(TARGETS.length === 0);
   if (TARGETS.length) {
     await loadModels();          // fills the cache…
     await loadPlaygroundModels(); // …which this then reuses instantly
   }
+}
+
+el("source-load").addEventListener("click", async () => {
+  const path = el("source-path").value.trim();
+  const status = el("source-status");
+  if (!path) {
+    status.textContent = "enter a file path first";
+    return;
+  }
+  status.textContent = "loading…";
+  const data = await api("/api/source", { method: "POST", body: { path } });
+  if (data.error) {
+    status.textContent = `${data.error.code}: ${data.error.message}`;
+    return;
+  }
+  status.textContent = "";
+  (data.warnings || []).forEach((w) => console.warn("keycall:", w));
+  await refreshTargets();
+});
+
+async function boot() {
+  const health = await api("/api/health");
+  if (health.error) {
+    // Most likely: this tab has no token (stale URL or restarted server).
+    showFatal(
+      "Not authorized. Open the viewer with the exact URL keycall printed " +
+      "to the terminal — it carries the required access token. If the " +
+      "viewer was restarted, the old tab's token is no longer valid."
+    );
+    return;
+  }
+  el("health").textContent = `keycall ${health.version} · ${health.targets} target(s)`;
+
+  attachSort(el("dashboard-table"));
+  attachSort(el("models-table"));
+  await refreshTargets();
 }
 
 // --- dashboard --------------------------------------------------------------

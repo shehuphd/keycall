@@ -29,6 +29,10 @@ Nothing yet.
   viewer startup from a fresh clone on any OS — path-independent, resolves the
   interpreter explicitly, validates or rebuilds the venv, and locates the key
   file.
+- **Guided empty and error states in the viewer**: launching with no source
+  opens a load-your-key-file panel (`POST /api/source` reads the file
+  server-side; keys still never enter the browser), and an expired or missing
+  token renders a clear explanation instead of a broken page.
 - **Local web viewer** (`keycall view --source ./keys.toml`): dashboard of
   loaded targets with live key checks, model catalog browser with category
   filters, playground for real generation calls (including web search with

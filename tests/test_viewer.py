@@ -254,3 +254,50 @@ def test_concurrent_browse_models_single_flight():
         assert all("models" in r for r in results)
     finally:
         reg.close()
+
+
+def test_empty_registry_then_add_source(tmp_path):
+    """Viewer can start with zero targets; a source loads via the API."""
+    from keycall.viewer._api import add_source
+
+    reg = Registry([], httpx_transport=httpx.MockTransport(openai_handler))
+    try:
+        assert list_targets(reg)["targets"] == []
+
+        keyfile = tmp_path / "keys.toml"
+        keyfile.write_text(
+            f'[[targets]]\nprovider = "openai"\nkey = "{CANARY}"\nname = "added"\n',
+            encoding="utf-8",
+        )
+        body = add_source(reg, {"path": str(keyfile)})
+        assert "error" not in body
+        assert [t["name"] for t in body["targets"]] == ["added"]
+        assert CANARY not in json.dumps(body)
+    finally:
+        reg.close()
+
+
+def test_add_source_rejects_bad_input(tmp_path):
+    from keycall.viewer._api import add_source
+
+    reg = Registry([], httpx_transport=httpx.MockTransport(openai_handler))
+    try:
+        assert add_source(reg, {})["error"]["code"] == "bad_request"
+        assert add_source(reg, {"path": "-"})["error"]["code"] == "bad_request"
+        assert add_source(reg, {"path": "/nonexistent.toml"})["error"]["code"] == "bad_source"
+    finally:
+        reg.close()
+
+
+def test_add_source_over_http_token_gated(server, tmp_path):
+    base, token = server
+    keyfile = tmp_path / "keys.toml"
+    keyfile.write_text(
+        f'[[targets]]\nprovider = "openai"\nkey = "{CANARY}-3"\nname = "http-added"\n',
+        encoding="utf-8",
+    )
+    status, _ = _post(f"{base}/api/source", {"path": str(keyfile)})  # no token
+    assert status == 403
+    status, body = _post(f"{base}/api/source", {"path": str(keyfile)}, token=token)
+    assert status == 200
+    assert any(t["name"] == "http-added" for t in body["targets"])

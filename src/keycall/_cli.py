@@ -105,19 +105,22 @@ def _run_verify(args: argparse.Namespace) -> int:
 
 
 def _run_view(args: argparse.Namespace) -> int:
-    try:
-        targets, warnings = load_targets(
-            args.source or "-",
-            provider=args.provider,
-            protocol=args.protocol,
-            base_url=args.base_url,
-        )
-    except SourceError as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 2
-
-    for warning in warnings:
-        print(f"warning: {warning.message}", file=sys.stderr)
+    if args.source:
+        try:
+            targets, warnings = load_targets(
+                args.source,
+                provider=args.provider,
+                protocol=args.protocol,
+                base_url=args.base_url,
+            )
+        except SourceError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
+        for warning in warnings:
+            print(f"warning: {warning.message}", file=sys.stderr)
+    else:
+        # No source: start empty — the viewer prompts for a key file.
+        targets = []
 
     try:
         from .viewer import run as run_viewer

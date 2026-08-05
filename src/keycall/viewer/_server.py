@@ -7,6 +7,7 @@ Routes (all under the base "/"):
   GET  /api/health               {"status":"ok","version":...,"targets":N}
   GET  /api/targets              keyless list of loaded targets
   GET  /api/models?target=&category=&refresh=   list/filter a target's models
+  POST /api/source               {path} -> load a key file server-side
   POST /api/verify               {target, generate, attempts} -> VerifyResult
   POST /api/generate             {target, model, prompt, ...} -> InvocationResult
 
@@ -159,6 +160,11 @@ class _Handler(BaseHTTPRequestHandler):
         if body is None:
             self._send_json({"error": {"code": "bad_request", "message": "invalid JSON body"}}, 400)
             return
+
+        if route == "/api/source":
+            self._send_json(_api.add_source(self._registry, body))
+            return
+
         target_id = body.get("target")
         if not isinstance(target_id, int):
             self._send_json({"error": {"code": "bad_request", "message": "target required"}}, 400)
