@@ -10,7 +10,15 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "AGPL-3.0-or-later"
 authors = [{ name = "Mo Shehu" }]
-keywords = ["llm", "api-keys", "openai", "anthropic", "gemini", "model-picker"]
+keywords = [
+    "llm",
+    "api-keys",
+    "api-key-validation",
+    "model-picker",
+    "openai",
+    "anthropic",
+    "gemini",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -20,6 +28,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Environment :: Console",
 ]
 dependencies = [
     "httpx>=0.27",
@@ -33,6 +44,10 @@ dev = ["pytest>=8", "mypy>=1.10", "ruff>=0.5", "traceact>=0.13"]
 
 [project.urls]
 Homepage = "https://github.com/shehuphd/keycall"
+Documentation = "https://github.com/shehuphd/keycall/blob/main/USAGE.md"
+Changelog = "https://github.com/shehuphd/keycall/blob/main/CHANGELOG.md"
+Issues = "https://github.com/shehuphd/keycall/issues"
+Source = "https://github.com/shehuphd/keycall"
 
 [project.scripts]
 keycall = "keycall._cli:main"

@@ -82,6 +82,12 @@ See `keycall-test-keys.example.toml` for the format and
 [USAGE.md](USAGE.md#the-verify-cli) for the full reference. Keys never appear
 in output, and KeyCall never writes to or deletes your credential file.
 
+## Installation
+
+```bash
+pip install keycall
+```
+
 ## Development
 
 ```bash
