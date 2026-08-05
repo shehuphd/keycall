@@ -120,11 +120,34 @@ jobs:
           name: dist
           path: dist/
 
+      - name: Extract release notes from CHANGELOG.md
+        # Release notes are the tag's CHANGELOG.md section verbatim, not a
+        # second hand-written copy. Keeps one source of truth.
+        run: |
+          python - <<'EOF'
+          import os, re
+
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+
+          pattern = rf"^## \[{re.escape(version)}\].*?\n(.*?)(?=\n## \[|\n\[[\w.]+\]: |\Z)"
+          match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
+          if not match:
+              raise SystemExit(f"no CHANGELOG.md section found for version {version}")
+
+          body = match.group(1).strip()
+          repo = os.environ["GITHUB_REPOSITORY"]
+          body += f"\n\nFull usage docs: [USAGE.md](https://github.com/{repo}/blob/main/USAGE.md)"
+
+          with open("release-notes.md", "w", encoding="utf-8") as f:
+              f.write(body)
+          EOF
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
-            --notes "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)." \
+            --notes-file release-notes.md \
             dist/*
