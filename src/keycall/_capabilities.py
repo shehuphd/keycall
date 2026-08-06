@@ -9,8 +9,16 @@ unsure, leave the model out and let the provider's own 400 answer.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
-__all__ = ["rejects_sampling_params"]
+from ._types import Message
+
+__all__ = [
+    "JSON_SCHEMA_COMPAT_PROVIDERS",
+    "SCHEMA_ENFORCING_PROVIDERS",
+    "mentions_json",
+    "rejects_sampling_params",
+]
 
 # Model families whose APIs reject temperature/top_p outright.
 # OpenAI reasoning families are documented: o-series and gpt-5 accept only
@@ -42,3 +50,36 @@ def rejects_sampling_params(model_id: str) -> bool:
 # section 9: capabilities must be declared or verified, never inferred from
 # the protocol label).
 WEB_SEARCH_PROVIDERS = frozenset({"openai", "anthropic", "gemini", "perplexity"})
+
+# Structured-output (response_schema) enforcement, per provider, not per
+# protocol. OpenAI, Anthropic, and Gemini each have their own dedicated
+# adapter with a bespoke enforced mechanism (json_schema text.format,
+# forced tool_choice, and responseSchema respectively) and always enforce.
+# Within the OpenAI-compatible protocol family, capability genuinely
+# differs by provider — live-verified 2026-08-06: Moonshot and Perplexity
+# both accept response_format={"type":"json_schema",...} and return
+# schema-conformant JSON; DeepSeek returns 400 "This response_format type
+# is unavailable now" for the identical request and only supports the
+# generic response_format={"type":"json_object"} (valid JSON, any shape).
+# A provider absent from this set — DeepSeek, or any custom
+# OpenAI-compatible target we've never tested — falls back to json_object
+# with a result warning that the schema was not enforced, rather than
+# assuming it works and finding out from a live 400.
+JSON_SCHEMA_COMPAT_PROVIDERS = frozenset({"moonshot", "perplexity"})
+SCHEMA_ENFORCING_PROVIDERS = frozenset({"openai", "anthropic", "gemini"}) | JSON_SCHEMA_COMPAT_PROVIDERS
+
+
+def mentions_json(messages: Sequence[Message]) -> bool:
+    """Whether the literal word 'json' (any case) appears anywhere in a
+    request's messages. DeepSeek hard-requires this for its json_object
+    response_format and 400s otherwise (live-verified 2026-08-06); OpenAI's
+    own docs recommend the same for json_object mode generally. Shared
+    between the compat adapter (decides whether to inject a JSON
+    instruction) and the client (decides whether to warn that it did).
+    """
+    for message in messages:
+        for part in message.content:
+            text = getattr(part, "text", None)
+            if isinstance(text, str) and "json" in text.lower():
+                return True
+    return False

@@ -69,6 +69,15 @@ class OpenAIAdapter(ProviderAdapter):
         body.update(self.sampling_fields(request))
         if request.web_search:
             body["tools"] = [{"type": "web_search"}]
+        if request.response_schema is not None:
+            body["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "keycall_response",
+                    "schema": dict(request.response_schema),
+                    "strict": True,
+                }
+            }
         return RequestSpec(method=op["method"], path=op["path"], json_body=body)
 
     def parse_generation_response(

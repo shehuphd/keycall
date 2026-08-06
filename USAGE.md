@@ -177,6 +177,55 @@ network call rather than silently ignoring the request.
 normalized across all four provider response shapes. Fields the provider
 didn't supply are `None`.
 
+## Structured output
+
+```python
+schema = {
+    "type": "object",
+    "properties": {"name": {"type": "string"}, "version": {"type": "string"}},
+    "required": ["name", "version"],
+    "additionalProperties": False,   # required by OpenAI's strict mode — see below
+}
+
+result = client.generate_text(
+    model="gpt-4o-mini",
+    messages=[Message(role="user", content=[TextInput(text="Name and version, as JSON.")])],
+    response_schema=schema,
+)
+
+import json
+parsed = json.loads(result.text)   # result.text is the JSON string on every provider
+```
+
+| Provider | Mechanism | Enforced? |
+|---|---|---|
+| OpenAI | `text.format={"type":"json_schema",...,"strict":true}` (Responses API) | yes |
+| Anthropic | forces a single synthetic tool call, reads its input back | yes |
+| Gemini | `generationConfig.responseSchema` | yes |
+| Moonshot | `response_format={"type":"json_schema",...}` | yes |
+| Perplexity | `response_format={"type":"json_schema",...}` | yes |
+| DeepSeek | falls back to `response_format={"type":"json_object"}` | no — valid JSON guaranteed, schema conformance is not |
+| Custom OpenAI-compatible targets | same fallback as DeepSeek, since capability is unverified | no |
+
+On a non-enforcing provider, `result.warnings` explains that the schema
+wasn't enforced, validate client-side there rather than trusting the shape.
+
+Two provider requirements worth knowing before writing a schema:
+
+- **OpenAI's strict mode requires `additionalProperties: false`** on every
+  object level of the schema, or the request fails with a 400. Write it in
+  from the start rather than discovering it from an error.
+- **DeepSeek requires the word "json" somewhere in the prompt** for its
+  fallback mode, or it 400s. KeyCall detects this and inserts a short system
+  instruction automatically when needed — you'll see it noted in
+  `result.warnings`, not applied silently.
+
+`response_schema` and `web_search` cannot be combined on Anthropic (forcing
+the structured-output tool prevents the model calling a different one in the
+same turn); combining them raises `UNSUPPORTED_OPERATION` before any network
+call. The same combination on Gemini is untested and not gated — KeyCall
+passes it through rather than guessing at behavior it hasn't verified.
+
 ## Error handling
 
 Every failure raises `KeyCallError` with a typed `code`:

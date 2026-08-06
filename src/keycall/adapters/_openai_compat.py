@@ -72,6 +72,41 @@ class OpenAICompatibleAdapter(ProviderAdapter):
         if request.max_output_tokens is not None:
             body["max_tokens"] = request.max_output_tokens
         body.update(self.sampling_fields(request))
+        if request.response_schema is not None:
+            from .._capabilities import JSON_SCHEMA_COMPAT_PROVIDERS
+
+            if self.resolved.provider in JSON_SCHEMA_COMPAT_PROVIDERS:
+                body["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "keycall_response",
+                        "schema": dict(request.response_schema),
+                        "strict": True,
+                    },
+                }
+            else:
+                # Not every OpenAI-compatible endpoint supports strict
+                # json_schema (DeepSeek returns 400 for it, live-verified
+                # 2026-08-06); json_object is the broadly-supported floor.
+                # The caller finds out via a result warning, not a guess
+                # that later 400s on them.
+                body["response_format"] = {"type": "json_object"}
+                # DeepSeek hard-requires the literal word "json" to appear
+                # in the prompt for this response_format or it 400s outright
+                # (live-verified 2026-08-06: "Prompt must contain the word
+                # 'json' in some form..."). OpenAI's own docs recommend the
+                # same for json_object mode generally (unenforced, quality
+                # risk rather than a hard error there) — applying the same
+                # defensive instruction to any unverified custom target
+                # covers that case too. Inserted first, conventional
+                # position for a system instruction; a matching result
+                # warning is added in _client.py so this isn't silent.
+                from .._capabilities import mentions_json
+
+                if not mentions_json(request.messages):
+                    messages.insert(
+                        0, {"role": "system", "content": "Respond only with a single valid JSON object."}
+                    )
         return RequestSpec(method=op["method"], path=op["path"], json_body=body)
 
     def parse_generation_response(
@@ -113,6 +148,20 @@ class OpenAICompatibleAdapter(ProviderAdapter):
                 message = choice.get("message")
                 if isinstance(message, dict) and message.get("content"):
                     parts.append(TextOutput(text=str(message["content"])))
+                elif isinstance(message, dict) and message.get("reasoning_content"):
+                    # Reasoning-capable models (Moonshot/Kimi) spend part of
+                    # max_output_tokens on a visible reasoning trace before
+                    # the final answer; too small a budget truncates before
+                    # any content is emitted at all, leaving reasoning_content
+                    # populated but content empty (live-verified 2026-08-06:
+                    # reproduced at max_output_tokens=100, resolved at 200).
+                    # Silent empty output here would be exactly the kind of
+                    # unexplained failure this whole codebase avoids.
+                    warnings.append(
+                        "provider produced a reasoning trace but no final answer — "
+                        "max_output_tokens was likely too small for this model to "
+                        "finish reasoning and still emit content; try a larger value"
+                    )
 
         usage_raw = payload.get("usage")
         if isinstance(usage_raw, dict):

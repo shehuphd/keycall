@@ -7,10 +7,10 @@ sequences are accepted as any Sequence and normalized to tuples internally.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from ._enums import ModelCategory, Operation
 
@@ -206,6 +206,14 @@ class TextGenerationRequest:
     (DeepSeek, Moonshot, custom targets) raise UNSUPPORTED_OPERATION rather
     than silently ignoring the request. Perplexity's Sonar always searches
     regardless of this flag; setting it False there is a no-op, warned."""
+    response_schema: Mapping[str, Any] | None = None
+    """A JSON Schema object the response must conform to. Enforced
+    provider-side where the provider supports it (OpenAI, Anthropic,
+    Gemini, Moonshot, Perplexity — see _capabilities.SCHEMA_ENFORCING_PROVIDERS);
+    elsewhere KeyCall requests generic valid-JSON mode instead and adds a
+    result warning, rather than claiming enforcement it can't deliver.
+    result.text carries the JSON as a string on every provider, so callers
+    parse the same way regardless of which mechanism produced it."""
 
     def __post_init__(self) -> None:
         if not self.model or not isinstance(self.model, str):
@@ -220,6 +228,10 @@ class TextGenerationRequest:
                     f"(got {type(message).__name__})"
                 )
         object.__setattr__(self, "messages", msgs)
+        if self.response_schema is not None and (
+            not isinstance(self.response_schema, Mapping) or "type" not in self.response_schema
+        ):
+            raise ValueError("response_schema must be a JSON Schema object with a 'type' key")
         if self.max_output_tokens is not None and self.max_output_tokens < 1:
             raise ValueError("max_output_tokens must be positive")
         if self.temperature is not None and not 0.0 <= self.temperature <= 2.0:

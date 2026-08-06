@@ -7,7 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Structured output** (`response_schema=<JSON Schema>` on `generate_text()`
+  and `TextGenerationRequest`): enforced provider-side on OpenAI (Responses
+  API `text.format`), Anthropic (forced single-tool `tool_choice`), Gemini
+  (`responseSchema`), and the compat-family providers confirmed to support
+  strict `response_format: json_schema` (Moonshot, Perplexity). Providers
+  without enforcement (DeepSeek, unverified custom targets) fall back to
+  guaranteed-valid-JSON mode with a result warning rather than a claimed
+  guarantee. `result.text` is the JSON string on every provider and
+  mechanism, so callers parse identically regardless of provider.
+- DeepSeek's undocumented hard requirement that the prompt contain the
+  literal word "json" for its `json_object` mode (confirmed live: a 400
+  otherwise) is detected and satisfied automatically with an injected system
+  instruction; always surfaced via a result warning, never silent.
+- A reasoning-capable compat model (Moonshot/Kimi) exhausting
+  `max_output_tokens` on its reasoning trace before emitting any final
+  content now produces a result warning naming the likely cause, instead of
+  a silent empty `result.text`.
+
+### Fixed
+
+- Nothing — the previously-suspected "DeepSeek/Moonshot silently ignore
+  `web_search=True`" gap does not exist; it was already correctly gated
+  (`_base.py`'s `validate_generation_request`) and tested. Verified live and
+  via the existing test suite before starting this work, no code change
+  needed.
+
+### Known limitations (in addition to 0.2.0's)
+
+- Anthropic cannot combine `web_search=True` with `response_schema` in one
+  call (forced tool_choice is mechanically incompatible with also invoking
+  a second server-side tool); KeyCall raises before any network call.
+- Gemini's equivalent combination is not gated — no live-verified evidence
+  either way that Gemini itself rejects it, so it is passed through rather
+  than guessed at.
+- OpenAI's strict `json_schema` mode requires `additionalProperties: false`
+  at every object level of the caller's schema, or the request 400s. This is
+  an OpenAI requirement; KeyCall does not rewrite caller-supplied schemas to
+  add it.
 
 ## [0.2.0] — 2026-08-05
 

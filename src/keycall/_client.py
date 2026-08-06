@@ -9,7 +9,8 @@ layer ever reveals it again.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import dataclasses
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
 
 import httpx
 
-from . import _cache, _tracing
+from . import _cache, _capabilities, _tracing
 from ._cache import CachedModels
 from ._credential import Credential
 from ._enums import ModelCategory, ProviderProtocol
@@ -52,6 +53,30 @@ def _validate_categories(
     if not validated:
         return _DEFAULT_CATEGORIES
     return frozenset(validated)
+
+
+def _with_schema_warning(
+    invocation: InvocationResult, request: TextGenerationRequest, provider: str
+) -> InvocationResult:
+    """Append a warning when response_schema was requested but this
+    provider only guarantees valid JSON, not schema conformance (PRD's
+    'never claim enforcement it can't deliver' — same posture as the
+    unreported-usage and stale-catalog warnings elsewhere)."""
+    if request.response_schema is None or provider in _capabilities.SCHEMA_ENFORCING_PROVIDERS:
+        return invocation
+    warnings = list(invocation.warnings)
+    warnings.append(
+        f"provider {provider!r} does not enforce response_schema; the response "
+        "is guaranteed valid JSON but not guaranteed to match the schema — "
+        "validate client-side"
+    )
+    if not _capabilities.mentions_json(request.messages):
+        warnings.append(
+            "keycall added a 'respond only with JSON' system instruction "
+            f"because {provider!r} requires the word 'json' to appear in the "
+            "prompt for its JSON response mode"
+        )
+    return dataclasses.replace(invocation, warnings=tuple(warnings))
 
 
 def _filter_models(
@@ -293,6 +318,7 @@ class KeyCall(_BaseClient):
                 round_trip_duration_ms=result.duration_ms,
                 model=request.model,
             )
+            invocation = _with_schema_warning(invocation, request, self.provider)
             trace.event(
                 "model",
                 operation="text_generation",
@@ -316,6 +342,7 @@ class KeyCall(_BaseClient):
         temperature: float | None = None,
         top_p: float | None = None,
         web_search: bool = False,
+        response_schema: Mapping[str, Any] | None = None,
     ) -> InvocationResult:
         return self.invoke(
             TextGenerationRequest(
@@ -325,6 +352,7 @@ class KeyCall(_BaseClient):
                 temperature=temperature,
                 top_p=top_p,
                 web_search=web_search,
+                response_schema=response_schema,
             )
         )
 
@@ -464,6 +492,7 @@ class AsyncKeyCall(_BaseClient):
                 round_trip_duration_ms=result.duration_ms,
                 model=request.model,
             )
+            invocation = _with_schema_warning(invocation, request, self.provider)
             trace.event(
                 "model",
                 operation="text_generation",
@@ -487,6 +516,7 @@ class AsyncKeyCall(_BaseClient):
         temperature: float | None = None,
         top_p: float | None = None,
         web_search: bool = False,
+        response_schema: Mapping[str, Any] | None = None,
     ) -> InvocationResult:
         return await self.invoke(
             TextGenerationRequest(
@@ -496,5 +526,6 @@ class AsyncKeyCall(_BaseClient):
                 temperature=temperature,
                 top_p=top_p,
                 web_search=web_search,
+                response_schema=response_schema,
             )
         )

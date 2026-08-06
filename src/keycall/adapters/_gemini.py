@@ -151,6 +151,12 @@ class GeminiAdapter(ProviderAdapter):
             generation_config["temperature"] = request.temperature
         if request.top_p is not None:
             generation_config["topP"] = request.top_p
+        if request.response_schema is not None:
+            # Live-verified 2026-08-06: standard lowercase JSON Schema type
+            # names ("object", "string", ...) work directly, no dialect
+            # conversion to Gemini's uppercase OpenAPI-subset spelling needed.
+            generation_config["responseMimeType"] = "application/json"
+            generation_config["responseSchema"] = dict(request.response_schema)
         if generation_config:
             body["generationConfig"] = generation_config
         if request.web_search:

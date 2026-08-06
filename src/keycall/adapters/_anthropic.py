@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -25,6 +26,15 @@ from ._base import ProviderAdapter
 # caller didn't specify one.
 _DEFAULT_MAX_OUTPUT_TOKENS = 4096
 _PAGE_LIMIT = "1000"
+
+# Structured output has no native response-format API on Anthropic: it's
+# implemented by forcing a single synthetic tool whose input_schema is the
+# caller's response_schema, then reading that tool call's input back as
+# the answer (live-verified 2026-08-06). This name only needs to be
+# distinguishable from a real tool the caller might add once general tool
+# calling exists — it's never sent to or interpreted by the model as
+# anything but an arbitrary tool name.
+_STRUCTURED_OUTPUT_TOOL_NAME = "keycall_response"
 
 
 class AnthropicAdapter(ProviderAdapter):
@@ -98,6 +108,18 @@ class AnthropicAdapter(ProviderAdapter):
         body.update(self.sampling_fields(request))
         if request.web_search:
             body["tools"] = [{"type": "web_search_20250305", "name": "web_search"}]
+        if request.response_schema is not None:
+            # validate_generation_request already rejects this combined
+            # with web_search, so no risk of overwriting the tools list set
+            # above.
+            body["tools"] = [
+                {
+                    "name": _STRUCTURED_OUTPUT_TOOL_NAME,
+                    "description": "Return the structured response.",
+                    "input_schema": dict(request.response_schema),
+                }
+            ]
+            body["tool_choice"] = {"type": "tool", "name": _STRUCTURED_OUTPUT_TOOL_NAME}
         return RequestSpec(method=op["method"], path=op["path"], json_body=body)
 
     def parse_generation_response(
@@ -133,6 +155,12 @@ class AnthropicAdapter(ProviderAdapter):
                                 cited_text=note.get("cited_text"),
                             )
                         )
+            elif block_type == "tool_use" and block.get("name") == _STRUCTURED_OUTPUT_TOOL_NAME:
+                # The forced structured-output tool: its input *is* the
+                # answer. Serialize back to a JSON string so result.text
+                # carries JSON-as-a-string uniformly across every provider,
+                # regardless of which mechanism produced it.
+                parts.append(TextOutput(text=json.dumps(block.get("input", {}))))
             elif block_type in ("thinking", "server_tool_use", "web_search_tool_result"):
                 continue  # traces of server-side work, not output content
             else:

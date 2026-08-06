@@ -122,6 +122,25 @@ class ProviderAdapter(ABC):
                     provider=self.resolved.provider,
                     operation=Operation.TEXT_GENERATION.value,
                 )
+        if (
+            request.web_search
+            and request.response_schema is not None
+            and self.resolved.provider == "anthropic"
+        ):
+            # Not a guess: Anthropic's tool_choice={"type":"tool",...}, the
+            # only mechanism KeyCall has for schema enforcement here, forces
+            # the model to call exactly that tool and nothing else in the
+            # same turn — mechanically incompatible with also invoking the
+            # server-side web_search tool. This is a real API constraint,
+            # not a live-probed guess.
+            raise KeyCallError(
+                "anthropic cannot combine web_search with response_schema: "
+                "forcing the structured-output tool prevents the model "
+                "from also calling web_search in the same turn",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.resolved.provider,
+                operation=Operation.TEXT_GENERATION.value,
+            )
 
     @staticmethod
     def sampling_fields(request: TextGenerationRequest) -> dict[str, float]:
