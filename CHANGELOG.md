@@ -5,6 +5,13 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-08-08
+
+### Changed
+
+- Code comments and docstrings state their constraints directly instead of
+  citing internal design documents that are not part of the repository.
+
 ## [0.4.0] — 2026-08-08
 
 ### Added
