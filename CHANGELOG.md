@@ -5,6 +5,20 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `VerifyResult` records a digest of the raw model-list snapshot
+  (`model_list_digest`) and the selection procedure version
+  (`selection_rule_version`); each `ModelAttempt` records the
+  classification evidence that made the model a candidate
+  (`classification_source`). A verify report is now reconstructable
+  against the provider surface that produced it.
+- ARCHITECTURE.md: layer diagram, credential-boundary contract, and
+  per-component contracts.
+- CI test matrix includes Python 3.14.
+
 ## [0.3.1] — 2026-08-08
 
 ### Fixed

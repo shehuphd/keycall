@@ -130,3 +130,66 @@ def test_run_verify_records_raw_and_filtered_positions():
     attempt = result.attempts[0]
     assert attempt.position == 0
     assert attempt.raw_position == 1
+
+
+def test_run_verify_records_digest_rule_version_and_evidence():
+    from keycall import KeyCall
+    from keycall._sources import Target
+    from keycall._verify_core import SELECTION_RULE_VERSION, run_verify
+
+    def make_handler(model_ids):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v1/models":
+                return httpx.Response(200, json={"data": [{"id": m} for m in model_ids]})
+            return httpx.Response(
+                200,
+                json={
+                    "model": model_ids[-1],
+                    "status": "completed",
+                    "output": [
+                        {"type": "message", "content": [{"type": "output_text", "text": "ok"}]}
+                    ],
+                    "usage": {"input_tokens": 5, "output_tokens": 1, "total_tokens": 6},
+                },
+            )
+
+        return handler
+
+    def verify_with(model_ids):
+        client = KeyCall(
+            provider="openai",
+            api_key=CANARY,
+            httpx_transport=httpx.MockTransport(make_handler(model_ids)),
+        )
+        result = run_verify(Target(provider="openai", key=CANARY), generate=True, client=client)
+        client.close()
+        return result
+
+    first = verify_with(["text-embedding-3-small", "gpt-4o-mini"])
+    assert first.selection_rule_version == SELECTION_RULE_VERSION
+    assert first.model_list_digest is not None
+    assert len(first.model_list_digest) == 16
+    assert first.attempts[0].classification_source == "keycall_rule"
+
+    # Same advertised surface, same digest; a changed surface changes it.
+    assert verify_with(["text-embedding-3-small", "gpt-4o-mini"]).model_list_digest == (
+        first.model_list_digest
+    )
+    assert verify_with(["gpt-4o-mini"]).model_list_digest != first.model_list_digest
+
+
+def test_run_verify_list_failure_has_no_digest():
+    from keycall import KeyCall
+    from keycall._sources import Target
+    from keycall._verify_core import run_verify
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "bad key"}})
+
+    client = KeyCall(
+        provider="openai", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    result = run_verify(Target(provider="openai", key=CANARY), generate=True, client=client)
+    client.close()
+    assert not result.listed_ok
+    assert result.model_list_digest is None

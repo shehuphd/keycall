@@ -24,6 +24,7 @@ keycall-test-keys.*
 *.md
 !README.md
 !USAGE.md
+!ARCHITECTURE.md
 !CHANGELOG.md
 !CONTRIBUTING.md
 

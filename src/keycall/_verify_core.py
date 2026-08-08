@@ -8,6 +8,7 @@ terminal, the viewer renders it to JSON/SSE. One walk, two presentations.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from ._client import KeyCall
@@ -22,6 +23,20 @@ __all__ = ["ModelAttempt", "VerifyResult", "run_verify"]
 DEFAULT_GENERATION_PROMPT = "Reply with the single word: ok"
 DEFAULT_GENERATION_MAX_TOKENS = 16
 DEFAULT_ATTEMPTS = 8
+
+# Bumped whenever the candidate-selection procedure changes, so an old
+# report can be read against the rule that produced it. "1" selected the
+# first filtered candidate and made exactly one attempt; "2" is the
+# bounded, fully-reported walk (PRD 14.3).
+SELECTION_RULE_VERSION = "2"
+
+
+def _model_list_digest(model_ids: list[str]) -> str:
+    """Safe identity for the raw model-list snapshot: a digest over the
+    ordered provider model IDs. Two runs against the same advertised
+    surface produce the same digest; no credential-derived input."""
+    joined = "\n".join(model_ids).encode("utf-8")
+    return hashlib.sha256(joined).hexdigest()[:16]
 
 # The credential itself is the problem: stop immediately, no other model
 # will fare better with a key the provider has rejected.
@@ -38,6 +53,9 @@ class ModelAttempt:
     # Zero-based index in the provider's raw, unfiltered model list (PRD
     # 14.3 reporting: both positions make a failure reconstructable).
     raw_position: int
+    # Why this model was considered a text-generation candidate:
+    # provider_metadata, keycall_rule, keycall_catalog, or a combination.
+    classification_source: str
     ok: bool
     error_code: str | None = None
     error_message: str | None = None
@@ -58,6 +76,10 @@ class VerifyResult:
     generate_requested: bool = False
     generate_ok: bool = False
     attempts: tuple[ModelAttempt, ...] = ()
+    # Identity of the raw model-list snapshot the walk ran against, and the
+    # version of the selection procedure that produced these attempts.
+    model_list_digest: str | None = None
+    selection_rule_version: str = SELECTION_RULE_VERSION
     # "listed" | "generated" | "no_text_models" | "credential_rejected" |
     # "rate_limited_unverified" | "no_model_invocable" | "list_failed"
     outcome: str = "listed"
@@ -98,6 +120,7 @@ def run_verify(
                 outcome="list_failed",
             )
 
+        digest = _model_list_digest([model.id for model in discovery.models])
         text_models = [
             (raw_position, model)
             for raw_position, model in enumerate(discovery.models)
@@ -109,6 +132,7 @@ def run_verify(
                 provider=client.provider,
                 listed_ok=True,
                 text_model_count=len(text_models),
+                model_list_digest=digest,
                 outcome="listed",
             )
         if not text_models:
@@ -118,6 +142,7 @@ def run_verify(
                 listed_ok=True,
                 text_model_count=0,
                 generate_requested=True,
+                model_list_digest=digest,
                 outcome="no_text_models",
             )
 
@@ -137,6 +162,7 @@ def run_verify(
                         model_id=candidate.id,
                         position=position,
                         raw_position=raw_position,
+                        classification_source=candidate.classification_source,
                         ok=False,
                         error_code=error.code.value,
                         error_message=error.message,
@@ -151,6 +177,7 @@ def run_verify(
                         text_model_count=len(text_models),
                         generate_requested=True,
                         attempts=tuple(collected),
+                        model_list_digest=digest,
                         outcome="credential_rejected",
                     )
                 if error.code is ErrorCode.RATE_LIMITED:
@@ -162,6 +189,7 @@ def run_verify(
                     model_id=candidate.id,
                     position=position,
                     raw_position=raw_position,
+                    classification_source=candidate.classification_source,
                     ok=True,
                     round_trip_duration_ms=result.round_trip_duration_ms,
                     total_tokens=result.usage.total_tokens,
@@ -176,6 +204,7 @@ def run_verify(
                 generate_requested=True,
                 generate_ok=True,
                 attempts=tuple(collected),
+                model_list_digest=digest,
                 outcome="generated",
             )
 
@@ -186,6 +215,7 @@ def run_verify(
             text_model_count=len(text_models),
             generate_requested=True,
             attempts=tuple(collected),
+            model_list_digest=digest,
             outcome="rate_limited_unverified" if rate_limited else "no_model_invocable",
         )
     finally:

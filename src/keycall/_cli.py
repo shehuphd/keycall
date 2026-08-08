@@ -31,7 +31,9 @@ def _render(result: VerifyResult) -> list[str]:
 
     lines.append(
         f"✓ {result.label} ({result.provider}): key accepted, "
-        f"{result.text_model_count} text model(s)"
+        f"{result.text_model_count} text model(s), "
+        f"list digest {result.model_list_digest}, "
+        f"selection rule v{result.selection_rule_version}"
     )
     if not result.generate_requested:
         return lines
