@@ -2,7 +2,7 @@
 
 One consistent interface for validating AI-provider API keys, listing and filtering the models available to them, and making normalized calls, so every product stops rebuilding the same model-picker filters and provider wrappers.
 
-**Status: early release (0.2.0).** Key validation, model listing and filtering,
+**Status: early release.** Key validation, model listing and filtering,
 text generation, native web search with normalized citations, and structured
 JSON output all work and are live-verified against every supported provider.
 Streaming, general tool calling, and non-text modalities are not implemented
