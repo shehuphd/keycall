@@ -10,6 +10,7 @@ Routes (all under the base "/"):
   POST /api/source               {path} -> load a key file server-side
   POST /api/verify               {target, generate, attempts} -> VerifyResult
   POST /api/generate             {target, model, prompt, ...} -> InvocationResult
+  POST /api/generate/stream      same body -> SSE events ending in a result or error
 
 Auth: a token is required on every /api/* request (X-KeyCall-Token header or
 ?token= query param). Unlike TraceAct's opt-in token, it is mandatory here:
@@ -79,6 +80,23 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(payload)
+
+    def _send_sse(self, events: Any) -> None:
+        """Relay JSON events as an SSE stream. HTTP/1.0 semantics: no
+        Content-Length, the connection close delimits the stream. A browser
+        navigating away mid-stream is not an error."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", "default-src 'self'")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        try:
+            for event in events:
+                self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _send_static(self, name: str) -> None:
         safe = os.path.normpath(name).lstrip(os.sep)
@@ -201,6 +219,8 @@ class _Handler(BaseHTTPRequestHandler):
             )
         elif route == "/api/generate":
             self._send_json(_api.generate(self._registry, target_id, body))
+        elif route == "/api/generate/stream":
+            self._send_sse(_api.generate_stream_events(self._registry, target_id, body))
         else:
             self.send_error(404, "Not found")
 

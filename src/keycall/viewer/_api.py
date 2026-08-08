@@ -10,6 +10,7 @@ response encoder); nothing here ever touches `Target.key` or
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterator
 from typing import Any
 
 from .._enums import ModelCategory
@@ -25,6 +26,7 @@ __all__ = [
     "check_target",
     "error_body",
     "generate",
+    "generate_stream_events",
     "list_targets",
     "verify_target",
 ]
@@ -114,42 +116,31 @@ def browse_models(
     return body
 
 
-def generate(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[str, Any]:
-    try:
-        client = registry.client(target_id)
-    except KeyError:
-        return {"error": {"code": "not_found", "message": "unknown target id"}}
-
+def _generation_fields(body: dict[str, Any]) -> dict[str, Any] | None:
+    """Shared request fields for the streamed and non-streamed generate
+    paths, or None when the body is unusable."""
     model = body.get("model")
     prompt = body.get("prompt")
     if not model or not isinstance(model, str):
-        return {"error": {"code": "bad_request", "message": "model is required"}}
+        return None
     if not prompt or not isinstance(prompt, str):
-        return {"error": {"code": "bad_request", "message": "prompt is required"}}
-
+        return None
     messages = []
     system = body.get("system")
     if system:
         messages.append(Message(role="system", content=[TextInput(text=str(system))]))
     messages.append(Message(role="user", content=[TextInput(text=prompt)]))
+    return {
+        "model": model,
+        "messages": messages,
+        "max_output_tokens": body.get("max_output_tokens"),
+        "temperature": body.get("temperature"),
+        "top_p": body.get("top_p"),
+        "web_search": bool(body.get("web_search", False)),
+    }
 
-    try:
-        request = TextGenerationRequest(
-            model=model,
-            messages=messages,
-            max_output_tokens=body.get("max_output_tokens"),
-            temperature=body.get("temperature"),
-            top_p=body.get("top_p"),
-            web_search=bool(body.get("web_search", False)),
-        )
-    except (ValueError, TypeError) as error:
-        return {"error": {"code": "bad_request", "message": str(error)}}
 
-    try:
-        result = client.invoke(request)
-    except KeyCallError as error:
-        return error_body(error)
-
+def _result_dict(result: Any) -> dict[str, Any]:
     return {
         "provider": result.provider,
         "model": result.model,
@@ -162,6 +153,65 @@ def generate(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[s
         "citations": [dataclasses.asdict(c) for c in result.citations],
         "warnings": list(result.warnings),
     }
+
+
+def generate(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    try:
+        client = registry.client(target_id)
+    except KeyError:
+        return {"error": {"code": "not_found", "message": "unknown target id"}}
+
+    fields = _generation_fields(body)
+    if fields is None:
+        return {"error": {"code": "bad_request", "message": "model and prompt are required"}}
+
+    try:
+        request = TextGenerationRequest(**fields)
+    except (ValueError, TypeError) as error:
+        return {"error": {"code": "bad_request", "message": str(error)}}
+
+    try:
+        result = client.invoke(request)
+    except KeyCallError as error:
+        return error_body(error)
+
+    return _result_dict(result)
+
+
+def generate_stream_events(
+    registry: Registry, target_id: int, body: dict[str, Any]
+) -> Iterator[dict[str, Any]]:
+    """Streamed generation as JSON-serializable events, ending with either
+    a full `result` event (same shape as generate()) or an error event.
+    Every failure surfaces as an event so the browser never hangs on a
+    silently dropped stream."""
+    try:
+        client = registry.client(target_id)
+    except KeyError:
+        yield {"error": {"code": "not_found", "message": "unknown target id"}}
+        return
+
+    fields = _generation_fields(body)
+    if fields is None:
+        yield {"error": {"code": "bad_request", "message": "model and prompt are required"}}
+        return
+
+    try:
+        with client.stream_text(**fields) as stream:
+            for event in stream:
+                if event.kind == "text_delta":
+                    yield {"kind": "text_delta", "text": event.text}
+                elif event.kind == "stream_start":
+                    yield {"kind": "stream_start", "model": event.model}
+                elif event.kind == "citation":
+                    yield {"kind": "citation", "citation": dataclasses.asdict(event.citation)}
+                # stream_finish carries nothing the final result event lacks.
+            result = stream.result()
+        yield {"kind": "result", **_result_dict(result)}
+    except (ValueError, TypeError) as error:
+        yield {"error": {"code": "bad_request", "message": str(error)}}
+    except KeyCallError as error:
+        yield error_body(error)
 
 
 def _attempt_dict(attempt: Any) -> dict[str, Any]:

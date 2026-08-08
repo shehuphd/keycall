@@ -7,6 +7,7 @@ place credentials are revealed.
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import Any
@@ -14,6 +15,7 @@ from typing import Any
 from .._enums import Operation
 from .._errors import ErrorCode, KeyCallError
 from .._registry import ResolvedProvider
+from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
     Citation,
@@ -69,8 +71,6 @@ class StreamAssembler(ABC):
         return []
 
     def _parse_data(self, data: str) -> Any:
-        import json
-
         try:
             return json.loads(data)
         except ValueError:
@@ -90,8 +90,6 @@ class StreamAssembler(ABC):
 
     def finalize(self, *, round_trip_duration_ms: float) -> InvocationResult:
         if self.provider_request_id is None and self.resolved.provider_request_id_header:
-            from .._sanitize import safe_request_id
-
             self.provider_request_id = safe_request_id(
                 self.response_headers.get(self.resolved.provider_request_id_header)
             )

@@ -9,6 +9,7 @@ its single entry boundary; only the transport layer ever reveals it again.
 from __future__ import annotations
 
 import dataclasses
+import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from types import TracebackType
@@ -329,10 +330,8 @@ class _StreamCore:
                 operation="text_generation",
             )
         if self._result is None:
-            import time as _time
-
             duration = (
-                (_time.monotonic() - self._started_at) * 1000.0 if self._started_at else 0.0
+                (time.monotonic() - self._started_at) * 1000.0 if self._started_at else 0.0
             )
             invocation = self._assembler.finalize(round_trip_duration_ms=duration)
             self._result = _with_schema_warning(invocation, self._request, self._client.provider)
@@ -345,8 +344,6 @@ class TextStream(_StreamCore):
     the block closes it, even on early break or exception."""
 
     def __enter__(self) -> Self:
-        import time as _time
-
         self._ctx = self._client._transport.stream_request(
             self._spec,
             operation="text_generation",
@@ -355,7 +352,7 @@ class TextStream(_StreamCore):
         headers, events = self._ctx.__enter__()
         self._assembler.response_headers = headers
         self._events = events
-        self._started_at = _time.monotonic()
+        self._started_at = time.monotonic()
         return self
 
     def __exit__(
@@ -383,8 +380,6 @@ class AsyncTextStream(_StreamCore):
     """Async twin of TextStream."""
 
     async def __aenter__(self) -> Self:
-        import time as _time
-
         self._ctx = self._client._transport.stream_request(
             self._spec,
             operation="text_generation",
@@ -393,7 +388,7 @@ class AsyncTextStream(_StreamCore):
         headers, events = await self._ctx.__aenter__()
         self._assembler.response_headers = headers
         self._events = events
-        self._started_at = _time.monotonic()
+        self._started_at = time.monotonic()
         return self
 
     async def __aexit__(

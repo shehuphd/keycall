@@ -32,7 +32,11 @@ _ALL_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 def _credential_variants(value: str) -> tuple[str, ...]:
     """The literal credential plus its common encoded forms: a provider
-    echoing the key back URL- or base64-encoded must still redact."""
+    echoing the key back URL- or base64-encoded must still redact.
+
+    Recomputed on every call deliberately: caching the variants would keep
+    extra encoded copies of the secret resident for the client's lifetime,
+    and scrubbing only runs on error paths, never per token."""
     raw = value.encode("utf-8")
     variants = {
         value,

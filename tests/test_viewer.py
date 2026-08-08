@@ -13,6 +13,7 @@ from keycall.viewer._api import (
     browse_models,
     check_target,
     generate,
+    generate_stream_events,
     list_targets,
     verify_target,
 )
@@ -22,11 +23,44 @@ from keycall.viewer._server import _Server
 CANARY = "sk-canary-viewer-key-do-not-leak"
 
 
+def _sse_body(events) -> bytes:
+    return ("".join(f"data: {json.dumps(e)}\n\n" for e in events)).encode()
+
+
+def _openai_stream_events(include_terminal=True):
+    events = [
+        {"type": "response.created", "response": {"model": "gpt-4o-mini"}},
+        {"type": "response.output_text.delta", "delta": "hel"},
+        {"type": "response.output_text.delta", "delta": "lo"},
+    ]
+    if include_terminal:
+        events.append(
+            {
+                "type": "response.completed",
+                "response": {
+                    "model": "gpt-4o-mini",
+                    "status": "completed",
+                    "output": [
+                        {"type": "message", "content": [{"type": "output_text", "text": "hello"}]}
+                    ],
+                    "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+                },
+            }
+        )
+    return events
+
+
 def openai_handler(request: httpx.Request) -> httpx.Response:
     if request.url.path == "/v1/models":
         return httpx.Response(
             200,
             json={"data": [{"id": "gpt-4o-mini"}, {"id": "text-embedding-3-small"}]},
+        )
+    if request.content and json.loads(request.content).get("stream"):
+        return httpx.Response(
+            200,
+            content=_sse_body(_openai_stream_events()),
+            headers={"content-type": "text/event-stream"},
         )
     return httpx.Response(
         200,
@@ -395,3 +429,116 @@ def test_bad_content_length_rejected(server):
         assert response.status == 400
     finally:
         conn.close()
+
+
+# --- streamed generation ----------------------------------------------------
+
+
+def _post_sse(url, body, token=None):
+    """POST and read the raw SSE response into a list of parsed events."""
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("X-KeyCall-Token", token)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode()
+            status = resp.status
+    except urllib.error.HTTPError as e:
+        return e.code, [json.loads(e.read())]
+    events = [
+        json.loads(frame[len("data:"):])
+        for frame in raw.split("\n\n")
+        if frame.startswith("data:")
+    ]
+    return status, events
+
+
+def test_generate_stream_events_direct():
+    reg = make_registry()
+    events = list(
+        generate_stream_events(reg, 0, {"model": "gpt-4o-mini", "prompt": "hi"})
+    )
+    kinds = [e.get("kind") for e in events]
+    assert kinds == ["stream_start", "text_delta", "text_delta", "result"]
+    assert "".join(e["text"] for e in events if e.get("kind") == "text_delta") == "hello"
+    result = events[-1]
+    assert result["text"] == "hello"
+    assert result["usage"]["total_tokens"] == 5
+    assert CANARY not in json.dumps(events)
+    reg.close()
+
+
+def test_generate_stream_bad_input_yields_single_error():
+    reg = make_registry()
+    assert list(generate_stream_events(reg, 99, {"model": "m", "prompt": "p"})) == [
+        {"error": {"code": "not_found", "message": "unknown target id"}}
+    ]
+    events = list(generate_stream_events(reg, 0, {"prompt": "no model"}))
+    assert events[0]["error"]["code"] == "bad_request"
+    reg.close()
+
+
+def test_stream_endpoint_over_http(server):
+    base, token = server
+    status, events = _post_sse(
+        f"{base}/api/generate/stream",
+        {"target": 0, "model": "gpt-4o-mini", "prompt": "hi"},
+        token=token,
+    )
+    assert status == 200
+    assert [e.get("kind") for e in events] == [
+        "stream_start",
+        "text_delta",
+        "text_delta",
+        "result",
+    ]
+    assert events[-1]["text"] == "hello"
+    assert CANARY not in json.dumps(events)
+
+
+def test_stream_endpoint_requires_token(server):
+    base, _ = server
+    status, events = _post_sse(
+        f"{base}/api/generate/stream",
+        {"target": 0, "model": "gpt-4o-mini", "prompt": "hi"},
+    )
+    assert status == 403
+    assert events[0]["error"]["code"] == "unauthorized"
+
+
+def test_stream_endpoint_truncation_surfaces_error_event():
+    """A provider stream that dies without its terminal event must reach the
+    browser as an error payload, never a hung or silently-closed response."""
+
+    def truncated_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+        return httpx.Response(
+            200,
+            content=_sse_body(_openai_stream_events(include_terminal=False)),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    reg = Registry(
+        [Target(provider="openai", key=CANARY, name="trunc")],
+        httpx_transport=httpx.MockTransport(truncated_handler),
+    )
+    token = Token()
+    srv = _Server(("127.0.0.1", 0), reg, token)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = srv.server_address[1]
+        status, events = _post_sse(
+            f"http://127.0.0.1:{port}/api/generate/stream",
+            {"target": 0, "model": "gpt-4o-mini", "prompt": "hi"},
+            token=token.value,
+        )
+        assert status == 200
+        assert events[-1]["error"]["code"] == "network_error"
+        assert "incomplete" in events[-1]["error"]["message"]
+        assert CANARY not in json.dumps(events)
+    finally:
+        srv.shutdown()
+        reg.close()

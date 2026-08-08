@@ -305,20 +305,97 @@ el("pg-run").addEventListener("click", async () => {
   btn.disabled = true;
   clear(out);
   out.textContent = "generating…";
-  const data = await api("/api/generate", {
-    method: "POST",
-    body: {
-      target: Number(el("pg-target").value),
-      model,
-      prompt,
-      system: el("pg-system").value.trim() || undefined,
-      max_output_tokens: Number(el("pg-maxtok").value) || undefined,
-      web_search: el("pg-search").checked,
-    },
-  });
+  const body = {
+    target: Number(el("pg-target").value),
+    model,
+    prompt,
+    system: el("pg-system").value.trim() || undefined,
+    max_output_tokens: Number(el("pg-maxtok").value) || undefined,
+    web_search: el("pg-search").checked,
+  };
+  try {
+    await streamGeneration(out, body);
+  } catch (err) {
+    if (err && err.sawDelta) {
+      // Tokens already arrived and were spent; a second call would be a
+      // second charge. Report the interruption instead of retrying.
+      renderGeneration(out, {
+        error: { code: "stream_interrupted", message: "the stream ended unexpectedly — the partial output above may be incomplete" },
+      });
+    } else {
+      // Streaming never started: the plain request costs the same one
+      // generation the stream would have.
+      const data = await api("/api/generate", { method: "POST", body });
+      renderGeneration(out, data);
+    }
+  }
   btn.disabled = false;
-  renderGeneration(out, data);
 });
+
+async function streamGeneration(out, body) {
+  let res;
+  try {
+    res = await fetch("/api/generate/stream", {
+      method: "POST",
+      headers: { "X-KeyCall-Token": TOKEN, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw { sawDelta: false };
+  }
+  if (!res.ok || !res.body) throw { sawDelta: false };
+
+  clear(out);
+  const card = document.createElement("div");
+  card.className = "card";
+  const text = document.createElement("div");
+  text.className = "result-text";
+  text.textContent = "";
+  card.appendChild(text);
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = "streaming…";
+  card.appendChild(meta);
+  out.appendChild(card);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let sawDelta = false;
+  let settled = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary;
+      while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        if (!frame.startsWith("data:")) continue;
+        const event = JSON.parse(frame.slice(5));
+        if (event.error) {
+          renderGeneration(out, event);
+          settled = true;
+        } else if (event.kind === "text_delta") {
+          sawDelta = true;
+          // Append a text node per delta: textContent += would re-copy the
+          // whole accumulated string on every token.
+          text.appendChild(document.createTextNode(event.text));
+        } else if (event.kind === "result") {
+          renderGeneration(out, event);
+          settled = true;
+        }
+      }
+    }
+  } catch (err) {
+    throw { sawDelta };
+  }
+  if (!settled) {
+    // The connection closed without a result or error event.
+    throw { sawDelta };
+  }
+}
 
 function renderGeneration(out, data) {
   clear(out);

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping
 from typing import Any
 
@@ -97,8 +98,6 @@ class _OpenAIStreamAssembler(StreamAssembler):
         # The terminal event carried the complete response; reuse the full
         # non-streaming parse so both paths produce identical results.
         assert self._final is not None
-        import dataclasses
-
         return dataclasses.replace(self._final, round_trip_duration_ms=round_trip_duration_ms)
 
 

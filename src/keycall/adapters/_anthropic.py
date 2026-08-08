@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -121,8 +122,6 @@ class _AnthropicStreamAssembler(StreamAssembler):
                 self.finish_reason = str(delta["stop_reason"])
             usage = payload.get("usage")
             if isinstance(usage, dict) and usage.get("output_tokens") is not None:
-                import dataclasses
-
                 self.usage = dataclasses.replace(
                     self.usage, output_tokens=usage.get("output_tokens")
                 )
