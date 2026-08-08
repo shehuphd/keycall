@@ -8,6 +8,7 @@ from typing import Any
 from .._classify import classify_model_id
 from .._enums import Operation
 from .._errors import ErrorCode, KeyCallError
+from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
     Citation,
@@ -148,7 +149,7 @@ class OpenAIAdapter(ProviderAdapter):
             parts=tuple(parts),
             usage=usage,
             round_trip_duration_ms=round_trip_duration_ms,
-            provider_request_id=headers.get("x-request-id"),
+            provider_request_id=safe_request_id(headers.get("x-request-id")),
             finish_reason=str(finish) if finish else None,
             citations=tuple(citations),
             warnings=tuple(warnings),

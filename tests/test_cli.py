@@ -92,3 +92,41 @@ def test_verify_strict_credentials_promotes_warning(tmp_path, monkeypatch, capsy
 
     exit_code = main(["verify", "--source", str(source), "--strict-credentials"])
     assert exit_code == 2
+
+
+def test_run_verify_records_raw_and_filtered_positions():
+    from keycall import KeyCall
+    from keycall._sources import Target
+    from keycall._verify_core import run_verify
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            # An embedding model precedes the text model, so raw and
+            # filtered positions differ.
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "text-embedding-3-small"}, {"id": "gpt-4o-mini"}]},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-4o-mini",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "ok"}]}
+                ],
+                "usage": {"input_tokens": 5, "output_tokens": 1, "total_tokens": 6},
+            },
+        )
+
+    client = KeyCall(
+        provider="openai", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    result = run_verify(
+        Target(provider="openai", key=CANARY), generate=True, client=client
+    )
+    client.close()
+    assert result.generate_ok
+    attempt = result.attempts[0]
+    assert attempt.position == 0
+    assert attempt.raw_position == 1

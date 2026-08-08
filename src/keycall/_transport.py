@@ -28,7 +28,7 @@ from . import _dnsguard
 from ._credential import Credential
 from ._errors import ErrorCode, KeyCallError
 from ._registry import ResolvedProvider
-from ._sanitize import scrub
+from ._sanitize import safe_request_id, scrub
 
 __all__ = ["AsyncTransport", "RequestSpec", "Transport", "TransportResult"]
 
@@ -58,6 +58,27 @@ class TransportResult:
     duration_ms: float
 
 
+def _warn_if_proxy_bypasses_guard(provider: str) -> None:
+    """httpx routes proxied requests through its own proxy transports, not
+    the guarded default transport, so the DNS-rebinding guard cannot see
+    them. With a proxy the proxy resolves DNS anyway, but the private-address
+    check is also skipped — surface that instead of staying silent."""
+    import os
+
+    names = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+    if any(os.environ.get(name) for name in names):
+        import warnings
+
+        warnings.warn(
+            f"keycall: a proxy environment variable is set; requests to custom "
+            f"target {provider!r} will route through the proxy and bypass the "
+            "DNS-rebinding/private-address guard. Unset the proxy or pass "
+            "trust_env=False if this is not intended",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+
+
 def _build_headers(resolved: ResolvedProvider, credential: Credential) -> dict[str, str]:
     # The one reveal() site in the package. Keep it that way.
     revealed = credential.reveal()
@@ -85,7 +106,17 @@ def _parse_retry_after(headers: Mapping[str, str]) -> float | None:
     try:
         return max(0.0, float(raw))
     except ValueError:
+        pass
+    # RFC 9110 also permits an HTTP-date.
+    from email.utils import parsedate_to_datetime
+
+    try:
+        target = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
         return None
+    from datetime import datetime, timezone
+
+    return max(0.0, (target - datetime.now(timezone.utc)).total_seconds())
 
 
 class _TransportCore:
@@ -115,7 +146,7 @@ class _TransportCore:
 
     def _request_id(self, headers: Mapping[str, str]) -> str | None:
         header = self._resolved.provider_request_id_header
-        return headers.get(header) if header else None
+        return safe_request_id(headers.get(header)) if header else None
 
     def _size_error(self, operation: str) -> KeyCallError:
         return KeyCallError(
@@ -237,6 +268,8 @@ class Transport(_TransportCore):
         )
         if httpx_transport is None and resolved.is_custom and not allow_private_network:
             # Custom targets are user-supplied: pin DNS to defeat rebinding.
+            if trust_env:
+                _warn_if_proxy_bypasses_guard(resolved.provider)
             httpx_transport = _dnsguard.GuardedTransport(
                 httpx.HTTPTransport(trust_env=trust_env), provider=resolved.provider
             )
@@ -282,8 +315,13 @@ class Transport(_TransportCore):
                     body = self._read_capped(response, operation)
                 finally:
                     response.close()
+            except KeyCallError as exc:
+                # The DNS guard raises typed errors from inside send();
+                # routing them through the outcome path keeps a transient
+                # resolution failure eligible for the list retry budget.
+                outcome: TransportResult | KeyCallError = exc
             except httpx.HTTPError as exc:
-                outcome: TransportResult | KeyCallError = self._network_error(exc, operation)
+                outcome = self._network_error(exc, operation)
             else:
                 outcome = self._classify_response(
                     status_code=response.status_code,
@@ -324,6 +362,8 @@ class AsyncTransport(_TransportCore):
             max_response_bytes=max_response_bytes,
         )
         if httpx_transport is None and resolved.is_custom and not allow_private_network:
+            if trust_env:
+                _warn_if_proxy_bypasses_guard(resolved.provider)
             httpx_transport = _dnsguard.AsyncGuardedTransport(
                 httpx.AsyncHTTPTransport(trust_env=trust_env), provider=resolved.provider
             )
@@ -371,8 +411,10 @@ class AsyncTransport(_TransportCore):
                     body = await self._read_capped(response, operation)
                 finally:
                     await response.aclose()
+            except KeyCallError as exc:
+                outcome: TransportResult | KeyCallError = exc
             except httpx.HTTPError as exc:
-                outcome: TransportResult | KeyCallError = self._network_error(exc, operation)
+                outcome = self._network_error(exc, operation)
             else:
                 outcome = self._classify_response(
                     status_code=response.status_code,

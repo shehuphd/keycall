@@ -8,7 +8,7 @@ JSON output all work and are live-verified against every supported provider.
 Streaming, general tool calling, and non-text modalities are not implemented
 yet. The API is settled but may still shift before 1.0.
 
-Docs: [USAGE.md](USAGE.md) for the full API and CLI reference · [CHANGELOG.md](CHANGELOG.md) for version history.
+Docs: [USAGE.md](https://github.com/shehuphd/keycall/blob/main/USAGE.md) for the full API and CLI reference · [CHANGELOG.md](https://github.com/shehuphd/keycall/blob/main/CHANGELOG.md) for version history.
 
 ## Quick start
 
@@ -121,7 +121,7 @@ keycall verify --source ./keys.toml --generate
 `--generate` also makes one small bounded call per target. Sources can be TXT,
 JSON, or TOML, an explicit `env:VAR_NAME` reference, or an interactive prompt.
 See `keycall-test-keys.example.toml` for the format and
-[USAGE.md](USAGE.md#the-verify-cli) for the full reference. Keys never appear
+[USAGE.md](https://github.com/shehuphd/keycall/blob/main/USAGE.md#the-verify-cli) for the full reference. Keys never appear
 in output, and KeyCall never writes to or deletes your credential file.
 
 ## Installation

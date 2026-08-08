@@ -42,6 +42,8 @@ from .auth import Token
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 _CONTENT_TYPES = {".html": "text/html", ".css": "text/css", ".js": "text/javascript"}
 _MAX_BODY_BYTES = 64 * 1024
+_MAX_VERIFY_ATTEMPTS_DEFAULT = 8
+_MAX_VERIFY_ATTEMPTS = 32
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -97,13 +99,17 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _read_json_body(self) -> dict[str, Any] | None:
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            return None
         if length <= 0 or length > _MAX_BODY_BYTES:
             return None
         try:
-            return json.loads(self.rfile.read(length))
+            body = json.loads(self.rfile.read(length))
         except (ValueError, UnicodeDecodeError):
             return None
+        return body if isinstance(body, dict) else None
 
     def _target_id(self, params: dict[str, list[str]]) -> int | None:
         raw = params.get("target")
@@ -171,12 +177,26 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         if route == "/api/verify":
+            attempts = body.get("attempts", _MAX_VERIFY_ATTEMPTS_DEFAULT)
+            if not isinstance(attempts, int) or isinstance(attempts, bool) or not (
+                1 <= attempts <= _MAX_VERIFY_ATTEMPTS
+            ):
+                self._send_json(
+                    {
+                        "error": {
+                            "code": "bad_request",
+                            "message": f"attempts must be an integer from 1 to {_MAX_VERIFY_ATTEMPTS}",
+                        }
+                    },
+                    400,
+                )
+                return
             self._send_json(
                 _api.verify_target(
                     self._registry,
                     target_id,
                     generate=bool(body.get("generate", False)),
-                    attempts=int(body.get("attempts", 8)),
+                    attempts=attempts,
                 )
             )
         elif route == "/api/generate":

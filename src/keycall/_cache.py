@@ -26,6 +26,9 @@ DEFAULT_TTL_SECONDS = 300.0
 class CachedModels:
     models: tuple[Model, ...]
     fetched_at: datetime
+    # Carried into every ModelDiscovery built from this entry, so a
+    # truncated fetch stays visible on cache hits too.
+    warnings: tuple[str, ...] = ()
 
 
 class AvailabilityCache:

@@ -301,3 +301,97 @@ def test_add_source_over_http_token_gated(server, tmp_path):
     status, body = _post(f"{base}/api/source", {"path": str(keyfile)}, token=token)
     assert status == 200
     assert any(t["name"] == "http-added" for t in body["targets"])
+
+
+# --- registry hardening -----------------------------------------------------
+
+
+def test_add_targets_closes_opened_clients_on_later_failure(monkeypatch):
+    from keycall import ErrorCode, KeyCallError
+    from keycall.viewer import _registry as registry_module
+
+    instances = []
+
+    class StubClient:
+        def __init__(self, *, provider, api_key, protocol=None, base_url=None,
+                     httpx_transport=None):
+            if provider == "bad":
+                raise KeyCallError("unknown provider", code=ErrorCode.UNSUPPORTED_PROVIDER)
+            self.provider = provider
+            self.closed = False
+            instances.append(self)
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(registry_module, "KeyCall", StubClient)
+    reg = Registry([])
+    with pytest.raises(KeyCallError):
+        reg.add_targets(
+            [
+                Target(provider="openai", key=CANARY),
+                Target(provider="bad", key=CANARY),
+            ]
+        )
+    assert len(instances) == 1
+    assert instances[0].closed
+    assert reg.views() == []
+
+
+def test_cached_discovery_expires_after_ttl():
+    reg = make_registry()
+    assert "error" not in check_target(reg, 0)
+    assert reg.cached_discovery(0) is not None
+    # Age the entry past the TTL instead of sleeping through it.
+    with reg._lock:
+        reg._entries[0].discovery_at -= 301.0
+    assert reg.cached_discovery(0) is None
+    reg.close()
+
+
+# --- server input validation ------------------------------------------------
+
+
+def test_verify_attempts_must_be_bounded_integer(server):
+    base, token = server
+    for bad in ("abc", 0, -1, 1000, True, None):
+        status, body = _post(
+            f"{base}/api/verify", {"target": 0, "attempts": bad}, token=token
+        )
+        assert status == 400, bad
+        assert body["error"]["code"] == "bad_request"
+
+
+def test_non_object_json_body_rejected(server):
+    base, token = server
+    req = urllib.request.Request(
+        f"{base}/api/verify", data=b"[1, 2, 3]", method="POST"
+    )
+    req.add_header("Content-Type", "application/json")
+    req.add_header("X-KeyCall-Token", token)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            status = resp.status
+    except urllib.error.HTTPError as e:
+        status = e.code
+    assert status == 400
+
+
+def test_bad_content_length_rejected(server):
+    import http.client
+    from urllib.parse import urlparse
+
+    base, token = server
+    parsed = urlparse(base)
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+    try:
+        conn.putrequest("POST", "/api/verify", skip_host=True)
+        conn.putheader("Host", parsed.netloc)
+        conn.putheader("X-KeyCall-Token", token)
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", "not-a-number")
+        conn.endheaders()
+        response = conn.getresponse()
+        assert response.status == 400
+    finally:
+        conn.close()

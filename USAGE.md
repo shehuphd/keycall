@@ -285,7 +285,10 @@ keycall verify --source ./keys.toml --generate
 With `--generate`, KeyCall walks the filtered text models in provider order
 and reports every attempt until one succeeds (default budget 8, adjustable
 with `--attempts`). Skipped models are printed with reasons, so retired
-models, modality mismatches, and per-model quota walls stay visible.
+models, modality mismatches, and per-model quota walls stay visible. Each
+attempt reports the model's position in both the filtered list and the
+provider's raw list, so a failure is reconstructable against the provider's
+returned surface.
 
 ### Sources
 

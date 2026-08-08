@@ -100,6 +100,7 @@ def _build_discovery(
         fetched_at=cached.fetched_at,
         from_cache=from_cache,
         catalog_version=catalog_version(),
+        warnings=cached.warnings,
     )
 
 
@@ -181,6 +182,94 @@ class _BaseClient:
     def __reduce__(self) -> NoReturn:
         raise TypeError("clients hold credentials and cannot be pickled or copied")
 
+    # --- pure logic shared by the sync and async clients; only the awaits
+    # --- differ in the public methods below.
+
+    def _cached_discovery(
+        self, categories: frozenset[ModelCategory], fingerprint: str, trace: Any
+    ) -> ModelDiscovery | None:
+        cached = _cache.shared_cache.get(self.provider, self.base_url, fingerprint)
+        if cached is None:
+            return None
+        trace.event("app", operation="cache_hit", status="ok")
+        return _build_discovery(
+            provider=self.provider, cached=cached, categories=categories, from_cache=True
+        )
+
+    def _parse_page(self, trace: Any, spec: Any, result: Any) -> tuple[list[Model], Any]:
+        trace.event(
+            "http",
+            operation=f"{spec.method} {spec.path}",
+            target=self.provider,
+            status=str(result.status_code),
+            duration_ms=result.duration_ms,
+        )
+        return self._adapter.parse_model_page(result.payload)
+
+    def _store_discovery(
+        self,
+        models: list[Model],
+        *,
+        truncated: bool,
+        categories: frozenset[ModelCategory],
+        fingerprint: str,
+        trace: Any,
+    ) -> ModelDiscovery:
+        warnings: tuple[str, ...] = ()
+        if truncated:
+            warnings = (
+                (
+                    f"provider reported more model pages after the "
+                    f"{_MAX_LIST_PAGES}-page limit; this list is truncated"
+                ),
+            )
+        cached = CachedModels(
+            models=tuple(models), fetched_at=datetime.now(timezone.utc), warnings=warnings
+        )
+        _cache.shared_cache.put(self.provider, self.base_url, fingerprint, cached)
+        discovery = _build_discovery(
+            provider=self.provider, cached=cached, categories=categories, from_cache=False
+        )
+        trace.event(
+            "model",
+            operation="normalize",
+            status="ok",
+            result={"models": len(models), "filtered": len(discovery.models)},
+        )
+        return discovery
+
+    def _generation_spec(self, request: TextGenerationRequest) -> Any:
+        if not isinstance(request, TextGenerationRequest):
+            raise KeyCallError(
+                f"invoke() accepts typed request objects, got {type(request).__name__}",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+            )
+        return self._adapter.build_generation_spec(request)
+
+    def _parse_invocation(
+        self, request: TextGenerationRequest, result: Any, trace: Any
+    ) -> InvocationResult:
+        invocation = self._adapter.parse_generation_response(
+            result.payload,
+            headers=result.headers,
+            round_trip_duration_ms=result.duration_ms,
+            model=request.model,
+        )
+        invocation = _with_schema_warning(invocation, request, self.provider)
+        trace.event(
+            "model",
+            operation="text_generation",
+            target=invocation.model,
+            status=invocation.finish_reason or "ok",
+            duration_ms=invocation.round_trip_duration_ms,
+            result={
+                "input_tokens": invocation.usage.input_tokens,
+                "output_tokens": invocation.usage.output_tokens,
+                "parts": len(invocation.parts),
+            },
+        )
+        return invocation
+
 
 class KeyCall(_BaseClient):
     """Synchronous client. See AsyncKeyCall for the awaitable equivalent."""
@@ -253,15 +342,13 @@ class KeyCall(_BaseClient):
             "keycall.list_models", provider=self.provider, protocol=self.protocol.value
         ) as trace:
             if not refresh:
-                cached = _cache.shared_cache.get(self.provider, self.base_url, fingerprint)
+                cached = self._cached_discovery(requested, fingerprint, trace)
                 if cached is not None:
-                    trace.event("app", operation="cache_hit", status="ok")
-                    return _build_discovery(
-                        provider=self.provider, cached=cached, categories=requested, from_cache=True
-                    )
+                    return cached
 
             models: list[Model] = []
             spec = self._adapter.initial_list_request()
+            next_spec = spec
             for _ in range(_MAX_LIST_PAGES):
                 result = self._transport.request(
                     spec,
@@ -269,69 +356,32 @@ class KeyCall(_BaseClient):
                     retry_policy="list",
                     translate_error=self._adapter.translate_error,
                 )
-                trace.event(
-                    "http",
-                    operation=f"{spec.method} {spec.path}",
-                    target=self.provider,
-                    status=str(result.status_code),
-                    duration_ms=result.duration_ms,
-                )
-                page_models, next_spec = self._adapter.parse_model_page(result.payload)
+                page_models, next_spec = self._parse_page(trace, spec, result)
                 models.extend(page_models)
                 if next_spec is None:
                     break
                 spec = next_spec
-
-            cached = CachedModels(models=tuple(models), fetched_at=datetime.now(timezone.utc))
-            _cache.shared_cache.put(self.provider, self.base_url, fingerprint, cached)
-            discovery = _build_discovery(
-                provider=self.provider, cached=cached, categories=requested, from_cache=False
+            return self._store_discovery(
+                models,
+                truncated=next_spec is not None,
+                categories=requested,
+                fingerprint=fingerprint,
+                trace=trace,
             )
-            trace.event(
-                "model",
-                operation="normalize",
-                status="ok",
-                result={"models": len(models), "filtered": len(discovery.models)},
-            )
-            return discovery
 
     def invoke(self, request: TextGenerationRequest) -> InvocationResult:
         self._require_open()
-        if not isinstance(request, TextGenerationRequest):
-            raise KeyCallError(
-                f"invoke() accepts typed request objects, got {type(request).__name__}",
-                code=ErrorCode.UNSUPPORTED_OPERATION,
-            )
+        spec = self._generation_spec(request)
         with _tracing.span(
             "keycall.text_generation", provider=self.provider, model=request.model
         ) as trace:
-            spec = self._adapter.build_generation_spec(request)
             result = self._transport.request(
                 spec,
                 operation="text_generation",
                 retry_policy="generation",
                 translate_error=self._adapter.translate_error,
             )
-            invocation = self._adapter.parse_generation_response(
-                result.payload,
-                headers=result.headers,
-                round_trip_duration_ms=result.duration_ms,
-                model=request.model,
-            )
-            invocation = _with_schema_warning(invocation, request, self.provider)
-            trace.event(
-                "model",
-                operation="text_generation",
-                target=invocation.model,
-                status=invocation.finish_reason or "ok",
-                duration_ms=invocation.round_trip_duration_ms,
-                result={
-                    "input_tokens": invocation.usage.input_tokens,
-                    "output_tokens": invocation.usage.output_tokens,
-                    "parts": len(invocation.parts),
-                },
-            )
-            return invocation
+            return self._parse_invocation(request, result, trace)
 
     def generate_text(
         self,
@@ -427,15 +477,13 @@ class AsyncKeyCall(_BaseClient):
             "keycall.list_models", provider=self.provider, protocol=self.protocol.value
         ) as trace:
             if not refresh:
-                cached = _cache.shared_cache.get(self.provider, self.base_url, fingerprint)
+                cached = self._cached_discovery(requested, fingerprint, trace)
                 if cached is not None:
-                    trace.event("app", operation="cache_hit", status="ok")
-                    return _build_discovery(
-                        provider=self.provider, cached=cached, categories=requested, from_cache=True
-                    )
+                    return cached
 
             models: list[Model] = []
             spec = self._adapter.initial_list_request()
+            next_spec = spec
             for _ in range(_MAX_LIST_PAGES):
                 result = await self._transport.request(
                     spec,
@@ -443,69 +491,32 @@ class AsyncKeyCall(_BaseClient):
                     retry_policy="list",
                     translate_error=self._adapter.translate_error,
                 )
-                trace.event(
-                    "http",
-                    operation=f"{spec.method} {spec.path}",
-                    target=self.provider,
-                    status=str(result.status_code),
-                    duration_ms=result.duration_ms,
-                )
-                page_models, next_spec = self._adapter.parse_model_page(result.payload)
+                page_models, next_spec = self._parse_page(trace, spec, result)
                 models.extend(page_models)
                 if next_spec is None:
                     break
                 spec = next_spec
-
-            cached = CachedModels(models=tuple(models), fetched_at=datetime.now(timezone.utc))
-            _cache.shared_cache.put(self.provider, self.base_url, fingerprint, cached)
-            discovery = _build_discovery(
-                provider=self.provider, cached=cached, categories=requested, from_cache=False
+            return self._store_discovery(
+                models,
+                truncated=next_spec is not None,
+                categories=requested,
+                fingerprint=fingerprint,
+                trace=trace,
             )
-            trace.event(
-                "model",
-                operation="normalize",
-                status="ok",
-                result={"models": len(models), "filtered": len(discovery.models)},
-            )
-            return discovery
 
     async def invoke(self, request: TextGenerationRequest) -> InvocationResult:
         self._require_open()
-        if not isinstance(request, TextGenerationRequest):
-            raise KeyCallError(
-                f"invoke() accepts typed request objects, got {type(request).__name__}",
-                code=ErrorCode.UNSUPPORTED_OPERATION,
-            )
+        spec = self._generation_spec(request)
         with _tracing.span(
             "keycall.text_generation", provider=self.provider, model=request.model
         ) as trace:
-            spec = self._adapter.build_generation_spec(request)
             result = await self._transport.request(
                 spec,
                 operation="text_generation",
                 retry_policy="generation",
                 translate_error=self._adapter.translate_error,
             )
-            invocation = self._adapter.parse_generation_response(
-                result.payload,
-                headers=result.headers,
-                round_trip_duration_ms=result.duration_ms,
-                model=request.model,
-            )
-            invocation = _with_schema_warning(invocation, request, self.provider)
-            trace.event(
-                "model",
-                operation="text_generation",
-                target=invocation.model,
-                status=invocation.finish_reason or "ok",
-                duration_ms=invocation.round_trip_duration_ms,
-                result={
-                    "input_tokens": invocation.usage.input_tokens,
-                    "output_tokens": invocation.usage.output_tokens,
-                    "parts": len(invocation.parts),
-                },
-            )
-            return invocation
+            return self._parse_invocation(request, result, trace)
 
     async def generate_text(
         self,

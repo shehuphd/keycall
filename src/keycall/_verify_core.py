@@ -35,6 +35,9 @@ _CREDENTIAL_FAILURES = frozenset({ErrorCode.INVALID_API_KEY, ErrorCode.PERMISSIO
 class ModelAttempt:
     model_id: str
     position: int
+    # Zero-based index in the provider's raw, unfiltered model list (PRD
+    # 14.3 reporting: both positions make a failure reconstructable).
+    raw_position: int
     ok: bool
     error_code: str | None = None
     error_message: str | None = None
@@ -82,9 +85,9 @@ def run_verify(
     try:
         try:
             # Verification must hit the live provider, never cached data.
-            discovery = client.list_models(
-                categories={ModelCategory.TEXT_GENERATION}, refresh=True
-            )
+            # All categories are requested so each text candidate's position
+            # in the raw provider list is known, not just its filtered one.
+            discovery = client.list_models(categories=set(ModelCategory), refresh=True)
         except KeyCallError as error:
             return VerifyResult(
                 label=label,
@@ -95,7 +98,11 @@ def run_verify(
                 outcome="list_failed",
             )
 
-        text_models = discovery.models
+        text_models = [
+            (raw_position, model)
+            for raw_position, model in enumerate(discovery.models)
+            if ModelCategory.TEXT_GENERATION in model.categories
+        ]
         if not generate:
             return VerifyResult(
                 label=label,
@@ -117,7 +124,7 @@ def run_verify(
         messages = [Message(role="user", content=[TextInput(text=DEFAULT_GENERATION_PROMPT)])]
         collected: list[ModelAttempt] = []
         rate_limited = False
-        for position, candidate in enumerate(text_models[:attempts]):
+        for position, (raw_position, candidate) in enumerate(text_models[:attempts]):
             try:
                 result = client.generate_text(
                     model=candidate.id,
@@ -129,6 +136,7 @@ def run_verify(
                     ModelAttempt(
                         model_id=candidate.id,
                         position=position,
+                        raw_position=raw_position,
                         ok=False,
                         error_code=error.code.value,
                         error_message=error.message,
@@ -153,6 +161,7 @@ def run_verify(
                 ModelAttempt(
                     model_id=candidate.id,
                     position=position,
+                    raw_position=raw_position,
                     ok=True,
                     round_trip_duration_ms=result.round_trip_duration_ms,
                     total_tokens=result.usage.total_tokens,

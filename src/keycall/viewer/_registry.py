@@ -9,8 +9,10 @@ sends or receives references a target by id.
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 
+from .._cache import DEFAULT_TTL_SECONDS
 from .._client import KeyCall
 from .._sanitize import safe_display_name
 from .._sources import Target
@@ -35,6 +37,10 @@ class _Entry:
     target: Target
     client: KeyCall
     discovery: ModelDiscovery | None = None
+    # Monotonic time the cached discovery was stored; expires after the same
+    # TTL the library's availability cache uses, so the viewer never shows
+    # older entitlement data than the library itself would.
+    discovery_at: float = 0.0
     fetch_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -50,27 +56,37 @@ class Registry:
 
     def add_targets(self, targets: list[Target]) -> None:
         """Open a client per target and register it. Raises KeyCallError if
-        a target fails resolution (unknown provider etc.) — nothing is
-        partially added in that case because we resolve all before adding."""
-        clients = [
-            (
-                target,
-                KeyCall(
-                    provider=target.provider,
-                    api_key=target.key,
-                    protocol=target.protocol,
-                    base_url=target.base_url,
-                    httpx_transport=self._httpx_transport,
-                ),
-            )
-            for target in targets
-        ]
+        a target fails resolution (unknown provider etc.); nothing is
+        partially added in that case because all clients are constructed
+        before any registration, and every already-opened client is closed
+        on a later target's failure."""
+        clients: list[tuple[Target, KeyCall]] = []
+        try:
+            for target in targets:
+                clients.append(
+                    (
+                        target,
+                        KeyCall(
+                            provider=target.provider,
+                            api_key=target.key,
+                            protocol=target.protocol,
+                            base_url=target.base_url,
+                            httpx_transport=self._httpx_transport,
+                        ),
+                    )
+                )
+        except BaseException:
+            for _, client in clients:
+                client.close()
+            raise
         with self._lock:
             for target, client in clients:
                 self._entries[self._next_id] = _Entry(target=target, client=client)
                 self._next_id += 1
 
     def views(self) -> list[TargetView]:
+        with self._lock:
+            entries = list(self._entries.items())
         return [
             TargetView(
                 id=entry_id,
@@ -79,7 +95,7 @@ class Registry:
                 protocol=entry.client.protocol.value,
                 base_url=entry.target.base_url,
             )
-            for entry_id, entry in self._entries.items()
+            for entry_id, entry in entries
         ]
 
     def client(self, target_id: int) -> KeyCall:
@@ -108,13 +124,19 @@ class Registry:
     def cached_discovery(self, target_id: int) -> ModelDiscovery | None:
         with self._lock:
             entry = self._entries.get(target_id)
-        return entry.discovery if entry else None
+            if entry is None or entry.discovery is None:
+                return None
+            if time.monotonic() - entry.discovery_at >= DEFAULT_TTL_SECONDS:
+                entry.discovery = None
+                return None
+            return entry.discovery
 
     def set_cached_discovery(self, target_id: int, discovery: ModelDiscovery) -> None:
         with self._lock:
             entry = self._entries.get(target_id)
             if entry is not None:
                 entry.discovery = discovery
+                entry.discovery_at = time.monotonic()
 
     def close(self) -> None:
         with self._lock:

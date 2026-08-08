@@ -5,7 +5,7 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] — 2026-08-08
 
 ### Added
 
@@ -27,13 +27,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   content now produces a result warning naming the likely cause, instead of
   a silent empty `result.text`.
 
+### Changed
+
+- `keycall verify` attempts now record and report each candidate's
+  zero-based position in the provider's raw model list alongside its
+  filtered position (`ModelAttempt.raw_position`).
+- Model-list pagination stopping at the 10-page limit while the provider
+  still reports more pages now adds a truncation warning to the returned
+  `ModelDiscovery` instead of returning silently.
+- `Retry-After` response headers in HTTP-date form are now honored; only
+  the seconds form was parsed before.
+- The viewer's per-target model cache now expires after the same 300-second
+  TTL as the library's availability cache instead of persisting until a
+  manual refresh.
+
 ### Fixed
 
-- Nothing — the previously-suspected "DeepSeek/Moonshot silently ignore
-  `web_search=True`" gap does not exist; it was already correctly gated
-  (`_base.py`'s `validate_generation_request`) and tested. Verified live and
-  via the existing test suite before starting this work, no code change
-  needed.
+- Provider-supplied request identifiers are sanitized (control characters
+  stripped, length bounded) before entering results or errors.
+- Boundary sanitization redacts URL-encoded and base64-encoded forms of the
+  active credential, and recognizes the `pplx-` key prefix.
+- Transient DNS-guard resolution failures on custom targets are now
+  eligible for the model-list retry budget.
+- A proxy environment variable combined with a guarded custom target emits
+  a runtime warning that proxied requests bypass the DNS-rebinding and
+  private-address guard.
+- The viewer registry closes already-opened clients when a later target in
+  the same batch fails resolution, and reads target views under its lock.
+- The viewer returns HTTP 400 for a malformed `Content-Length` header, a
+  non-object JSON body, or an out-of-range `attempts` value (valid range
+  1–32) instead of failing in the handler thread.
 
 ### Known limitations (in addition to 0.2.0's)
 

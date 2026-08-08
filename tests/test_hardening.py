@@ -412,3 +412,78 @@ def test_gemini_tts_model_kept_out_of_text_picker():
     speech = client.list_models(categories={ModelCategory.SPEECH_GENERATION})
     assert [m.id for m in speech.models] == ["gemini-2.5-flash-preview-tts"]
     assert speech.models[0].classification_source == "provider_metadata+keycall_rule"
+
+
+# --- boundary sanitization (scrub, request ids) -----------------------------
+
+
+def test_scrub_redacts_encoded_credential_forms():
+    import base64
+    from urllib.parse import quote
+
+    from keycall._sanitize import scrub
+
+    key = "sk-canary+key/with=chars"
+    forms = (
+        key,
+        quote(key, safe=""),
+        base64.b64encode(key.encode()).decode(),
+        base64.urlsafe_b64encode(key.encode()).decode(),
+    )
+    for form in forms:
+        cleaned = scrub(f"provider rejected {form} outright", credential_value=key)
+        assert form not in cleaned
+        assert "<redacted>" in cleaned
+
+
+def test_scrub_redacts_perplexity_key_pattern():
+    from keycall._sanitize import scrub
+
+    cleaned = scrub("invalid key pplx-abcdefgh12345678 supplied")
+    assert "pplx-abcdefgh12345678" not in cleaned
+    assert "<redacted>" in cleaned
+
+
+def test_safe_request_id_strips_controls_and_bounds():
+    from keycall._sanitize import safe_request_id
+
+    assert safe_request_id("req\x1b[31m-1\r\nfake: line") == "req[31m-1fake: line"
+    assert safe_request_id("x" * 300) == "x" * 128 + "…"
+    assert safe_request_id(None) is None
+    assert safe_request_id("") is None
+    assert safe_request_id("\x00\x01") is None
+    assert safe_request_id(42) is None
+
+
+def test_hostile_request_id_header_sanitized_in_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401,
+            json={"error": {"message": "bad key"}},
+            headers={"x-request-id": "req\x1b[2Jwipe"},
+        )
+
+    with pytest.raises(KeyCallError) as excinfo:
+        make_client(handler=handler).list_models(refresh=True)
+    assert excinfo.value.provider_request_id == "req[2Jwipe"
+
+
+def test_hostile_request_id_header_sanitized_in_result():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-4o-mini",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "ok"}]}
+                ],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            },
+            headers={"x-request-id": "ok\x1b[31mid"},
+        )
+
+    result = make_client(handler=handler).generate_text(
+        model="gpt-4o-mini", messages=simple_messages()
+    )
+    assert result.provider_request_id == "ok[31mid"

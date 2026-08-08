@@ -134,3 +134,106 @@ def test_non_json_success_body_is_typed_error():
     with pytest.raises(KeyCallError) as excinfo:
         make_client(handler).list_models(refresh=True)
     assert excinfo.value.code is ErrorCode.INVALID_PROVIDER_RESPONSE
+
+
+def test_retry_after_http_date_form_parsed():
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+
+    when = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=30), usegmt=True)
+    handler, _ = counting_handler(
+        [httpx.Response(429, json={"error": {"message": "later"}}, headers={"retry-after": when})]
+    )
+    with pytest.raises(KeyCallError) as excinfo:
+        make_client(handler).generate_text(
+            model="gpt-4o", messages=[Message(role="user", content=[TextInput(text="hi")])]
+        )
+    assert excinfo.value.retry_after is not None
+    assert 20.0 < excinfo.value.retry_after <= 30.0
+
+
+def test_transport_keycall_error_uses_list_retry_budget(monkeypatch):
+    """A retryable typed error raised inside send() (the DNS guard's path)
+    consumes the list retry budget instead of propagating on first failure."""
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise KeyCallError(
+                "could not resolve host",
+                code=ErrorCode.NETWORK_ERROR,
+                retryable=True,
+            )
+        return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+
+    discovery = make_client(handler).list_models(refresh=True)
+    assert calls["count"] == 2
+    assert discovery.models[0].id == "gpt-4o-mini"
+
+
+def test_transport_nonretryable_keycall_error_propagates():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise KeyCallError(
+            "private address refused",
+            code=ErrorCode.UNSUPPORTED_PROVIDER,
+        )
+
+    with pytest.raises(KeyCallError) as excinfo:
+        make_client(handler).list_models(refresh=True)
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_PROVIDER
+
+
+def test_pagination_truncation_adds_warning():
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Always reports another page: the 10-page limit must trip.
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "claude-sonnet-5"}], "has_more": True, "last_id": "x"},
+        )
+
+    client = KeyCall(
+        provider="anthropic", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    discovery = client.list_models(refresh=True)
+    assert any("truncated" in warning for warning in discovery.warnings)
+    # The warning survives a cache hit.
+    cached = client.list_models()
+    assert cached.from_cache
+    assert any("truncated" in warning for warning in cached.warnings)
+
+
+def test_untruncated_list_has_no_truncation_warning():
+    handler, _ = counting_handler([httpx.Response(200, json={"data": [{"id": "gpt-4o"}]})])
+    discovery = make_client(handler).list_models(refresh=True)
+    assert not any("truncated" in warning for warning in discovery.warnings)
+
+
+def test_proxy_env_with_guarded_custom_target_warns(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
+    with pytest.warns(RuntimeWarning, match="bypass the DNS-rebinding"):
+        client = KeyCall(
+            provider="my-lab",
+            api_key=CANARY,
+            protocol="openai-compatible",
+            base_url="https://llm.example.edu/v1",
+        )
+    client.close()
+
+
+def test_no_proxy_env_no_warning(monkeypatch):
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    import warnings as warnings_module
+
+    with warnings_module.catch_warnings():
+        warnings_module.simplefilter("error", RuntimeWarning)
+        client = KeyCall(
+            provider="my-lab",
+            api_key=CANARY,
+            protocol="openai-compatible",
+            base_url="https://llm.example.edu/v1",
+        )
+    client.close()

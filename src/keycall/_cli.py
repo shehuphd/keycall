@@ -45,12 +45,14 @@ def _render(result: VerifyResult) -> list[str]:
             usage = attempt.total_tokens if attempt.total_tokens is not None else "unreported"
             lines.append(
                 f"✓ {result.label}: generated with {attempt.model_id} "
-                f"(filtered position {attempt.position}{skipped}, "
+                f"(filtered position {attempt.position}, "
+                f"provider-list position {attempt.raw_position}{skipped}, "
                 f"{attempt.round_trip_duration_ms:.0f} ms, total tokens: {usage})"
             )
         else:
             lines.append(
-                f"  ✗ {attempt.model_id} (position {attempt.position}): "
+                f"  ✗ {attempt.model_id} (filtered position {attempt.position}, "
+                f"provider-list position {attempt.raw_position}): "
                 f"{attempt.error_code} — {attempt.error_message}"
             )
 

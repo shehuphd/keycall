@@ -15,6 +15,7 @@ from urllib.parse import quote
 from .._classify import classify_model_id
 from .._enums import ModelCategory, Operation
 from .._errors import ErrorCode, KeyCallError
+from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
     Citation,
@@ -227,7 +228,7 @@ class GeminiAdapter(ProviderAdapter):
             parts=tuple(parts),
             usage=usage,
             round_trip_duration_ms=round_trip_duration_ms,
-            provider_request_id=payload.get("responseId"),
+            provider_request_id=safe_request_id(payload.get("responseId")),
             finish_reason=str(finish_reason) if finish_reason else None,
             citations=tuple(citations),
             warnings=tuple(warnings),
