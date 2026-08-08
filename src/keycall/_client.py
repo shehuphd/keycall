@@ -1,10 +1,9 @@
 """KeyCall and AsyncKeyCall clients.
 
 Provider, credential, protocol, and base URL are immutable client identity,
-bound once at construction with no setters and no per-call override
-(naming-final.md section 2). The raw credential is wrapped in the redacting
-Credential type here, at its single entry boundary; only the transport
-layer ever reveals it again.
+bound once at construction with no setters and no per-call override.
+The raw credential is wrapped in the redacting Credential type here, at
+its single entry boundary; only the transport layer ever reveals it again.
 """
 
 from __future__ import annotations
@@ -59,9 +58,9 @@ def _with_schema_warning(
     invocation: InvocationResult, request: TextGenerationRequest, provider: str
 ) -> InvocationResult:
     """Append a warning when response_schema was requested but this
-    provider only guarantees valid JSON, not schema conformance (PRD's
-    'never claim enforcement it can't deliver' — same posture as the
-    unreported-usage and stale-catalog warnings elsewhere)."""
+    provider only guarantees valid JSON, not schema conformance: never
+    claim enforcement that isn't delivered — the same posture as the
+    unreported-usage and stale-catalog warnings elsewhere."""
     if request.response_schema is None or provider in _capabilities.SCHEMA_ENFORCING_PROVIDERS:
         return invocation
     warnings = list(invocation.warnings)
@@ -123,7 +122,7 @@ class _BaseClient:
         allow_private_network: bool = False,
     ) -> None:
         # Wrap the credential first so no later failure path ever handles
-        # the raw string (PRD 10.1).
+        # the raw string.
         credential = Credential(api_key)
         resolved = resolve_provider(
             provider,

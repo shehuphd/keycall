@@ -1,4 +1,4 @@
-"""Boundary sanitization for provider-originated text (PRD section 10.2).
+"""Boundary sanitization for provider-originated text.
 
 Every provider error message passes through scrub() before entering a
 public result, exception, log, or trace. The transport layer is the single
@@ -31,8 +31,8 @@ _ALL_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def _credential_variants(value: str) -> tuple[str, ...]:
-    """The literal credential plus its common encoded forms (PRD 10.2): a
-    provider echoing the key back URL- or base64-encoded must still redact."""
+    """The literal credential plus its common encoded forms: a provider
+    echoing the key back URL- or base64-encoded must still redact."""
     raw = value.encode("utf-8")
     variants = {
         value,

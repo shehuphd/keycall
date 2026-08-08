@@ -3,10 +3,10 @@
 ``_build_headers`` is the only call site of ``Credential.reveal()`` in the
 package. Adapters produce pure request specs and parse pure payloads; they
 never see the credential. All provider error text is scrubbed here before
-it can reach a KeyCallError (PRD sections 10.1, 10.2).
+it can reach a KeyCallError.
 
-Retry policy is operation-aware (PRD section 12): model listing gets a
-small bounded retry budget for transient failures; generation is never
+Retry policy is operation-aware: model listing gets a small bounded
+retry budget for transient failures; generation is never
 retried after possible transmission because no supported provider documents
 generation idempotency.
 

@@ -3,7 +3,7 @@ POST /models/{model}:generateContent.
 
 Gemini's list response is the strongest provider-native classification
 source in the v1 set: supportedGenerationMethods is explicit provider
-metadata and takes precedence over identifier rules (PRD section 8).
+metadata and takes precedence over identifier rules.
 """
 
 from __future__ import annotations

@@ -2,8 +2,9 @@
 to a trusted endpoint profile.
 
 Credential-routing data comes only from the bundled, KeyCall-maintained
-catalog (PRD section 8.1 trust class 1). Resolution is a registry lookup
-followed by an explicit custom-adapter path — never a chain of if/else.
+catalog: third-party data must never choose where a credential is sent.
+Resolution is a registry lookup followed by an explicit custom-adapter
+path — never a chain of if/else.
 """
 
 from __future__ import annotations

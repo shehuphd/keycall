@@ -3,9 +3,9 @@
 `verify` walks filtered text models in provider order and reports the
 outcome of every attempt until one succeeds or the attempt budget runs out
 (the walk itself lives in `_verify_core.py`, shared with the viewer). This
-is *reported* fallthrough, not the silent fallthrough PRD section 14.3
-forbids: each skipped model is printed with the reason it was skipped, so
-provider drift stays visible instead of being masked.
+is *reported* fallthrough, never silent: each skipped model is printed
+with the reason it was skipped, so provider drift stays visible instead
+of being masked.
 
 Keys never appear in output.
 """

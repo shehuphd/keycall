@@ -1,4 +1,4 @@
-"""Credential-dependent availability cache (PRD section 11.1).
+"""Credential-dependent availability cache.
 
 Process-local, bounded, in-memory, cleared on restart. Keyed by provider +
 base URL + HMAC credential fingerprint — never the raw key or an unkeyed

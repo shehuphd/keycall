@@ -1,4 +1,4 @@
-"""Conservative model classification (PRD section 8).
+"""Conservative model classification.
 
 Precedence: explicit provider metadata first (the Gemini adapter passes
 supported generation methods through), then maintained identifier rules.

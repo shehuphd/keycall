@@ -8,8 +8,8 @@ API-discoverable.
 
 So the list call still runs — it proves the credential is valid, which is
 half of what list_models is for — but the models KeyCall returns come from
-maintained catalog metadata (PRD section 8 classification precedence tier 2:
-maintained KeyCall metadata, used where provider metadata is inadequate).
+maintained catalog metadata, the classification tier used where provider
+metadata is inadequate.
 
 Verified live 2026-08-05: /v1/sonar accepts bare ``sonar``/``sonar-pro``/
 ``sonar-reasoning-pro``, rejects ``perplexity/sonar`` and every

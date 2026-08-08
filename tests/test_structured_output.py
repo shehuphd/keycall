@@ -372,8 +372,8 @@ def test_anthropic_tool_use_missing_input_key_entirely():
 def test_provider_returns_truncated_or_non_json_content_with_schema_requested():
     """KeyCall does not validate that a provider's structured-output content
     actually parses as JSON or matches the schema — that's explicitly the
-    caller's job (PRD posture: KeyCall normalizes, it doesn't re-validate
-    provider output). Confirm garbage passes through inertly, not silently
+    caller's job: KeyCall normalizes, it doesn't re-validate provider
+    output. Confirm garbage passes through inertly, not silently
     coerced or crashed on."""
 
     def handler(request: httpx.Request) -> httpx.Response:

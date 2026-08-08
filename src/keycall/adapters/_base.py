@@ -50,7 +50,7 @@ class ProviderAdapter(ABC):
         model: str,
     ) -> InvocationResult:
         """Decode into the common envelope. Raw provider objects must not
-        leak through (PRD section 7)."""
+        leak through the public API."""
 
     # --- error translation (transport calls this, then scrubs) ---
 

@@ -1,9 +1,8 @@
 """Normalized error codes and the single public exception type.
 
-One exception class with a typed ``ErrorCode`` discriminator, per
-naming-final.md section 13. Subclasses may be added later if real caller
-behavior demonstrates useful catch boundaries; starting flat is the
-reversible choice.
+One exception class with a typed ``ErrorCode`` discriminator. Subclasses
+may be added later if real caller behavior demonstrates useful catch
+boundaries; starting flat is the reversible choice.
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ class KeyCallError(Exception):
 
     Messages must already be sanitized before construction: no credentials,
     no authorization headers, no raw request bodies, no unsanitized provider
-    error text (PRD section 9).
+    error text.
     """
 
     def __init__(

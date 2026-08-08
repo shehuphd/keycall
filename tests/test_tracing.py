@@ -1,5 +1,5 @@
 """TraceAct integration: spans emitted, credentials and prompts never
-captured (PRD section 13 canary requirements)."""
+captured."""
 
 import json
 

@@ -1,8 +1,8 @@
 """Public data records: content parts, messages, requests, results.
 
-Directional input/output content types with stable ``kind`` discriminators
-(naming-final.md section 6). All records are keyword-only and frozen;
-sequences are accepted as any Sequence and normalized to tuples internally.
+Directional input/output content types with stable ``kind`` discriminators.
+All records are keyword-only and frozen; sequences are accepted as any
+Sequence and normalized to tuples internally.
 """
 
 from __future__ import annotations

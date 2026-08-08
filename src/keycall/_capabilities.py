@@ -1,4 +1,4 @@
-"""Maintained per-model capability evidence (PRD section 8).
+"""Maintained per-model capability evidence.
 
 Small and deliberately conservative: an entry here blocks a request before
 it reaches the provider, so entries require confirmed evidence that the

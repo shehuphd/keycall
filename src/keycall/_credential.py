@@ -2,7 +2,7 @@
 
 Not exported. The raw key enters KeyCall at exactly one boundary (client
 construction) and is wrapped here immediately, before any traced internal
-workflow begins (PRD section 10.1).
+workflow begins.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any, NoReturn
 _REDACTED = "<keycall:redacted-credential>"
 
 # Process-local HMAC secret for cache fingerprints. Generated once from OS
-# randomness, held only in memory, never logged or persisted (PRD 10.3).
+# randomness, held only in memory, never logged or persisted.
 _FINGERPRINT_SECRET = os.urandom(32)
 
 

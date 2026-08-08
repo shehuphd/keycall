@@ -1,6 +1,6 @@
 """Structured core of `keycall verify`: walks filtered text models in
 provider order, reporting every attempt until one succeeds or the budget
-runs out (PRD section 14.2/14.3's "reported fallthrough").
+runs out: reported fallthrough, never silent.
 
 Returns data, not printable strings — `_cli.py` renders this to the
 terminal, the viewer renders it to JSON/SSE. One walk, two presentations.
@@ -27,7 +27,7 @@ DEFAULT_ATTEMPTS = 8
 # Bumped whenever the candidate-selection procedure changes, so an old
 # report can be read against the rule that produced it. "1" selected the
 # first filtered candidate and made exactly one attempt; "2" is the
-# bounded, fully-reported walk (PRD 14.3).
+# bounded, fully-reported walk.
 SELECTION_RULE_VERSION = "2"
 
 
@@ -50,8 +50,8 @@ _CREDENTIAL_FAILURES = frozenset({ErrorCode.INVALID_API_KEY, ErrorCode.PERMISSIO
 class ModelAttempt:
     model_id: str
     position: int
-    # Zero-based index in the provider's raw, unfiltered model list (PRD
-    # 14.3 reporting: both positions make a failure reconstructable).
+    # Zero-based index in the provider's raw, unfiltered model list; both
+    # positions together make a failure reconstructable.
     raw_position: int
     # Why this model was considered a text-generation candidate:
     # provider_metadata, keycall_rule, keycall_catalog, or a combination.

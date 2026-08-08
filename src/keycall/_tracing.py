@@ -1,4 +1,4 @@
-"""Optional TraceAct integration (PRD section 13).
+"""Optional TraceAct integration.
 
 KeyCall never calls traceact.configure() — that's the host application's
 decision. When TraceAct is absent, spans are free no-ops. When it's present
@@ -10,9 +10,9 @@ Safety posture: every span carries a per-call TraceConfig override that
 disables function-input and event-input capture, and pins the api_keys and
 ai_prompts redaction presets. KeyCall additionally only ever hands TraceAct
 explicitly chosen safe fields (provider, model IDs, counts, status,
-durations) — the override is defense in depth, not the primary boundary
-(PRD section 10.2). Prompts, responses, credentials, and auth headers are
-never passed in.
+durations) — the override is defense in depth; KeyCall's own boundary
+sanitization is the primary protection. Prompts, responses, credentials,
+and auth headers are never passed in.
 """
 
 from __future__ import annotations

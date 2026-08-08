@@ -1,4 +1,4 @@
-"""Smoke-test target sources for `keycall verify` (PRD sections 14.2.2-3).
+"""Smoke-test target sources for `keycall verify`.
 
 Every loader produces the same Target type. Parsing never uses shell
 evaluation or interpolation; key values are opaque and never appear in
