@@ -5,6 +5,29 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Streaming** (`stream_text()` on `KeyCall` and `AsyncKeyCall`): typed
+  event iteration (`StreamStart`, `TextDelta`, `CitationFound`,
+  `StreamFinish`, `UnknownStreamEvent`) over every supported provider's
+  native SSE surface, live-verified per provider. `stream.result()` after
+  exhaustion returns the same `InvocationResult` as a non-streamed call.
+  `web_search` and `response_schema` combine with streaming wherever the
+  provider supports them non-streamed. A stream that closes without the
+  provider's terminal signal raises `NETWORK_ERROR` instead of passing off
+  a partial response as complete; size caps apply per event and to the
+  whole stream; streaming is never retried.
+- The live suite includes one bounded streamed generation per target.
+
+### Known limitations (in addition to earlier versions')
+
+- Gemini rejects a `response_schema` containing `additionalProperties`
+  (HTTP 400), while OpenAI's strict mode requires `additionalProperties:
+  false`. One schema cannot satisfy both providers; KeyCall passes the
+  caller's schema through unmodified to either.
+
 ## [0.4.1] — 2026-08-08
 
 ### Changed

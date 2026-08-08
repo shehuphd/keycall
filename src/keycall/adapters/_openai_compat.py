@@ -19,14 +19,95 @@ from .._types import (
     InvocationResult,
     Model,
     OutputPart,
+    StreamEvent,
+    StreamFinish,
+    StreamStart,
+    TextDelta,
     TextGenerationRequest,
     TextOutput,
     Usage,
 )
-from ._base import ProviderAdapter
+from ._base import ProviderAdapter, StreamAssembler
+
+# Providers confirmed to honor stream_options include_usage (live-verified
+# 2026-08-08). Unverified custom targets don't get the extra field: an
+# unknown endpoint may reject it, and a missing-usage warning is the safer
+# failure.
+_STREAM_USAGE_PROVIDERS = frozenset({"deepseek", "moonshot"})
+
+
+class CompatStreamAssembler(StreamAssembler):
+    """Chat Completions chunk stream: choices[0].delta.content fragments,
+    usage on the chunk that carries it, `data: [DONE]` terminal."""
+
+    def __init__(self, resolved, request) -> None:
+        super().__init__(resolved, request)
+        self._started = False
+        self._saw_reasoning = False
+
+    def _chunk_events(self, payload: dict) -> list[StreamEvent]:
+        events: list[StreamEvent] = []
+        if payload.get("model"):
+            self.model = str(payload["model"])
+        if not self._started:
+            self._started = True
+            events.append(StreamStart(model=self.model))
+        choices = payload.get("choices")
+        choice = choices[0] if isinstance(choices, list) and choices else None
+        if isinstance(choice, dict):
+            if choice.get("finish_reason"):
+                self.finish_reason = str(choice["finish_reason"])
+            delta = choice.get("delta")
+            if isinstance(delta, dict):
+                if delta.get("content"):
+                    text = str(delta["content"])
+                    self.append_text(text)
+                    events.append(TextDelta(text=text))
+                elif delta.get("reasoning_content"):
+                    self._saw_reasoning = True
+        usage_raw = payload.get("usage")
+        if isinstance(usage_raw, dict) and usage_raw.get("completion_tokens") is not None:
+            details = usage_raw.get("prompt_tokens_details") or {}
+            self.usage = Usage(
+                input_tokens=usage_raw.get("prompt_tokens"),
+                output_tokens=usage_raw.get("completion_tokens"),
+                cached_input_tokens=details.get("cached_tokens")
+                or usage_raw.get("prompt_cache_hit_tokens"),
+                total_tokens=usage_raw.get("total_tokens"),
+            )
+            self.usage_reported = True
+        return events
+
+    def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
+        if data.strip() == "[DONE]":
+            self.saw_terminal = True
+            return [StreamFinish(finish_reason=self.finish_reason, usage=self.usage)]
+        payload = self._parse_data(data)
+        if not isinstance(payload, dict):
+            return []
+        return self._chunk_events(payload)
+
+    def finalize(self, *, round_trip_duration_ms: float) -> InvocationResult:
+        if self._saw_reasoning and not self.text:
+            self.warnings.append(
+                "provider produced a reasoning trace but no final answer — "
+                "max_output_tokens was likely too small for this model to "
+                "finish reasoning and still emit content; try a larger value"
+            )
+        return super().finalize(round_trip_duration_ms=round_trip_duration_ms)
 
 
 class OpenAICompatibleAdapter(ProviderAdapter):
+    def build_stream_spec(self, request: TextGenerationRequest) -> RequestSpec:
+        spec = self.build_generation_spec(request)
+        body = {**(spec.json_body or {}), "stream": True}
+        if self.resolved.provider in _STREAM_USAGE_PROVIDERS:
+            body["stream_options"] = {"include_usage": True}
+        return RequestSpec(method=spec.method, path=spec.path, params=spec.params, json_body=body)
+
+    def stream_assembler(self, request: TextGenerationRequest) -> StreamAssembler:
+        return CompatStreamAssembler(self.resolved, request)
+
     def initial_list_request(self) -> RequestSpec:
         op = self.resolved.operations["list_models"]
         return RequestSpec(method=op["method"], path=op["path"])

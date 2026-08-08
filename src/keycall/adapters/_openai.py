@@ -12,18 +12,109 @@ from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
     Citation,
+    CitationFound,
     InvocationResult,
     Model,
     OutputPart,
+    StreamEvent,
+    StreamFinish,
+    StreamStart,
+    TextDelta,
     TextGenerationRequest,
     TextOutput,
     UnknownOutput,
+    UnknownStreamEvent,
     Usage,
 )
-from ._base import ProviderAdapter
+from ._base import InbandStreamError, ProviderAdapter, StreamAssembler
+
+# Stream plumbing events that carry no content of their own; the terminal
+# response.completed/incomplete event carries the whole final response.
+# Live-verified 2026-08-08.
+_STREAM_PLUMBING = frozenset(
+    {
+        "response.in_progress",
+        "response.output_item.added",
+        "response.output_item.done",
+        "response.content_part.added",
+        "response.content_part.done",
+        "response.output_text.done",
+    }
+)
+
+
+class _OpenAIStreamAssembler(StreamAssembler):
+    def __init__(self, resolved, request, adapter: OpenAIAdapter) -> None:
+        super().__init__(resolved, request)
+        self._adapter = adapter
+        self._final: InvocationResult | None = None
+
+    def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
+        payload = self._parse_data(data)
+        if not isinstance(payload, dict):
+            return []
+        kind = str(payload.get("type", ""))
+        if kind == "response.created":
+            response = payload.get("response")
+            if isinstance(response, dict) and response.get("model"):
+                self.model = str(response["model"])
+            return [StreamStart(model=self.model)]
+        if kind == "response.output_text.delta":
+            delta = str(payload.get("delta", ""))
+            self.append_text(delta)
+            return [TextDelta(text=delta)]
+        if kind in ("response.completed", "response.incomplete"):
+            self.saw_terminal = True
+            self._final = self._adapter.parse_generation_response(
+                payload.get("response"),
+                headers=self.response_headers,
+                round_trip_duration_ms=0.0,
+                model=self.model,
+            )
+            self.usage = self._final.usage
+            self.usage_reported = self._final.usage.output_tokens is not None
+            self.finish_reason = self._final.finish_reason
+            self.model = self._final.model
+            self.provider_request_id = self._final.provider_request_id
+            self.citations = list(self._final.citations)
+            self.warnings.extend(self._final.warnings)
+            # Citations surface at completion in the Responses stream.
+            events: list[StreamEvent] = [
+                CitationFound(citation=c) for c in self._final.citations
+            ]
+            events.append(StreamFinish(finish_reason=self.finish_reason, usage=self.usage))
+            return events
+        if kind == "response.failed":
+            response = payload.get("response")
+            error = response.get("error") if isinstance(response, dict) else None
+            message = str(error.get("message", "generation failed")) if isinstance(error, dict) else "generation failed"
+            raise InbandStreamError(ErrorCode.PROVIDER_UNAVAILABLE, False, message)
+        if kind in _STREAM_PLUMBING:
+            return []
+        return [UnknownStreamEvent(provider_kind=kind or "?")]
+
+    def finalize(self, *, round_trip_duration_ms: float) -> InvocationResult:
+        # The terminal event carried the complete response; reuse the full
+        # non-streaming parse so both paths produce identical results.
+        assert self._final is not None
+        import dataclasses
+
+        return dataclasses.replace(self._final, round_trip_duration_ms=round_trip_duration_ms)
 
 
 class OpenAIAdapter(ProviderAdapter):
+    def build_stream_spec(self, request: TextGenerationRequest) -> RequestSpec:
+        spec = self.build_generation_spec(request)
+        return RequestSpec(
+            method=spec.method,
+            path=spec.path,
+            params=spec.params,
+            json_body={**(spec.json_body or {}), "stream": True},
+        )
+
+    def stream_assembler(self, request: TextGenerationRequest) -> StreamAssembler:
+        return _OpenAIStreamAssembler(self.resolved, request, self)
+
     def initial_list_request(self) -> RequestSpec:
         op = self.resolved.operations["list_models"]
         return RequestSpec(method=op["method"], path=op["path"])

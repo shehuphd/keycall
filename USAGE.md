@@ -146,6 +146,55 @@ Anthropic Opus 4.7+, Opus 5+, Sonnet 5+). Passing `temperature` or `top_p`
 for those raises `MODEL_NOT_SUITABLE` before any network call, omit the
 parameters for those models.
 
+## Streaming
+
+`stream_text()` takes the same parameters as `generate_text()` and delivers
+the response incrementally. Use it as a context manager, iterate the typed
+events, then call `result()` for the same `InvocationResult` a non-streamed
+call returns:
+
+```python
+with client.stream_text(model="gpt-4o-mini", messages=messages) as stream:
+    for event in stream:
+        if event.kind == "text_delta":
+            print(event.text, end="", flush=True)
+    result = stream.result()
+
+print(result.usage.total_tokens, result.finish_reason)
+```
+
+`AsyncKeyCall.stream_text()` is the awaitable twin: `async with` and
+`async for`.
+
+Event types, discriminated by `kind`:
+
+| Event | `kind` | Carries |
+|---|---|---|
+| `StreamStart` | `stream_start` | model id the provider confirmed |
+| `TextDelta` | `text_delta` | a text increment; with `response_schema`, a fragment of the final JSON |
+| `CitationFound` | `citation` | one web-search source, as it surfaces |
+| `StreamFinish` | `stream_finish` | finish reason and usage |
+| `UnknownStreamEvent` | `unknown` | bounded provider kind for content KeyCall doesn't recognize yet |
+
+Behavior and guarantees:
+
+- `web_search` and `response_schema` combine with streaming on every
+  provider that supports them non-streamed; the same gates apply (Anthropic
+  still refuses the web_search + response_schema combination).
+- Streaming is never retried, before or after the first byte.
+- The stream must end with the provider's own terminal signal. A connection
+  that closes early raises `NETWORK_ERROR` from the iterator, and
+  `result()` raises rather than returning a silent partial.
+- Response-size caps apply to the total stream and to each individual
+  event; the read timeout applies between chunks, so a stalled stream
+  raises `TIMEOUT`.
+- Leaving the `with` block closes the connection, including on early
+  `break`. `result()` before the stream finishes raises rather than
+  silently consuming the rest.
+- Custom OpenAI-compatible targets stream with the `[DONE]` terminal
+  convention; usage may be unreported there and surfaces as the standard
+  missing-usage warning.
+
 ## Web search
 
 Providers with a native server-side search tool can ground a generation in
@@ -210,11 +259,15 @@ parsed = json.loads(result.text)   # result.text is the JSON string on every pro
 On a non-enforcing provider, `result.warnings` explains that the schema
 wasn't enforced, validate client-side there rather than trusting the shape.
 
-Two provider requirements worth knowing before writing a schema:
+Three provider requirements to know before writing a schema:
 
 - **OpenAI's strict mode requires `additionalProperties: false`** on every
   object level of the schema, or the request fails with a 400. Write it in
   from the start rather than discovering it from an error.
+- **Gemini rejects any `additionalProperties` key** in the schema with a
+  400 (live-verified 2026-08-08) — the direct opposite of OpenAI's
+  requirement. One schema cannot satisfy both providers; strip or add the
+  key per provider before the call.
 - **DeepSeek requires the word "json" somewhere in the prompt** for its
   fallback mode, or it 400s. KeyCall detects this and inserts a short system
   instruction automatically when needed — you'll see it noted in

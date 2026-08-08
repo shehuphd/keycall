@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -40,6 +41,52 @@ _RETRY_BACKOFF_SECONDS = (0.5, 1.5)
 _DEFAULT_CONNECT_TIMEOUT = 10.0
 _DEFAULT_READ_TIMEOUT = 60.0
 DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+# One SSE event may not exceed this even when the cumulative cap has room:
+# a single unbounded data: line must not buffer arbitrarily.
+_SSE_MAX_EVENT_BYTES = 1024 * 1024
+
+
+class _SSEDecoder:
+    """Incremental server-sent-events decoder: feed lines, collect
+    (event_name, data) pairs at blank-line boundaries. Comment lines and
+    unknown fields are dropped, never interpreted."""
+
+    __slots__ = ("_data", "_data_len", "_event")
+
+    def __init__(self) -> None:
+        self._event: str | None = None
+        self._data: list[str] = []
+        self._data_len = 0
+
+    def feed(self, line: str) -> tuple[str | None, str] | None:
+        """Returns a completed (event_name, data) pair, None otherwise.
+        Raises ValueError when a single event exceeds the per-event cap."""
+        if line == "":
+            if not self._data:
+                self._event = None
+                return None
+            pair = (self._event, "\n".join(self._data))
+            self._event, self._data, self._data_len = None, [], 0
+            return pair
+        if line.startswith("event:"):
+            self._event = line[6:].strip()
+        elif line.startswith("data:"):
+            value = line[5:]
+            value = value.removeprefix(" ")
+            self._data_len += len(value)
+            if self._data_len > _SSE_MAX_EVENT_BYTES:
+                raise ValueError("SSE event exceeded the per-event size limit")
+            self._data.append(value)
+        return None
+
+    def flush(self) -> tuple[str | None, str] | None:
+        """A final event unterminated by a blank line (some providers close
+        the connection right after the last data line)."""
+        if not self._data:
+            return None
+        pair = (self._event, "\n".join(self._data))
+        self._event, self._data, self._data_len = None, [], 0
+        return pair
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -340,6 +387,66 @@ class Transport(_TransportCore):
             attempt += 1
             time.sleep(delay)
 
+    @contextmanager
+    def stream_request(
+        self,
+        spec: RequestSpec,
+        *,
+        operation: str,
+        translate_error: ErrorTranslator | None = None,
+    ):
+        """Open a streaming request. Yields (headers, event_iterator) where
+        the iterator produces (event_name, data) SSE pairs. Never retries:
+        streaming is generation, and generation is never retried. Pre-stream
+        HTTP errors classify exactly as non-streaming ones."""
+        try:
+            http_request = self._client.build_request(
+                spec.method,
+                self._url(spec.path),
+                params=dict(spec.params) or None,
+                json=spec.json_body,
+                headers=_build_headers(self._resolved, self._credential),
+            )
+            response = self._client.send(http_request, stream=True)
+        except httpx.HTTPError as exc:
+            raise self._network_error(exc, operation) from None
+        try:
+            if response.status_code >= 300:
+                body = self._read_capped(response, operation)
+                outcome = self._classify_response(
+                    status_code=response.status_code,
+                    headers=response.headers,
+                    body=body,
+                    translate=translate_error,
+                    operation=operation,
+                    duration_ms=0.0,
+                )
+                assert isinstance(outcome, KeyCallError)
+                raise outcome
+            yield response.headers, self._iter_sse(response, operation)
+        finally:
+            response.close()
+
+    def _iter_sse(self, response: httpx.Response, operation: str) -> Iterator[tuple[str | None, str]]:
+        decoder = _SSEDecoder()
+        total = 0
+        try:
+            for line in response.iter_lines():
+                total += len(line) + 1
+                if total > self._max_response_bytes:
+                    raise self._size_error(operation)
+                try:
+                    pair = decoder.feed(line)
+                except ValueError:
+                    raise self._size_error(operation) from None
+                if pair is not None:
+                    yield pair
+            final = decoder.flush()
+            if final is not None:
+                yield final
+        except httpx.HTTPError as exc:
+            raise self._network_error(exc, operation) from None
+
 
 class AsyncTransport(_TransportCore):
     def __init__(
@@ -432,3 +539,59 @@ class AsyncTransport(_TransportCore):
                 raise outcome
             attempt += 1
             await anyio.sleep(delay)
+
+    @asynccontextmanager
+    async def stream_request(
+        self,
+        spec: RequestSpec,
+        *,
+        operation: str,
+        translate_error: ErrorTranslator | None = None,
+    ):
+        try:
+            http_request = self._client.build_request(
+                spec.method,
+                self._url(spec.path),
+                params=dict(spec.params) or None,
+                json=spec.json_body,
+                headers=_build_headers(self._resolved, self._credential),
+            )
+            response = await self._client.send(http_request, stream=True)
+        except httpx.HTTPError as exc:
+            raise self._network_error(exc, operation) from None
+        try:
+            if response.status_code >= 300:
+                body = await self._read_capped(response, operation)
+                outcome = self._classify_response(
+                    status_code=response.status_code,
+                    headers=response.headers,
+                    body=body,
+                    translate=translate_error,
+                    operation=operation,
+                    duration_ms=0.0,
+                )
+                assert isinstance(outcome, KeyCallError)
+                raise outcome
+            yield response.headers, self._aiter_sse(response, operation)
+        finally:
+            await response.aclose()
+
+    async def _aiter_sse(self, response: httpx.Response, operation: str):
+        decoder = _SSEDecoder()
+        total = 0
+        try:
+            async for line in response.aiter_lines():
+                total += len(line) + 1
+                if total > self._max_response_bytes:
+                    raise self._size_error(operation)
+                try:
+                    pair = decoder.feed(line)
+                except ValueError:
+                    raise self._size_error(operation) from None
+                if pair is not None:
+                    yield pair
+            final = decoder.flush()
+            if final is not None:
+                yield final
+        except httpx.HTTPError as exc:
+            raise self._network_error(exc, operation) from None

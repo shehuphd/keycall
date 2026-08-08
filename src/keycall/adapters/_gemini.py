@@ -19,15 +19,21 @@ from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
     Citation,
+    CitationFound,
     InvocationResult,
     Model,
     OutputPart,
+    StreamEvent,
+    StreamFinish,
+    StreamStart,
+    TextDelta,
     TextGenerationRequest,
     TextOutput,
     UnknownOutput,
+    UnknownStreamEvent,
     Usage,
 )
-from ._base import ProviderAdapter
+from ._base import ProviderAdapter, StreamAssembler
 
 _PAGE_SIZE = "1000"
 
@@ -56,7 +62,100 @@ def _strip_prefix(name: str) -> str:
     return name.removeprefix("models/")
 
 
+class _GeminiStreamAssembler(StreamAssembler):
+    """Gemini's SSE stream has no event names and no terminal marker: each
+    data line is a full GenerateContentResponse chunk, finishReason arrives
+    on or before the last chunk, and the connection then closes
+    (live-verified 2026-08-08). Completion is therefore the connection
+    close after a finishReason was seen, via on_close()."""
+
+    def __init__(self, resolved, request) -> None:
+        super().__init__(resolved, request)
+        self._started = False
+        self._seen_citation_urls: set[str] = set()
+
+    def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
+        payload = self._parse_data(data)
+        if not isinstance(payload, dict):
+            return []
+        events: list[StreamEvent] = []
+        if payload.get("modelVersion"):
+            self.model = _strip_prefix(str(payload["modelVersion"]))
+        if payload.get("responseId"):
+            self.provider_request_id = safe_request_id(payload.get("responseId"))
+        if not self._started:
+            self._started = True
+            events.append(StreamStart(model=self.model))
+
+        candidates = payload.get("candidates")
+        candidate = candidates[0] if isinstance(candidates, list) and candidates else None
+        if isinstance(candidate, dict):
+            content = candidate.get("content")
+            if isinstance(content, dict):
+                for part in content.get("parts", []):
+                    if isinstance(part, dict) and "text" in part:
+                        text = str(part["text"])
+                        self.append_text(text)
+                        events.append(TextDelta(text=text))
+                    elif isinstance(part, dict):
+                        kind = next(iter(part.keys()), "?")
+                        events.append(UnknownStreamEvent(provider_kind=str(kind)))
+            grounding = candidate.get("groundingMetadata")
+            if isinstance(grounding, dict):
+                for chunk in grounding.get("groundingChunks") or []:
+                    web = chunk.get("web") if isinstance(chunk, dict) else None
+                    if isinstance(web, dict) and web.get("uri"):
+                        url = str(web["uri"])
+                        if url not in self._seen_citation_urls:
+                            self._seen_citation_urls.add(url)
+                            citation = Citation(url=url, title=web.get("title"))
+                            self.citations.append(citation)
+                            events.append(CitationFound(citation=citation))
+
+        usage_raw = payload.get("usageMetadata")
+        if isinstance(usage_raw, dict) and any(
+            usage_raw.get(field) is not None
+            for field in ("promptTokenCount", "candidatesTokenCount", "totalTokenCount")
+        ):
+            # Chunks repeat usageMetadata; the final chunk is authoritative.
+            # A MAX_TOKENS truncation can omit candidatesTokenCount while
+            # still reporting the other counts (live-verified 2026-08-08).
+            self.usage = Usage(
+                input_tokens=usage_raw.get("promptTokenCount"),
+                output_tokens=usage_raw.get("candidatesTokenCount"),
+                cached_input_tokens=usage_raw.get("cachedContentTokenCount"),
+                reasoning_tokens=usage_raw.get("thoughtsTokenCount"),
+                total_tokens=usage_raw.get("totalTokenCount"),
+            )
+            self.usage_reported = True
+
+        if isinstance(candidate, dict) and candidate.get("finishReason"):
+            # Not terminal yet: a trailing chunk can still carry the final
+            # usageMetadata (live-verified 2026-08-08), so the stream close
+            # completes the response via on_close().
+            self.finish_reason = str(candidate["finishReason"])
+        return events
+
+    def on_close(self) -> list[StreamEvent]:
+        if self.finish_reason is None:
+            return []
+        self.saw_terminal = True
+        return [StreamFinish(finish_reason=self.finish_reason, usage=self.usage)]
+
+
 class GeminiAdapter(ProviderAdapter):
+    def build_stream_spec(self, request: TextGenerationRequest) -> RequestSpec:
+        spec = self.build_generation_spec(request)
+        return RequestSpec(
+            method=spec.method,
+            path=spec.path.replace(":generateContent", ":streamGenerateContent"),
+            params={**dict(spec.params), "alt": "sse"},
+            json_body=spec.json_body,
+        )
+
+    def stream_assembler(self, request: TextGenerationRequest) -> StreamAssembler:
+        return _GeminiStreamAssembler(self.resolved, request)
+
     def initial_list_request(self) -> RequestSpec:
         op = self.resolved.operations["list_models"]
         return RequestSpec(method=op["method"], path=op["path"], params={"pageSize": _PAGE_SIZE})

@@ -24,8 +24,56 @@ from typing import Any
 from .._enums import ModelCategory
 from .._errors import ErrorCode, KeyCallError
 from .._transport import RequestSpec
-from .._types import Model, TextGenerationRequest
-from ._openai_compat import OpenAICompatibleAdapter
+from .._types import (
+    Citation,
+    CitationFound,
+    Model,
+    StreamEvent,
+    StreamFinish,
+    TextGenerationRequest,
+)
+from ._base import StreamAssembler
+from ._openai_compat import CompatStreamAssembler, OpenAICompatibleAdapter
+
+
+class _PerplexityStreamAssembler(CompatStreamAssembler):
+    """Perplexity streams chat.completion.chunk objects but ends with a
+    chat.completion.done object instead of `data: [DONE]` (live-verified
+    2026-08-08). Citations and search_results ride on every chunk."""
+
+    def _collect_citations(self, payload: dict) -> list[StreamEvent]:
+        events: list[StreamEvent] = []
+        seen = {c.url for c in self.citations}
+        for entry in payload.get("search_results") or []:
+            if isinstance(entry, dict) and entry.get("url") and str(entry["url"]) not in seen:
+                citation = Citation(
+                    url=str(entry["url"]),
+                    title=entry.get("title"),
+                    cited_text=entry.get("snippet"),
+                )
+                seen.add(citation.url)
+                self.citations.append(citation)
+                events.append(CitationFound(citation=citation))
+        for url in payload.get("citations") or []:
+            if isinstance(url, str) and url not in seen:
+                citation = Citation(url=url)
+                seen.add(url)
+                self.citations.append(citation)
+                events.append(CitationFound(citation=citation))
+        return events
+
+    def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
+        if data.strip() == "[DONE]":
+            return super().feed(event_name, data)
+        payload = self._parse_data(data)
+        if not isinstance(payload, dict):
+            return []
+        events = self._chunk_events(payload)
+        events.extend(self._collect_citations(payload))
+        if payload.get("object") == "chat.completion.done":
+            self.saw_terminal = True
+            events.append(StreamFinish(finish_reason=self.finish_reason, usage=self.usage))
+        return events
 
 
 class PerplexityAdapter(OpenAICompatibleAdapter):
@@ -76,3 +124,6 @@ class PerplexityAdapter(OpenAICompatibleAdapter):
         if status_code == 400 and ("Invalid model" in message or "deprecated" in message):
             return ErrorCode.MODEL_NOT_AVAILABLE, False, message
         return super().translate_error(status_code, payload)
+
+    def stream_assembler(self, request: TextGenerationRequest) -> StreamAssembler:
+        return _PerplexityStreamAssembler(self.resolved, request)

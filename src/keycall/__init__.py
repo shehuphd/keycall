@@ -1,13 +1,14 @@
 """KeyCall: one consistent interface for validating AI-provider API keys,
 listing and filtering their models, and making normalized calls."""
 
-from ._client import AsyncKeyCall, KeyCall
+from ._client import AsyncKeyCall, AsyncTextStream, KeyCall, TextStream
 from ._enums import ModelCategory, Operation, ProviderProtocol
 from ._errors import ErrorCode, KeyCallError
 from ._types import (
     AudioInput,
     AudioOutput,
     Citation,
+    CitationFound,
     EmbeddingOutput,
     FileInput,
     FileOutput,
@@ -20,11 +21,16 @@ from ._types import (
     Model,
     ModelDiscovery,
     OutputPart,
+    StreamEvent,
+    StreamFinish,
+    StreamStart,
+    TextDelta,
     TextGenerationRequest,
     TextInput,
     TextOutput,
     TranscriptOutput,
     UnknownOutput,
+    UnknownStreamEvent,
     Usage,
     VideoOutput,
 )
@@ -33,9 +39,11 @@ __version__ = "0.4.1"
 
 __all__ = [
     "AsyncKeyCall",
+    "AsyncTextStream",
     "AudioInput",
     "AudioOutput",
     "Citation",
+    "CitationFound",
     "EmbeddingOutput",
     "ErrorCode",
     "FileInput",
@@ -54,11 +62,17 @@ __all__ = [
     "Operation",
     "OutputPart",
     "ProviderProtocol",
+    "StreamEvent",
+    "StreamFinish",
+    "StreamStart",
+    "TextDelta",
     "TextGenerationRequest",
     "TextInput",
     "TextOutput",
+    "TextStream",
     "TranscriptOutput",
     "UnknownOutput",
+    "UnknownStreamEvent",
     "Usage",
     "VideoOutput",
     "__version__",

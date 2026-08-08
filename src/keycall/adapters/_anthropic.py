@@ -13,15 +13,21 @@ from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
     Citation,
+    CitationFound,
     InvocationResult,
     Model,
     OutputPart,
+    StreamEvent,
+    StreamFinish,
+    StreamStart,
+    TextDelta,
     TextGenerationRequest,
     TextOutput,
     UnknownOutput,
+    UnknownStreamEvent,
     Usage,
 )
-from ._base import ProviderAdapter
+from ._base import InbandStreamError, ProviderAdapter, StreamAssembler
 
 # Anthropic requires max_tokens on every messages call; used when the
 # caller didn't specify one.
@@ -38,7 +44,112 @@ _PAGE_LIMIT = "1000"
 _STRUCTURED_OUTPUT_TOOL_NAME = "keycall_response"
 
 
+class _AnthropicStreamAssembler(StreamAssembler):
+    """Event names and shapes live-verified 2026-08-08: message_start,
+    content_block_start/delta/stop, message_delta (usage + stop_reason),
+    message_stop terminal, ping keep-alives, in-band error events."""
+
+    def __init__(self, resolved, request, adapter: AnthropicAdapter) -> None:
+        super().__init__(resolved, request)
+        self._adapter = adapter
+        # index -> content block type ("text", "tool_use:<name>", ...)
+        self._blocks: dict[int, str] = {}
+
+    def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
+        payload = self._parse_data(data)
+        if not isinstance(payload, dict):
+            return []
+        kind = event_name or str(payload.get("type", ""))
+        if kind == "ping":
+            return []
+        if kind == "message_start":
+            message = payload.get("message")
+            if isinstance(message, dict):
+                if message.get("model"):
+                    self.model = str(message["model"])
+                usage = message.get("usage")
+                if isinstance(usage, dict):
+                    self.usage = Usage(
+                        input_tokens=usage.get("input_tokens"),
+                        cached_input_tokens=usage.get("cache_read_input_tokens"),
+                    )
+            return [StreamStart(model=self.model)]
+        if kind == "content_block_start":
+            index = int(payload.get("index", 0))
+            block = payload.get("content_block")
+            block_type = str(block.get("type", "?")) if isinstance(block, dict) else "?"
+            if block_type == "tool_use" and isinstance(block, dict):
+                block_type = f"tool_use:{block.get('name', '')}"
+            self._blocks[index] = block_type
+            return []
+        if kind == "content_block_delta":
+            index = int(payload.get("index", 0))
+            delta = payload.get("delta")
+            if not isinstance(delta, dict):
+                return []
+            delta_type = delta.get("type")
+            if delta_type == "text_delta":
+                text = str(delta.get("text", ""))
+                self.append_text(text)
+                return [TextDelta(text=text)]
+            if delta_type == "input_json_delta" and self._blocks.get(index) == (
+                f"tool_use:{_STRUCTURED_OUTPUT_TOOL_NAME}"
+            ):
+                # The forced structured-output tool: its input is the answer,
+                # streamed as JSON fragments, matching the non-streaming
+                # contract that result.text carries the JSON string.
+                fragment = str(delta.get("partial_json", ""))
+                self.append_text(fragment)
+                return [TextDelta(text=fragment)]
+            if delta_type == "citations_delta":
+                note = delta.get("citation")
+                if isinstance(note, dict) and note.get("url"):
+                    citation = Citation(
+                        url=str(note["url"]),
+                        title=note.get("title"),
+                        cited_text=note.get("cited_text"),
+                    )
+                    self.citations.append(citation)
+                    return [CitationFound(citation=citation)]
+                return []
+            return []
+        if kind == "content_block_stop":
+            return []
+        if kind == "message_delta":
+            delta = payload.get("delta")
+            if isinstance(delta, dict) and delta.get("stop_reason"):
+                self.finish_reason = str(delta["stop_reason"])
+            usage = payload.get("usage")
+            if isinstance(usage, dict) and usage.get("output_tokens") is not None:
+                import dataclasses
+
+                self.usage = dataclasses.replace(
+                    self.usage, output_tokens=usage.get("output_tokens")
+                )
+                self.usage_reported = True
+            return []
+        if kind == "message_stop":
+            self.saw_terminal = True
+            return [StreamFinish(finish_reason=self.finish_reason, usage=self.usage)]
+        if kind == "error":
+            code, retryable, message = self._adapter.translate_error(500, payload)
+            raise InbandStreamError(code, retryable, message)
+        return [UnknownStreamEvent(provider_kind=kind or "?")]
+
+
 class AnthropicAdapter(ProviderAdapter):
+    def build_stream_spec(self, request: TextGenerationRequest) -> RequestSpec:
+        spec = self.build_generation_spec(request)
+        return RequestSpec(
+            method=spec.method,
+            path=spec.path,
+            params=spec.params,
+            json_body={**(spec.json_body or {}), "stream": True},
+        )
+
+    def stream_assembler(self, request: TextGenerationRequest) -> StreamAssembler:
+        return _AnthropicStreamAssembler(self.resolved, request, self)
+
     def initial_list_request(self) -> RequestSpec:
         op = self.resolved.operations["list_models"]
         return RequestSpec(method=op["method"], path=op["path"], params={"limit": _PAGE_LIMIT})

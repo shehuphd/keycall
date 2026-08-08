@@ -26,10 +26,18 @@ from ._enums import ModelCategory, ProviderProtocol
 from ._errors import ErrorCode, KeyCallError
 from ._registry import ResolvedProvider, catalog_version, resolve_provider
 from ._transport import AsyncTransport, Transport
-from ._types import InvocationResult, Message, Model, ModelDiscovery, TextGenerationRequest
+from ._types import (
+    InvocationResult,
+    Message,
+    Model,
+    ModelDiscovery,
+    StreamEvent,
+    TextGenerationRequest,
+)
 from .adapters import ProviderAdapter, adapter_for
+from .adapters._base import InbandStreamError, StreamAssembler
 
-__all__ = ["AsyncKeyCall", "KeyCall"]
+__all__ = ["AsyncKeyCall", "AsyncTextStream", "KeyCall", "TextStream"]
 
 _MAX_LIST_PAGES = 10
 _DEFAULT_CATEGORIES = frozenset({ModelCategory.TEXT_GENERATION})
@@ -270,6 +278,147 @@ class _BaseClient:
         return invocation
 
 
+class _StreamCore:
+    """State shared by the sync and async stream wrappers."""
+
+    def __init__(self, client: _BaseClient, request: TextGenerationRequest) -> None:
+        self._client = client
+        self._request = request
+        self._assembler: StreamAssembler = client._adapter.stream_assembler(request)
+        self._spec = client._adapter.build_stream_spec(request)
+        self._started_at: float | None = None
+        self._result: InvocationResult | None = None
+        self._failed = False
+
+    def _feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
+        try:
+            return self._assembler.feed(event_name, data)
+        except InbandStreamError as exc:
+            self._failed = True
+            raise KeyCallError(
+                self._client._transport._scrub(exc.raw_message),
+                code=exc.code,
+                provider=self._client.provider,
+                operation="text_generation",
+                retryable=exc.retryable,
+            ) from None
+        except KeyCallError:
+            self._failed = True
+            raise
+
+    def _check_terminal(self) -> None:
+        """The stream closed; without the provider's terminal signal that is
+        a truncation, never a completion."""
+        if not self._assembler.saw_terminal:
+            self._failed = True
+            raise KeyCallError(
+                "the stream ended before the provider's terminal event; "
+                "the response is incomplete",
+                code=ErrorCode.NETWORK_ERROR,
+                provider=self._client.provider,
+                operation="text_generation",
+                retryable=True,
+            )
+
+    def _build_result(self) -> InvocationResult:
+        if self._failed or not self._assembler.saw_terminal:
+            raise KeyCallError(
+                "the stream did not complete; no result is available",
+                code=ErrorCode.NETWORK_ERROR,
+                provider=self._client.provider,
+                operation="text_generation",
+            )
+        if self._result is None:
+            import time as _time
+
+            duration = (
+                (_time.monotonic() - self._started_at) * 1000.0 if self._started_at else 0.0
+            )
+            invocation = self._assembler.finalize(round_trip_duration_ms=duration)
+            self._result = _with_schema_warning(invocation, self._request, self._client.provider)
+        return self._result
+
+
+class TextStream(_StreamCore):
+    """Iterate typed stream events; call result() after exhaustion for the
+    full InvocationResult. The context manager owns the connection: leaving
+    the block closes it, even on early break or exception."""
+
+    def __enter__(self) -> Self:
+        import time as _time
+
+        self._ctx = self._client._transport.stream_request(
+            self._spec,
+            operation="text_generation",
+            translate_error=self._client._adapter.translate_error,
+        )
+        headers, events = self._ctx.__enter__()
+        self._assembler.response_headers = headers
+        self._events = events
+        self._started_at = _time.monotonic()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self._ctx.__exit__(exc_type, exc, tb)
+
+    def __iter__(self) -> Any:
+        for event_name, data in self._events:
+            yield from self._feed(event_name, data)
+            if self._assembler.saw_terminal:
+                break
+        if not self._assembler.saw_terminal:
+            yield from self._assembler.on_close()
+        self._check_terminal()
+
+    def result(self) -> InvocationResult:
+        return self._build_result()
+
+
+class AsyncTextStream(_StreamCore):
+    """Async twin of TextStream."""
+
+    async def __aenter__(self) -> Self:
+        import time as _time
+
+        self._ctx = self._client._transport.stream_request(
+            self._spec,
+            operation="text_generation",
+            translate_error=self._client._adapter.translate_error,
+        )
+        headers, events = await self._ctx.__aenter__()
+        self._assembler.response_headers = headers
+        self._events = events
+        self._started_at = _time.monotonic()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self._ctx.__aexit__(exc_type, exc, tb)
+
+    async def __aiter__(self) -> Any:
+        async for event_name, data in self._events:
+            for event in self._feed(event_name, data):
+                yield event
+            if self._assembler.saw_terminal:
+                break
+        if not self._assembler.saw_terminal:
+            for event in self._assembler.on_close():
+                yield event
+        self._check_terminal()
+
+    def result(self) -> InvocationResult:
+        return self._build_result()
+
+
 class KeyCall(_BaseClient):
     """Synchronous client. See AsyncKeyCall for the awaitable equivalent."""
 
@@ -405,6 +554,33 @@ class KeyCall(_BaseClient):
             )
         )
 
+    def stream_text(
+        self,
+        *,
+        model: str,
+        messages: Sequence[Message],
+        max_output_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        web_search: bool = False,
+        response_schema: Mapping[str, Any] | None = None,
+    ) -> TextStream:
+        """Stream a text generation. Use as a context manager; iterate the
+        typed events, then call result() for the full InvocationResult."""
+        self._require_open()
+        return TextStream(
+            self,
+            TextGenerationRequest(
+                model=model,
+                messages=messages,
+                max_output_tokens=max_output_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                web_search=web_search,
+                response_schema=response_schema,
+            ),
+        )
+
 
 class AsyncKeyCall(_BaseClient):
     """Asynchronous client. Same identity rules and methods as KeyCall."""
@@ -538,4 +714,31 @@ class AsyncKeyCall(_BaseClient):
                 web_search=web_search,
                 response_schema=response_schema,
             )
+        )
+
+    def stream_text(
+        self,
+        *,
+        model: str,
+        messages: Sequence[Message],
+        max_output_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        web_search: bool = False,
+        response_schema: Mapping[str, Any] | None = None,
+    ) -> AsyncTextStream:
+        """Stream a text generation. Use as an async context manager;
+        iterate with `async for`, then call result()."""
+        self._require_open()
+        return AsyncTextStream(
+            self,
+            TextGenerationRequest(
+                model=model,
+                messages=messages,
+                max_output_tokens=max_output_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                web_search=web_search,
+                response_schema=response_schema,
+            ),
         )

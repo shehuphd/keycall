@@ -18,6 +18,7 @@ __all__ = [
     "AudioInput",
     "AudioOutput",
     "Citation",
+    "CitationFound",
     "EmbeddingOutput",
     "FileInput",
     "FileOutput",
@@ -30,11 +31,16 @@ __all__ = [
     "Model",
     "ModelDiscovery",
     "OutputPart",
+    "StreamEvent",
+    "StreamFinish",
+    "StreamStart",
+    "TextDelta",
     "TextGenerationRequest",
     "TextInput",
     "TextOutput",
     "TranscriptOutput",
     "UnknownOutput",
+    "UnknownStreamEvent",
     "Usage",
     "VideoOutput",
 ]
@@ -238,6 +244,56 @@ class TextGenerationRequest:
             raise ValueError("temperature must be between 0 and 2")
         if self.top_p is not None and not 0.0 < self.top_p <= 1.0:
             raise ValueError("top_p must be between 0 (exclusive) and 1")
+
+
+# --- stream events ---------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StreamStart:
+    """First event of a stream: the provider accepted the request."""
+
+    model: str
+    kind: Literal["stream_start"] = "stream_start"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TextDelta:
+    """An increment of generated text. With response_schema, deltas are
+    fragments of the final JSON string."""
+
+    text: str
+    kind: Literal["text_delta"] = "text_delta"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CitationFound:
+    """A web-search source surfaced during the stream."""
+
+    citation: Citation
+    kind: Literal["citation"] = "citation"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StreamFinish:
+    """Last event of a completed stream. After this, ``stream.result()``
+    returns the full InvocationResult."""
+
+    finish_reason: str | None
+    usage: Usage
+    kind: Literal["stream_finish"] = "stream_finish"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UnknownStreamEvent:
+    """A stream event KeyCall doesn't recognize yet. Bounded provider kind
+    only — never a raw provider payload."""
+
+    provider_kind: str
+    kind: Literal["unknown"] = "unknown"
+
+
+StreamEvent = StreamStart | TextDelta | CitationFound | StreamFinish | UnknownStreamEvent
 
 
 # --- results ---------------------------------------------------------------

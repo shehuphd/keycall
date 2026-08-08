@@ -12,10 +12,103 @@ from collections.abc import Mapping
 from typing import Any
 
 from .._enums import Operation
-from .._errors import ErrorCode
+from .._errors import ErrorCode, KeyCallError
 from .._registry import ResolvedProvider
 from .._transport import RequestSpec
-from .._types import InvocationResult, Model, TextGenerationRequest
+from .._types import (
+    Citation,
+    InvocationResult,
+    Model,
+    StreamEvent,
+    TextGenerationRequest,
+    TextOutput,
+    Usage,
+)
+
+
+class InbandStreamError(Exception):
+    """A provider error event received mid-stream. Carries the raw provider
+    message; the client scrubs it before it can reach a KeyCallError."""
+
+    def __init__(self, code: ErrorCode, retryable: bool, raw_message: str) -> None:
+        super().__init__(raw_message)
+        self.code = code
+        self.retryable = retryable
+        self.raw_message = raw_message
+
+
+class StreamAssembler(ABC):
+    """Per-call accumulator: translates raw SSE pairs into typed events and
+    builds the final InvocationResult. Fed by the client's TextStream; the
+    response headers are set on it once the stream opens."""
+
+    def __init__(self, resolved: ResolvedProvider, request: TextGenerationRequest) -> None:
+        self.resolved = resolved
+        self.request = request
+        self.response_headers: Mapping[str, str] = {}
+        self.saw_terminal = False
+        self.model: str = request.model
+        self.finish_reason: str | None = None
+        self.usage = Usage()
+        self.usage_reported = False
+        self.provider_request_id: str | None = None
+        self.citations: list[Citation] = []
+        self.warnings: list[str] = []
+        self._text: list[str] = []
+
+    @abstractmethod
+    def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
+        """Translate one SSE pair into zero or more typed events. Raises
+        InbandStreamError for provider error events, KeyCallError for
+        malformed stream data."""
+
+    def on_close(self) -> list[StreamEvent]:
+        """Called when the server closes the stream. Adapters whose
+        protocol has no terminal event (Gemini) decide here whether the
+        close was a completion; the default treats close as no signal."""
+        return []
+
+    def _parse_data(self, data: str) -> Any:
+        import json
+
+        try:
+            return json.loads(data)
+        except ValueError:
+            raise KeyCallError(
+                "provider sent a non-JSON stream event",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.TEXT_GENERATION.value,
+            ) from None
+
+    def append_text(self, text: str) -> None:
+        self._text.append(text)
+
+    @property
+    def text(self) -> str:
+        return "".join(self._text)
+
+    def finalize(self, *, round_trip_duration_ms: float) -> InvocationResult:
+        if self.provider_request_id is None and self.resolved.provider_request_id_header:
+            from .._sanitize import safe_request_id
+
+            self.provider_request_id = safe_request_id(
+                self.response_headers.get(self.resolved.provider_request_id_header)
+            )
+        if not self.usage_reported:
+            self.warnings.append("provider reported no usage information")
+        return InvocationResult(
+            provider=self.resolved.provider,
+            model=self.model,
+            operation=Operation.TEXT_GENERATION,
+            parts=(TextOutput(text=self.text),) if self._text else (),
+            usage=self.usage,
+            round_trip_duration_ms=round_trip_duration_ms,
+            provider_request_id=self.provider_request_id,
+            finish_reason=self.finish_reason,
+            citations=tuple(self.citations),
+            warnings=tuple(self.warnings),
+        )
 
 
 class ProviderAdapter(ABC):
@@ -39,6 +132,24 @@ class ProviderAdapter(ABC):
 
     @abstractmethod
     def build_generation_spec(self, request: TextGenerationRequest) -> RequestSpec: ...
+
+    def build_stream_spec(self, request: TextGenerationRequest) -> RequestSpec:
+        """Streaming variant of build_generation_spec. Raises for adapters
+        that haven't implemented streaming rather than guessing a flag."""
+        raise KeyCallError(
+            f"streaming is not implemented for provider {self.resolved.provider!r}",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.TEXT_GENERATION.value,
+        )
+
+    def stream_assembler(self, request: TextGenerationRequest) -> StreamAssembler:
+        raise KeyCallError(
+            f"streaming is not implemented for provider {self.resolved.provider!r}",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.TEXT_GENERATION.value,
+        )
 
     @abstractmethod
     def parse_generation_response(
