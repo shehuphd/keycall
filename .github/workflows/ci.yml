@@ -34,8 +34,9 @@ jobs:
         # only; live tests are deselected by the default -m filter.
         run: pytest -q
 
-  # PRD 14.2.1 mode "warn": live smoke on manual dispatch only, never on
-  # routine pushes or fork PRs. Failures are reported but do not fail CI.
+  # Live-verification mode "warn": live smoke on manual dispatch only,
+  # never on routine pushes or fork PRs. Failures are reported but do not
+  # fail CI.
   live-warn:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

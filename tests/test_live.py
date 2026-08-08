@@ -1,4 +1,4 @@
-"""Live provider smoke tests (PRD 14.2.1).
+"""Live provider smoke tests.
 
 Deselected by default; select with `pytest -m live`. Credentials load only
 when this module's test actually runs, from the target file named by
