@@ -292,6 +292,25 @@ candidate; the result carries a digest of the raw model-list snapshot and
 the selection-rule version, so a failure is reconstructable against the
 provider surface that produced it.
 
+### Live verification in CI
+
+The same walk runs as a pytest suite with three modes:
+
+| Mode | Where | Behavior |
+|---|---|---|
+| `off` | Every ordinary `pytest` run | Live tests deselected; no credentials touched |
+| `warn` | CI `live-warn` job, manual dispatch only | Runs live smoke, reports failures, never fails the workflow |
+| `strict` | Release workflow, before publish | Any unverified target blocks the release, including a missing credentials secret |
+
+Select live tests explicitly with `pytest -m live`; they load credentials
+only at run time, from the target file named by `KEYCALL_LIVE_SOURCE`. In
+CI the file is written from the `KEYCALL_LIVE_TARGETS` repository secret
+(TOML target syntax, below). Rate-limit outcomes are reported as
+verification-environment failures, distinct from adapter or credential
+failures; in strict mode they still block the release because the
+release remains unverified. Fork pull requests receive no secrets and
+never run live jobs.
+
 ### Sources
 
 TOML:

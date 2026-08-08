@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARCHITECTURE.md: layer diagram, credential-boundary contract, and
   per-component contracts.
 - CI test matrix includes Python 3.14.
+- Live verification modes: a `live`-marked pytest suite (deselected by
+  default) running the verify walk against real providers; a manual-only
+  `live-warn` CI job that reports without failing; and a `live-strict`
+  release gate that blocks publishing until every target verifies,
+  including when the `KEYCALL_LIVE_TARGETS` secret is absent. Credentials
+  load only at test run time from `KEYCALL_LIVE_SOURCE`.
 
 ## [0.3.1] — 2026-08-08
 

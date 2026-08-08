@@ -30,8 +30,35 @@ jobs:
         run: ruff check src tests
 
       - name: Test
-        # No provider secrets: the suite runs against recorded fixtures only.
+        # No provider secrets: the suite runs against recorded fixtures
+        # only; live tests are deselected by the default -m filter.
         run: pytest -q
+
+  # PRD 14.2.1 mode "warn": live smoke on manual dispatch only, never on
+  # routine pushes or fork PRs. Failures are reported but do not fail CI.
+  live-warn:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      KEYCALL_LIVE_TARGETS: ${{ secrets.KEYCALL_LIVE_TARGETS }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Note when credentials are absent
+        if: env.KEYCALL_LIVE_TARGETS == ''
+        run: echo "::notice::live smoke skipped — KEYCALL_LIVE_TARGETS secret is not set"
+
+      - name: Live smoke (warn)
+        if: env.KEYCALL_LIVE_TARGETS != ''
+        run: |
+          pip install -e ".[dev]"
+          printf '%s' "$KEYCALL_LIVE_TARGETS" > "$RUNNER_TEMP/live-targets.toml"
+          KEYCALL_LIVE_SOURCE="$RUNNER_TEMP/live-targets.toml" pytest -q -m live -s
 
   build:
     runs-on: ubuntu-latest
