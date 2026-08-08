@@ -5,6 +5,15 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-08-08
+
+### Fixed
+
+- The README status line no longer hardcodes a version number; the 0.3.0
+  PyPI page showed "early release (0.2.0)" because the line was not bumped
+  with the release. The version now appears only in surfaces that update
+  automatically (package metadata, this changelog, release tags).
+
 ## [0.3.0] — 2026-08-08
 
 ### Added
