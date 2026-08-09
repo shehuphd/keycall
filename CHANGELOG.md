@@ -5,6 +5,18 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- The viewer Playground sends images: tick **Image**, pick a file or paste
+  a URL, and it goes out as a real `ImageInput` on the user turn. The
+  browser posts the file as base64 and the server decodes it, so the
+  Playground exercises the same path a library caller takes rather than a
+  viewer-only shortcut. An image can carry a turn with no prompt. The
+  viewer's request-body cap moved from 64 KB to 8 MB to fit an encoded
+  photo.
+
 ## [0.8.0] — 2026-08-09
 
 ### Added

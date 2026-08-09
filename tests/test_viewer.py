@@ -766,3 +766,109 @@ def test_stream_emits_tool_call_events():
     assert final["kind"] == "result"
     assert final["tool_calls"][0]["arguments"] == {"city": "London"}
     assert CANARY not in json.dumps(streamed)
+
+
+PNG_1PX = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDAT\x08\xd7c\xf8\xcf"
+    b"\xc0\x00\x00\x03\x01\x01\x00\x18\xdd\x8d\xb0\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def test_playground_image_reaches_the_provider_as_bytes():
+    """The browser holds the file, so it posts base64; the server decodes
+    it into the same ImageInput a library caller would build."""
+    import base64
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-4o-mini",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "blue"}]}
+                ],
+                "usage": {"input_tokens": 5, "output_tokens": 1, "total_tokens": 6},
+            },
+        )
+
+    reg = Registry(
+        [Target(provider="openai", key=CANARY, name="my-openai")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        body = generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "gpt-4o-mini",
+                "prompt": "what colour?",
+                "images": [{"data_base64": base64.b64encode(PNG_1PX).decode()}],
+            },
+        )
+    finally:
+        reg.close()
+
+    assert body["text"] == "blue"
+    content = seen["body"]["input"][0]["content"]
+    image = next(c for c in content if c["type"] == "input_image")
+    # Media type comes from the bytes, not from whatever the browser said.
+    assert image["image_url"].startswith("data:image/png;base64,")
+
+
+def test_playground_image_can_carry_a_turn_without_a_prompt():
+    import base64
+
+    reg = make_registry()
+    try:
+        body = generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "gpt-4o-mini",
+                "prompt": "",
+                "images": [{"data_base64": base64.b64encode(PNG_1PX).decode()}],
+            },
+        )
+    finally:
+        reg.close()
+    assert "error" not in body
+
+
+def test_malformed_playground_images_are_named_bad_requests():
+    reg = make_registry()
+    try:
+        both = generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "gpt-4o-mini",
+                "prompt": "hi",
+                "images": [{"url": "https://x/i.png", "data_base64": "AAAA"}],
+            },
+        )
+        assert both["error"]["code"] == "bad_request"
+        assert "exactly one" in both["error"]["message"]
+
+        not_base64 = generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "gpt-4o-mini",
+                "prompt": "hi",
+                "images": [{"data_base64": "this is not base64!!"}],
+            },
+        )
+        assert not_base64["error"]["code"] == "bad_request"
+    finally:
+        reg.close()

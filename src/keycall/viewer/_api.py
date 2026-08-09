@@ -9,6 +9,8 @@ response encoder); nothing here ever touches `Target.key` or
 
 from __future__ import annotations
 
+import base64
+import binascii
 import dataclasses
 from collections.abc import Iterator
 from typing import Any
@@ -17,6 +19,7 @@ from .._enums import ModelCategory
 from .._errors import KeyCallError
 from .._sources import SourceError, load_targets
 from .._types import (
+    ImageInput,
     Message,
     MessageRole,
     TextGenerationRequest,
@@ -157,6 +160,36 @@ def _parse_tools(raw: Any) -> list[Tool]:
     return tools
 
 
+def _parse_images(raw: Any) -> list[ImageInput]:
+    """Images the browser attached: base64 for a picked file, or a URL.
+    The browser sends base64 because it holds the bytes; KeyCall decodes
+    here so the adapters see the same ImageInput any caller would build."""
+    if raw in (None, []):
+        return []
+    if not isinstance(raw, list):
+        raise _BadRequest("images must be a JSON array")
+    images: list[ImageInput] = []
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise _BadRequest(f"image {index} must be an object")
+        url = entry.get("url")
+        encoded = entry.get("data_base64")
+        if bool(url) == bool(encoded):
+            raise _BadRequest(f"image {index} needs exactly one of url or data_base64")
+        try:
+            images.append(
+                ImageInput(url=str(url))
+                if url
+                else ImageInput(
+                    data=base64.b64decode(str(encoded), validate=True),
+                    media_type=entry.get("media_type"),
+                )
+            )
+        except (binascii.Error, TypeError, ValueError) as error:
+            raise _BadRequest(f"image {index}: {error}") from None
+    return images
+
+
 def _parse_history(raw: Any) -> list[Message]:
     """Rebuild prior turns the browser is replaying. KeyCall never runs the
     tool loop, so the Playground holds the conversation and sends it back;
@@ -216,16 +249,22 @@ def _generation_fields(body: dict[str, Any]) -> dict[str, Any] | None:
     if not model or not isinstance(model, str):
         return None
     history = _parse_history(body.get("history"))
-    # A continuation replays the whole conversation, so the prompt is only
-    # required when there is no history to continue.
-    if not history and (not prompt or not isinstance(prompt, str)):
+    images = _parse_images(body.get("images"))
+    # A continuation replays the whole conversation and an image can carry
+    # a turn on its own, so the prompt is required only when neither is
+    # present.
+    if not history and not images and (not prompt or not isinstance(prompt, str)):
         return None
     messages = []
     system = body.get("system")
     if system:
         messages.append(Message(role="system", content=[TextInput(text=str(system))]))
+    user_parts: list[Any] = []
     if prompt and isinstance(prompt, str):
-        messages.append(Message(role="user", content=[TextInput(text=prompt)]))
+        user_parts.append(TextInput(text=prompt))
+    user_parts.extend(images)
+    if user_parts:
+        messages.append(Message(role="user", content=user_parts))
     messages.extend(history)
     tool_choice = body.get("tool_choice") or None
     return {

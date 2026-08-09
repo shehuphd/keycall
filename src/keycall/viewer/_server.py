@@ -42,7 +42,10 @@ from .auth import Token
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 _CONTENT_TYPES = {".html": "text/html", ".css": "text/css", ".js": "text/javascript"}
-_MAX_BODY_BYTES = 64 * 1024
+# Large enough for a base64-encoded photo from the Playground's image
+# picker (encoding costs about a third on top of the file size), small
+# enough that a single request cannot exhaust memory on a local server.
+_MAX_BODY_BYTES = 8 * 1024 * 1024
 _MAX_VERIFY_ATTEMPTS_DEFAULT = 8
 _MAX_VERIFY_ATTEMPTS = 32
 

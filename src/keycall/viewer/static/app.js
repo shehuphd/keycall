@@ -293,6 +293,55 @@ async function loadPlaygroundModels() {
 
 el("pg-target").addEventListener("change", loadPlaygroundModels);
 
+// --- images -----------------------------------------------------------------
+
+// Holds the picked file's bytes as base64. The server decodes it back into
+// the same ImageInput any caller would construct, so the Playground
+// exercises the real path rather than a viewer-only shortcut.
+let PG_IMAGE = null;
+
+el("pg-image-on").addEventListener("change", () => {
+  el("pg-image-panel").hidden = !el("pg-image-on").checked;
+});
+
+el("pg-image-clear").addEventListener("click", () => {
+  PG_IMAGE = null;
+  el("pg-image-file").value = "";
+  el("pg-image-url").value = "";
+  el("pg-image-status").textContent = "";
+});
+
+el("pg-image-file").addEventListener("change", () => {
+  const file = el("pg-image-file").files[0];
+  if (!file) {
+    PG_IMAGE = null;
+    el("pg-image-status").textContent = "";
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    // readAsDataURL gives "data:<type>;base64,<payload>"; the server wants
+    // the payload, and the media type is re-derived from the bytes anyway.
+    const encoded = String(reader.result).split(",")[1] || "";
+    PG_IMAGE = { data_base64: encoded, media_type: file.type || undefined };
+    const size =
+      file.size < 1024 ? `${file.size} bytes` : `${Math.round(file.size / 1024)} KB`;
+    el("pg-image-status").textContent = `${file.name} · ${size}`;
+  };
+  reader.onerror = () => {
+    PG_IMAGE = null;
+    el("pg-image-status").textContent = "could not read that file";
+  };
+  reader.readAsDataURL(file);
+});
+
+function imagesFromInput() {
+  if (!el("pg-image-on").checked) return undefined;
+  const url = el("pg-image-url").value.trim();
+  if (url) return [{ url }];
+  return PG_IMAGE ? [PG_IMAGE] : undefined;
+}
+
 // --- tools ------------------------------------------------------------------
 
 const TOOL_EXAMPLE = [
@@ -393,7 +442,8 @@ async function runGeneration({ continuation }) {
   const out = el("pg-result");
   const model = el("pg-model").value;
   const prompt = el("pg-prompt").value.trim();
-  if (!model || (!prompt && !continuation)) {
+  const images = imagesFromInput();
+  if (!model || (!prompt && !continuation && !images)) {
     out.textContent = "pick a model and enter a prompt";
     return;
   }
@@ -421,6 +471,7 @@ async function runGeneration({ continuation }) {
     web_search: el("pg-search").checked,
     tools: tooling.tools,
     tool_choice: tooling.choice,
+    images,
     history: PG_HISTORY.length ? PG_HISTORY : undefined,
   };
   try {
