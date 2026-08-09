@@ -293,13 +293,120 @@ async function loadPlaygroundModels() {
 
 el("pg-target").addEventListener("change", loadPlaygroundModels);
 
-el("pg-run").addEventListener("click", async () => {
+// --- tools ------------------------------------------------------------------
+
+const TOOL_EXAMPLE = [
+  {
+    name: "get_weather",
+    description: "Get the current weather for a city",
+    input_schema: {
+      type: "object",
+      properties: { city: { type: "string", description: "City name" } },
+      required: ["city"],
+    },
+  },
+];
+
+// The conversation so far, replayed on every continuation. KeyCall never
+// runs the tool loop, so the browser owns the turns; tool_call parts carry
+// their `opaque` echo data back untouched or providers that require it
+// reject the next turn.
+let PG_HISTORY = [];
+
+el("pg-tools-on").addEventListener("change", () => {
+  el("pg-tools-panel").hidden = !el("pg-tools-on").checked;
+});
+
+el("pg-tools-example").addEventListener("click", () => {
+  el("pg-tools").value = JSON.stringify(TOOL_EXAMPLE, null, 2);
+  el("pg-tools-on").checked = true;
+  el("pg-tools-panel").hidden = false;
+});
+
+function toolsFromInput() {
+  if (!el("pg-tools-on").checked) return { tools: undefined, choice: undefined };
+  const raw = el("pg-tools").value.trim();
+  if (!raw) return { tools: undefined, choice: undefined };
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    // Report the JSON error here rather than sending it and getting back a
+    // generic bad_request from the server.
+    throw new Error(`tool definitions are not valid JSON: ${err.message}`);
+  }
+  return { tools: parsed, choice: el("pg-tool-choice").value || undefined };
+}
+
+function renderToolCalls(result) {
+  const panel = el("pg-tool-calls");
+  clear(panel);
+  const calls = result.tool_calls || [];
+  if (!calls.length) return;
+
+  const card = document.createElement("div");
+  card.className = "card";
+  const head = document.createElement("strong");
+  head.textContent = `${calls.length} tool call(s) — answer to continue`;
+  card.appendChild(head);
+
+  calls.forEach((call) => {
+    const row = document.createElement("div");
+    row.className = "attempt";
+    const label = document.createElement("div");
+    label.textContent = `${call.name}(${JSON.stringify(call.arguments)})`;
+    row.appendChild(label);
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "tool result (text or JSON)";
+    input.dataset.callId = call.id;
+    row.appendChild(input);
+    card.appendChild(row);
+  });
+
+  const send = document.createElement("button");
+  send.textContent = "Send results";
+  send.addEventListener("click", () => {
+    const results = [...card.querySelectorAll("input[data-call-id]")].map((input) => {
+      const call = calls.find((c) => c.id === input.dataset.callId);
+      return {
+        kind: "tool_result",
+        tool_call_id: call.id,
+        name: call.name,
+        content: input.value || "(no result)",
+      };
+    });
+    // The model's turn, then ours, both replayed on the next request.
+    PG_HISTORY.push({ role: "assistant", parts: calls });
+    PG_HISTORY.push({ role: "user", parts: results });
+    clear(panel);
+    runGeneration({ continuation: true });
+  });
+  card.appendChild(send);
+  panel.appendChild(card);
+}
+
+el("pg-run").addEventListener("click", () => runGeneration({ continuation: false }));
+
+async function runGeneration({ continuation }) {
   const btn = el("pg-run");
   const out = el("pg-result");
   const model = el("pg-model").value;
   const prompt = el("pg-prompt").value.trim();
-  if (!model || !prompt) {
+  if (!model || (!prompt && !continuation)) {
     out.textContent = "pick a model and enter a prompt";
+    return;
+  }
+  if (!continuation) {
+    PG_HISTORY = [];
+    clear(el("pg-tool-calls"));
+  }
+  let tooling;
+  try {
+    tooling = toolsFromInput();
+  } catch (err) {
+    clear(out);
+    renderGeneration(out, { error: { code: "bad_request", message: err.message } });
     return;
   }
   btn.disabled = true;
@@ -312,6 +419,9 @@ el("pg-run").addEventListener("click", async () => {
     system: el("pg-system").value.trim() || undefined,
     max_output_tokens: Number(el("pg-maxtok").value) || undefined,
     web_search: el("pg-search").checked,
+    tools: tooling.tools,
+    tool_choice: tooling.choice,
+    history: PG_HISTORY.length ? PG_HISTORY : undefined,
   };
   try {
     await streamGeneration(out, body);
@@ -327,10 +437,11 @@ el("pg-run").addEventListener("click", async () => {
       // generation the stream would have.
       const data = await api("/api/generate", { method: "POST", body });
       renderGeneration(out, data);
+      renderToolCalls(data);
     }
   }
   btn.disabled = false;
-});
+}
 
 async function streamGeneration(out, body) {
   let res;
@@ -382,8 +493,13 @@ async function streamGeneration(out, body) {
           // Append a text node per delta: textContent += would re-copy the
           // whole accumulated string on every token.
           text.appendChild(document.createTextNode(event.text));
+        } else if (event.kind === "tool_call_started") {
+          // Named before the arguments finish parsing, so show the call is
+          // coming without implying it can be acted on yet.
+          meta.textContent = `calling ${event.name}…`;
         } else if (event.kind === "result") {
           renderGeneration(out, event);
+          renderToolCalls(event);
           settled = true;
         }
       }

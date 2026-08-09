@@ -542,3 +542,227 @@ def test_stream_endpoint_truncation_surfaces_error_event():
     finally:
         srv.shutdown()
         reg.close()
+
+
+WEATHER_TOOL = {
+    "name": "get_weather",
+    "description": "Get the weather",
+    "input_schema": {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+    },
+}
+
+
+def _tool_call_registry():
+    """A target whose model asks for a tool, then answers once it has the
+    result. The second call is distinguished by the replayed history."""
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+        body = json.loads(request.content)
+        seen.append(body)
+        replied = any(
+            item.get("type") == "function_call_output" for item in body.get("input", [])
+        )
+        if replied:
+            return httpx.Response(
+                200,
+                json={
+                    "model": "gpt-4o-mini",
+                    "status": "completed",
+                    "output": [
+                        {"type": "message", "content": [{"type": "output_text", "text": "14C"}]}
+                    ],
+                    "usage": {"input_tokens": 9, "output_tokens": 2, "total_tokens": 11},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-4o-mini",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "fc_1",
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "get_weather",
+                        "arguments": '{"city":"London"}',
+                    }
+                ],
+                "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+            },
+        )
+
+    targets = [Target(provider="openai", key=CANARY, name="my-openai")]
+    return Registry(targets, httpx_transport=httpx.MockTransport(handler)), seen
+
+
+def test_generate_surfaces_tool_calls_with_their_echo_data():
+    reg, seen = _tool_call_registry()
+    try:
+        body = generate(
+            reg,
+            0,
+            {"target": 0, "model": "gpt-4o-mini", "prompt": "weather?", "tools": [WEATHER_TOOL]},
+        )
+        assert [c["name"] for c in body["tool_calls"]] == ["get_weather"]
+        call = body["tool_calls"][0]
+        assert call["arguments"] == {"city": "London"}
+        # The browser has to hand this back untouched on the next turn.
+        assert call["opaque"]
+        assert seen[0]["tools"][0]["name"] == "get_weather"
+        assert CANARY not in json.dumps(body)
+    finally:
+        reg.close()
+
+
+def test_generate_continues_from_replayed_history():
+    """The Playground owns the loop, so a continuation arrives as history
+    the server rebuilds into messages."""
+    reg, seen = _tool_call_registry()
+    try:
+        first = generate(
+            reg,
+            0,
+            {"target": 0, "model": "gpt-4o-mini", "prompt": "weather?", "tools": [WEATHER_TOOL]},
+        )
+        call = first["tool_calls"][0]
+        second = generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "gpt-4o-mini",
+                "prompt": "weather?",
+                "tools": [WEATHER_TOOL],
+                "history": [
+                    {"role": "assistant", "parts": [call]},
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "kind": "tool_result",
+                                "tool_call_id": call["id"],
+                                "name": call["name"],
+                                "content": '{"temp_c": 14}',
+                            }
+                        ],
+                    },
+                ],
+            },
+        )
+        assert second["text"] == "14C"
+        assert not second["tool_calls"]
+        # The replay carried the call and its result to the provider.
+        replay = seen[1]["input"]
+        assert any(item.get("type") == "function_call" for item in replay)
+        assert any(item.get("type") == "function_call_output" for item in replay)
+    finally:
+        reg.close()
+
+
+def test_malformed_tools_and_history_are_named_bad_requests():
+    reg = make_registry()
+    try:
+        bad_tool = generate(
+            reg, 0, {"target": 0, "model": "gpt-4o-mini", "prompt": "hi", "tools": [{"name": "x"}]}
+        )
+        assert bad_tool["error"]["code"] == "bad_request"
+        assert "input_schema" in bad_tool["error"]["message"]
+
+        not_a_list = generate(
+            reg, 0, {"target": 0, "model": "gpt-4o-mini", "prompt": "hi", "tools": "nope"}
+        )
+        assert not_a_list["error"]["code"] == "bad_request"
+
+        bad_history = generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "gpt-4o-mini",
+                "prompt": "hi",
+                "history": [{"role": "assistant", "parts": [{"kind": "mystery"}]}],
+            },
+        )
+        assert bad_history["error"]["code"] == "bad_request"
+        assert "mystery" in bad_history["error"]["message"]
+    finally:
+        reg.close()
+
+
+def test_stream_emits_tool_call_events():
+    events = [
+        {"type": "response.created", "response": {"model": "gpt-4o-mini"}},
+        {
+            "type": "response.output_item.added",
+            "item": {
+                "id": "fc_1",
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "get_weather",
+            },
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "fc_1",
+            "delta": '{"city":"London"}',
+        },
+        {
+            "type": "response.function_call_arguments.done",
+            "item_id": "fc_1",
+            "arguments": '{"city":"London"}',
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "model": "gpt-4o-mini",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "fc_1",
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "get_weather",
+                        "arguments": '{"city":"London"}',
+                    }
+                ],
+                "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+            },
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+        return httpx.Response(
+            200, content=_sse_body(events), headers={"content-type": "text/event-stream"}
+        )
+
+    reg = Registry(
+        [Target(provider="openai", key=CANARY, name="my-openai")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        streamed = list(
+            generate_stream_events(
+                reg,
+                0,
+                {"target": 0, "model": "gpt-4o-mini", "prompt": "weather?", "tools": [WEATHER_TOOL]},
+            )
+        )
+    finally:
+        reg.close()
+
+    kinds = [e.get("kind") for e in streamed]
+    assert "tool_call_started" in kinds
+    assert "tool_call_complete" in kinds
+    final = streamed[-1]
+    assert final["kind"] == "result"
+    assert final["tool_calls"][0]["arguments"] == {"city": "London"}
+    assert CANARY not in json.dumps(streamed)

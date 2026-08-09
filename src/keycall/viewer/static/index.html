@@ -73,10 +73,29 @@
       <textarea id="pg-prompt" rows="4" placeholder="Your prompt…"></textarea>
       <div class="controls">
         <label><input id="pg-search" type="checkbox"> Web search</label>
+        <label><input id="pg-tools-on" type="checkbox"> Tools</label>
         <label>max tokens <input id="pg-maxtok" type="number" value="256" min="1" style="width:5rem"></label>
         <button id="pg-run">Generate</button>
       </div>
+      <div id="pg-tools-panel" hidden>
+        <div class="controls">
+          <label for="pg-tools">Tool definitions (JSON array)</label>
+          <select id="pg-tool-choice">
+            <option value="">tool_choice: auto</option>
+            <option value="required">tool_choice: required</option>
+            <option value="none">tool_choice: none</option>
+          </select>
+          <button id="pg-tools-example" class="secondary">Load example</button>
+        </div>
+        <textarea id="pg-tools" rows="8" spellcheck="false"
+                  placeholder='[{"name": "get_weather", "description": "…", "input_schema": {…}}]'></textarea>
+        <p class="meta">
+          KeyCall never runs a tool. The model asks, you answer below, and the
+          conversation continues with your answer.
+        </p>
+      </div>
       <div id="pg-result"></div>
+      <div id="pg-tool-calls"></div>
     </section>
 
     <section id="verify" class="tab">

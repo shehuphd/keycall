@@ -52,11 +52,27 @@ _STREAM_PLUMBING = frozenset(
 )
 
 
+def _call_echo(item: dict[str, Any], reasoning: dict[str, Any] | None) -> str | None:
+    """Provider echo data a function_call needs back verbatim on replay:
+    its own item id, plus the reasoning item it belongs to when the model
+    produced one. Reasoning items appear only when the model actually
+    reasons, so a response can legitimately carry none."""
+    echo: dict[str, Any] = {}
+    if item.get("id"):
+        echo["id"] = item["id"]
+    if reasoning is not None:
+        echo["reasoning"] = reasoning
+    return json.dumps(echo) if echo else None
+
+
 class _OpenAIStreamAssembler(StreamAssembler):
     def __init__(self, resolved, request, adapter: OpenAIAdapter) -> None:
         super().__init__(resolved, request)
         self._adapter = adapter
         self._final: InvocationResult | None = None
+        # Reasoning items arrive as their own output item before the call
+        # they belong to; the call cannot be replayed without one.
+        self._reasoning: dict[str, Any] | None = None
 
     def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
         payload = self._parse_data(data)
@@ -74,7 +90,9 @@ class _OpenAIStreamAssembler(StreamAssembler):
             return [TextDelta(text=delta)]
         if kind == "response.output_item.added":
             item = payload.get("item")
-            if isinstance(item, dict) and item.get("type") == "function_call":
+            if isinstance(item, dict) and item.get("type") == "reasoning":
+                self._reasoning = item
+            elif isinstance(item, dict) and item.get("type") == "function_call":
                 # Keyed by item id, which is what the argument deltas
                 # reference; the call_id is the id the caller replies with.
                 return [
@@ -82,7 +100,7 @@ class _OpenAIStreamAssembler(StreamAssembler):
                         str(item.get("id", "")),
                         call_id=str(item.get("call_id", "")),
                         name=str(item.get("name", "")),
-                        opaque=json.dumps({"id": item["id"]}) if item.get("id") else None,
+                        opaque=_call_echo(item, self._reasoning),
                     )
                 ]
             return []
@@ -175,6 +193,7 @@ class OpenAIAdapter(ProviderAdapter):
         self.validate_generation_request(request)
         op = self.resolved.operations["text_generation"]
         input_items: list[dict[str, Any]] = []
+        replayed_reasoning: set[str] = set()
         for message in request.messages:
             # Responses API: assistant history uses output_text parts, and
             # tool calls/results are top-level input items, not message
@@ -189,14 +208,23 @@ class OpenAIAdapter(ProviderAdapter):
                 input_items.append({"role": message.role, "content": texts})
             for part in message.content:
                 if isinstance(part, ToolCall):
+                    echo = json.loads(part.opaque) if part.opaque else {}
+                    # The reasoning item goes back as its own input item,
+                    # ahead of the call it belongs to. Parallel calls share
+                    # one, so it is emitted once.
+                    reasoning = echo.pop("reasoning", None)
+                    if isinstance(reasoning, dict):
+                        reasoning_id = str(reasoning.get("id", ""))
+                        if reasoning_id not in replayed_reasoning:
+                            replayed_reasoning.add(reasoning_id)
+                            input_items.append(reasoning)
                     item: dict[str, Any] = {
                         "type": "function_call",
                         "call_id": part.id,
                         "name": part.name,
                         "arguments": json.dumps(dict(part.arguments)),
                     }
-                    if part.opaque:
-                        item.update(json.loads(part.opaque))
+                    item.update(echo)
                     input_items.append(item)
                 elif isinstance(part, ToolResult):
                     input_items.append(
@@ -254,6 +282,10 @@ class OpenAIAdapter(ProviderAdapter):
         parts: list[OutputPart] = []
         warnings: list[str] = []
         citations: list[Citation] = []
+        # The reasoning item that precedes a function_call has to travel
+        # back with it: replaying the call without it is an HTTP 400 on
+        # reasoning models (verified 2026-08-09, three runs out of three).
+        reasoning: dict[str, Any] | None = None
         for item in payload.get("output", []):
             if not isinstance(item, dict):
                 continue
@@ -278,12 +310,15 @@ class OpenAIAdapter(ProviderAdapter):
                         id=str(item.get("call_id", "")),
                         name=str(item.get("name", "")),
                         arguments=self.parse_tool_arguments(item.get("arguments")),
-                        # The item id is echoed alongside call_id on replay.
-                        opaque=json.dumps({"id": item["id"]}) if item.get("id") else None,
+                        opaque=_call_echo(item, reasoning),
                     )
                 )
-            elif item_type in ("reasoning", "web_search_call"):
-                continue  # traces of server-side work, not output content
+            elif item_type == "reasoning":
+                # Not output content, but required echo data for any call
+                # that follows it in this response.
+                reasoning = item
+            elif item_type == "web_search_call":
+                continue  # trace of server-side work, not output content
             elif item_type:
                 parts.append(UnknownOutput(provider_kind=item_type))
 

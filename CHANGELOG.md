@@ -21,8 +21,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data was. It turns true when the catalog's verification stamp is more
   than 90 days old.
 
+### Added
+
+- The viewer Playground drives tool calling end to end: define tools as
+  JSON, pick a `tool_choice`, and when the model asks for a tool the calls
+  render with their arguments and a box for each result. Sending the
+  results continues the conversation. KeyCall still never runs a tool, so
+  the browser owns the loop and replays the turns, echo data included.
+
 ### Fixed
 
+- **OpenAI reasoning models rejected any replayed tool call.** When the
+  model emits a `reasoning` item alongside a `function_call`, the call
+  cannot be replayed without it: the next request fails with HTTP 400
+  naming the missing item. KeyCall discarded reasoning items as
+  server-side traces, so every tool round on a reasoning model broke at
+  the second turn. The item now travels in `ToolCall.opaque` and is
+  replayed ahead of the call it belongs to, once even when parallel calls
+  share it. Reasoning items appear only when the model actually reasons,
+  which is why this survived the earlier live rounds; found by driving the
+  Playground against gpt-5.3-chat-latest.
 - `ImageInput`, `AudioInput`, and `FileInput` now say plainly that text
   generation does not accept them yet, in the error and on the types
   themselves. They are exported and validated, which reasonably reads as a

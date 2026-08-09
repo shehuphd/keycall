@@ -16,7 +16,14 @@ from typing import Any
 from .._enums import ModelCategory
 from .._errors import KeyCallError
 from .._sources import SourceError, load_targets
-from .._types import Message, TextGenerationRequest, TextInput
+from .._types import (
+    Message,
+    TextGenerationRequest,
+    TextInput,
+    Tool,
+    ToolCall,
+    ToolResult,
+)
 from .._verify_core import DEFAULT_ATTEMPTS, run_verify
 from ._registry import Registry
 
@@ -116,6 +123,83 @@ def browse_models(
     return body
 
 
+class _BadRequest(Exception):
+    """A malformed browser payload. Carries the message the user sees, so
+    a typo in a tool schema reads as a fixable mistake rather than a
+    generic failure."""
+
+
+def _parse_tools(raw: Any) -> list[Tool]:
+    if raw in (None, "", []):
+        return []
+    if not isinstance(raw, list):
+        raise _BadRequest("tools must be a JSON array of tool definitions")
+    tools = []
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise _BadRequest(f"tool {index} must be an object")
+        try:
+            tools.append(
+                Tool(
+                    name=str(entry["name"]),
+                    description=str(entry.get("description", "")),
+                    input_schema=entry["input_schema"],
+                )
+            )
+        except KeyError as missing:
+            raise _BadRequest(f"tool {index} is missing {missing}") from None
+        except (TypeError, ValueError) as error:
+            raise _BadRequest(f"tool {index}: {error}") from None
+    return tools
+
+
+def _parse_history(raw: Any) -> list[Message]:
+    """Rebuild prior turns the browser is replaying. KeyCall never runs the
+    tool loop, so the Playground holds the conversation and sends it back;
+    ToolCall.opaque must survive that round trip untouched or providers
+    that require it (Gemini's thought signature) reject the next turn."""
+    if raw in (None, []):
+        return []
+    if not isinstance(raw, list):
+        raise _BadRequest("history must be a JSON array of messages")
+    messages: list[Message] = []
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict) or not isinstance(entry.get("parts"), list):
+            raise _BadRequest(f"history[{index}] must be an object with a parts array")
+        parts: list[Any] = []
+        for part in entry["parts"]:
+            if not isinstance(part, dict):
+                raise _BadRequest(f"history[{index}] has a non-object part")
+            kind = part.get("kind")
+            if kind == "text":
+                parts.append(TextInput(text=str(part.get("text", ""))))
+            elif kind == "tool_call":
+                arguments = part.get("arguments")
+                parts.append(
+                    ToolCall(
+                        id=str(part.get("id", "")),
+                        name=str(part.get("name", "")),
+                        arguments=arguments if isinstance(arguments, dict) else {},
+                        opaque=part.get("opaque"),
+                    )
+                )
+            elif kind == "tool_result":
+                parts.append(
+                    ToolResult(
+                        tool_call_id=str(part.get("tool_call_id", "")),
+                        name=str(part.get("name", "")),
+                        content=part.get("content", ""),
+                    )
+                )
+            else:
+                raise _BadRequest(f"history[{index}] has an unsupported part kind {kind!r}")
+        try:
+            messages.append(Message(role=str(entry.get("role", "")), content=parts))
+        except (TypeError, ValueError) as error:
+            raise _BadRequest(f"history[{index}]: {error}") from None
+    return messages
+
+
 def _generation_fields(body: dict[str, Any]) -> dict[str, Any] | None:
     """Shared request fields for the streamed and non-streamed generate
     paths, or None when the body is unusable."""
@@ -123,13 +207,19 @@ def _generation_fields(body: dict[str, Any]) -> dict[str, Any] | None:
     prompt = body.get("prompt")
     if not model or not isinstance(model, str):
         return None
-    if not prompt or not isinstance(prompt, str):
+    history = _parse_history(body.get("history"))
+    # A continuation replays the whole conversation, so the prompt is only
+    # required when there is no history to continue.
+    if not history and (not prompt or not isinstance(prompt, str)):
         return None
     messages = []
     system = body.get("system")
     if system:
         messages.append(Message(role="system", content=[TextInput(text=str(system))]))
-    messages.append(Message(role="user", content=[TextInput(text=prompt)]))
+    if prompt and isinstance(prompt, str):
+        messages.append(Message(role="user", content=[TextInput(text=prompt)]))
+    messages.extend(history)
+    tool_choice = body.get("tool_choice") or None
     return {
         "model": model,
         "messages": messages,
@@ -137,6 +227,8 @@ def _generation_fields(body: dict[str, Any]) -> dict[str, Any] | None:
         "temperature": body.get("temperature"),
         "top_p": body.get("top_p"),
         "web_search": bool(body.get("web_search", False)),
+        "tools": _parse_tools(body.get("tools")),
+        "tool_choice": tool_choice,
     }
 
 
@@ -152,6 +244,18 @@ def _result_dict(result: Any) -> dict[str, Any]:
         "finish_reason": result.finish_reason,
         "citations": [dataclasses.asdict(c) for c in result.citations],
         "warnings": list(result.warnings),
+        "tool_calls": [_tool_call_dict(call) for call in result.tool_calls],
+    }
+
+
+def _tool_call_dict(call: ToolCall) -> dict[str, Any]:
+    return {
+        "kind": "tool_call",
+        "id": call.id,
+        "name": call.name,
+        "arguments": dict(call.arguments),
+        # Provider echo data, passed back verbatim on the next turn.
+        "opaque": call.opaque,
     }
 
 
@@ -161,7 +265,10 @@ def generate(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[s
     except KeyError:
         return {"error": {"code": "not_found", "message": "unknown target id"}}
 
-    fields = _generation_fields(body)
+    try:
+        fields = _generation_fields(body)
+    except _BadRequest as error:
+        return {"error": {"code": "bad_request", "message": str(error)}}
     if fields is None:
         return {"error": {"code": "bad_request", "message": "model and prompt are required"}}
 
@@ -191,7 +298,11 @@ def generate_stream_events(
         yield {"error": {"code": "not_found", "message": "unknown target id"}}
         return
 
-    fields = _generation_fields(body)
+    try:
+        fields = _generation_fields(body)
+    except _BadRequest as error:
+        yield {"error": {"code": "bad_request", "message": str(error)}}
+        return
     if fields is None:
         yield {"error": {"code": "bad_request", "message": "model and prompt are required"}}
         return
@@ -205,6 +316,13 @@ def generate_stream_events(
                     yield {"kind": "stream_start", "model": event.model}
                 elif event.kind == "citation":
                     yield {"kind": "citation", "citation": dataclasses.asdict(event.citation)}
+                elif event.kind == "tool_call_started":
+                    yield {"kind": "tool_call_started", "id": event.id, "name": event.name}
+                elif event.kind == "tool_call_complete":
+                    yield {
+                        "kind": "tool_call_complete",
+                        "tool_call": _tool_call_dict(event.tool_call),
+                    }
                 # stream_finish carries nothing the final result event lacks.
             result = stream.result()
         yield {"kind": "result", **_result_dict(result)}

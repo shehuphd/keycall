@@ -429,3 +429,105 @@ def test_to_assistant_message_carries_calls_and_text():
     kinds = [type(p).__name__ for p in replay.content]
     assert kinds == ["TextInput", "ToolCall"]
     assert replay.content[1].opaque is not None
+
+
+REASONING_ITEM = {
+    "id": "rs_1",
+    "type": "reasoning",
+    "summary": [],
+    "encrypted_content": "gAAAAAB-opaque-blob",
+}
+
+OPENAI_REASONING_CALL_RESPONSE = {
+    "model": "gpt-5.3-chat-latest",
+    "status": "completed",
+    "output": [
+        REASONING_ITEM,
+        {
+            "id": "fc_abc",
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "get_weather",
+            "arguments": '{"city":"London"}',
+        },
+    ],
+    "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+}
+
+
+def test_openai_reasoning_item_travels_with_the_call():
+    """Replaying a function_call without the reasoning item that preceded
+    it is a 400 on reasoning models (verified live 2026-08-09, 3/3)."""
+    handler, captured = capture(OPENAI_REASONING_CALL_RESPONSE)
+    client = make_client("openai", handler)
+    result = client.generate_text(model="gpt-5.3-chat-latest", messages=[user()], tools=[WEATHER])
+
+    echo = json.loads(result.tool_calls[0].opaque)
+    assert echo["id"] == "fc_abc"
+    assert echo["reasoning"] == REASONING_ITEM
+
+    client.generate_text(
+        model="gpt-5.3-chat-latest",
+        messages=[
+            user(),
+            result.to_assistant_message(),
+            Message(
+                role="user",
+                content=[ToolResult(tool_call_id="call_1", name="get_weather", content="14C")],
+            ),
+        ],
+        tools=[WEATHER],
+    )
+    items = captured["body"]["input"]
+    kinds = [item.get("type") for item in items]
+    assert "reasoning" in kinds, "the reasoning item must be replayed"
+    # It has to arrive before the call it belongs to, and unmodified.
+    assert kinds.index("reasoning") < kinds.index("function_call")
+    assert items[kinds.index("reasoning")] == REASONING_ITEM
+    # The echo blob itself must not leak into the function_call item.
+    call_item = items[kinds.index("function_call")]
+    assert "reasoning" not in call_item
+
+
+def test_openai_parallel_calls_replay_one_shared_reasoning_item():
+    payload = json.loads(json.dumps(OPENAI_REASONING_CALL_RESPONSE))
+    payload["output"].append(
+        {
+            "id": "fc_def",
+            "type": "function_call",
+            "call_id": "call_2",
+            "name": "get_weather",
+            "arguments": '{"city":"Paris"}',
+        }
+    )
+    handler, captured = capture(payload)
+    client = make_client("openai", handler)
+    result = client.generate_text(model="gpt-5.3-chat-latest", messages=[user()], tools=[WEATHER])
+    assert len(result.tool_calls) == 2
+
+    client.generate_text(
+        model="gpt-5.3-chat-latest",
+        messages=[user(), result.to_assistant_message()],
+        tools=[WEATHER],
+    )
+    kinds = [item.get("type") for item in captured["body"]["input"]]
+    assert kinds.count("reasoning") == 1, "one shared item, replayed once"
+    assert kinds.count("function_call") == 2
+
+
+def test_openai_call_without_reasoning_replays_unchanged():
+    """Reasoning items appear only when the model reasons, so the ordinary
+    shape must stay exactly as it was."""
+    handler, captured = capture(OPENAI_CALL_RESPONSE)
+    client = make_client("openai", handler)
+    result = client.generate_text(model="gpt-4o-mini", messages=[user()], tools=[WEATHER])
+    assert json.loads(result.tool_calls[0].opaque) == {"id": "fc_abc"}
+
+    client.generate_text(
+        model="gpt-4o-mini",
+        messages=[user(), result.to_assistant_message()],
+        tools=[WEATHER],
+    )
+    kinds = [item.get("type") for item in captured["body"]["input"]]
+    assert "reasoning" not in kinds
+    assert kinds.count("function_call") == 1
