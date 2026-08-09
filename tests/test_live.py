@@ -110,3 +110,116 @@ def test_live_stream_smoke_every_target():
         finally:
             client.close()
     assert not failures, "\n".join(failures)
+
+
+def test_live_tool_round_every_supporting_target():
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import KeyCall, Message, ModelCategory, TextInput, Tool, ToolResult
+    from keycall._capabilities import TOOL_CALLING_PROVIDERS
+
+    weather = Tool(
+        name="get_weather",
+        description="Get current weather for a city",
+        input_schema={
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    )
+    ask = [Message(role="user", content=[
+        TextInput(text="What's the weather in London right now? Use the tool."),
+    ])]
+
+    targets, _ = load_targets(source)
+    failures = []
+    for target in targets:
+        if target.provider not in TOOL_CALLING_PROVIDERS:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            discovery = client.list_models(
+                categories={ModelCategory.TEXT_GENERATION}, refresh=True
+            )
+            attempt_errors = []
+            for model in discovery.models[:8]:
+                try:
+                    first = client.generate_text(
+                        model=model.id, messages=ask, tools=[weather],
+                        max_output_tokens=300,
+                    )
+                    if not first.tool_calls:
+                        attempt_errors.append(f"    {model.id}: no tool call made")
+                        continue
+                    call = first.tool_calls[0]
+                    final = client.generate_text(
+                        model=model.id,
+                        messages=[
+                            *ask,
+                            first.to_assistant_message(),
+                            Message(role="user", content=[
+                                ToolResult(tool_call_id=call.id, name=call.name,
+                                           content='{"temp_c": 14, "condition": "rainy"}'),
+                            ]),
+                        ],
+                        tools=[weather],
+                        max_output_tokens=300,
+                    )
+                    print(
+                        f"{target.display_name}: tool round on {model.id} "
+                        f"({len(first.tool_calls)} call(s), args {dict(call.arguments)}, "
+                        f"final text {'yes' if final.text else 'NO'})"
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                    attempt_errors.append(f"    {model.id}: {exc}")
+            else:
+                failures.append(
+                    f"{target.display_name}: no model completed a tool round\n"
+                    + "\n".join(attempt_errors)
+                )
+        finally:
+            client.close()
+    assert not failures, "\n".join(failures)
+
+
+def test_live_perplexity_tools_gate_still_correct():
+    """Capability-drift probe: the Perplexity gate rests on live evidence
+    that Sonar rejects tools. If this call stops failing with the known
+    rejection, the gate is stale and TOOL_CALLING_PROVIDERS needs updating —
+    this test failing IS the notification."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import httpx
+
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider == "perplexity"), None)
+    if target is None:
+        pytest.skip("no perplexity target in the live source")
+    response = httpx.post(
+        "https://api.perplexity.ai/chat/completions",
+        headers={"Authorization": f"Bearer {target.key}"},
+        json={
+            "model": "sonar",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {
+                "name": "noop", "description": "does nothing",
+                "parameters": {"type": "object", "properties": {}},
+            }}],
+        },
+        timeout=30,
+    )
+    assert response.status_code == 400 and "not supported" in response.text.lower(), (
+        f"capability drift: perplexity tools returned HTTP {response.status_code} "
+        "instead of the known 'not supported' rejection — re-probe and update "
+        "TOOL_CALLING_PROVIDERS and this test"
+    )
+    print("perplexity: tools still rejected (gate evidence current)")

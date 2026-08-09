@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -22,7 +23,10 @@ from .._types import (
     StreamStart,
     TextDelta,
     TextGenerationRequest,
+    TextInput,
     TextOutput,
+    ToolCall,
+    ToolResult,
     UnknownOutput,
     UnknownStreamEvent,
     Usage,
@@ -144,22 +148,57 @@ class OpenAIAdapter(ProviderAdapter):
     def build_generation_spec(self, request: TextGenerationRequest) -> RequestSpec:
         self.validate_generation_request(request)
         op = self.resolved.operations["text_generation"]
-        input_items = []
+        input_items: list[dict[str, Any]] = []
         for message in request.messages:
-            # Responses API: assistant history uses output_text parts.
+            # Responses API: assistant history uses output_text parts, and
+            # tool calls/results are top-level input items, not message
+            # content (live-verified 2026-08-08).
             part_type = "output_text" if message.role == "assistant" else "input_text"
-            input_items.append(
-                {
-                    "role": message.role,
-                    "content": [{"type": part_type, "text": part.text} for part in message.content],
-                }
-            )
+            texts = [
+                {"type": part_type, "text": part.text}
+                for part in message.content
+                if isinstance(part, TextInput)
+            ]
+            if texts:
+                input_items.append({"role": message.role, "content": texts})
+            for part in message.content:
+                if isinstance(part, ToolCall):
+                    item: dict[str, Any] = {
+                        "type": "function_call",
+                        "call_id": part.id,
+                        "name": part.name,
+                        "arguments": json.dumps(dict(part.arguments)),
+                    }
+                    if part.opaque:
+                        item.update(json.loads(part.opaque))
+                    input_items.append(item)
+                elif isinstance(part, ToolResult):
+                    input_items.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": part.tool_call_id,
+                            "output": self.tool_result_text(part.content),
+                        }
+                    )
         body: dict[str, Any] = {"model": request.model, "input": input_items}
         if request.max_output_tokens is not None:
             body["max_output_tokens"] = request.max_output_tokens
         body.update(self.sampling_fields(request))
+        tools: list[dict[str, Any]] = [
+            {
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": dict(tool.input_schema),
+            }
+            for tool in request.tools
+        ]
         if request.web_search:
-            body["tools"] = [{"type": "web_search"}]
+            tools.append({"type": "web_search"})
+        if tools:
+            body["tools"] = tools
+        if request.tool_choice is not None:
+            body["tool_choice"] = request.tool_choice
         if request.response_schema is not None:
             body["text"] = {
                 "format": {
@@ -207,6 +246,16 @@ class OpenAIAdapter(ProviderAdapter):
                                 )
                     elif isinstance(content, dict):
                         parts.append(UnknownOutput(provider_kind=str(content.get("type", "?"))))
+            elif item_type == "function_call":
+                parts.append(
+                    ToolCall(
+                        id=str(item.get("call_id", "")),
+                        name=str(item.get("name", "")),
+                        arguments=self.parse_tool_arguments(item.get("arguments")),
+                        # The item id is echoed alongside call_id on replay.
+                        opaque=json.dumps({"id": item["id"]}) if item.get("id") else None,
+                    )
+                )
             elif item_type in ("reasoning", "web_search_call"):
                 continue  # traces of server-side work, not output content
             elif item_type:

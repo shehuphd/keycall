@@ -8,6 +8,7 @@ metadata and takes precedence over identifier rules.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import quote
@@ -28,7 +29,10 @@ from .._types import (
     StreamStart,
     TextDelta,
     TextGenerationRequest,
+    TextInput,
     TextOutput,
+    ToolCall,
+    ToolResult,
     UnknownOutput,
     UnknownStreamEvent,
     Usage,
@@ -223,17 +227,47 @@ class GeminiAdapter(ProviderAdapter):
         system_texts: list[str] = []
         contents: list[dict[str, Any]] = []
         for message in request.messages:
-            texts = [part.text for part in message.content]
             if message.role == "system":
-                system_texts.extend(texts)
-            else:
-                contents.append(
-                    {
-                        # Gemini's assistant role is "model".
-                        "role": "model" if message.role == "assistant" else "user",
-                        "parts": [{"text": text} for text in texts],
-                    }
+                system_texts.extend(
+                    part.text for part in message.content if isinstance(part, TextInput)
                 )
+                continue
+            parts: list[dict[str, Any]] = []
+            for part in message.content:
+                if isinstance(part, TextInput):
+                    parts.append({"text": part.text})
+                elif isinstance(part, ToolCall):
+                    call: dict[str, Any] = {"name": part.name, "args": dict(part.arguments)}
+                    wire: dict[str, Any] = {"functionCall": call}
+                    if part.opaque:
+                        echo = json.loads(part.opaque)
+                        # Gemini 400s when thoughtSignature is missing from
+                        # replayed functionCall parts (live-verified
+                        # 2026-08-08); it must ride back verbatim.
+                        if echo.get("thoughtSignature"):
+                            wire["thoughtSignature"] = echo["thoughtSignature"]
+                        if echo.get("id"):
+                            call["id"] = echo["id"]
+                    parts.append(wire)
+                elif isinstance(part, ToolResult):
+                    content = part.content
+                    if isinstance(content, str):
+                        # functionResponse requires an object.
+                        try:
+                            parsed = json.loads(content)
+                        except ValueError:
+                            parsed = None
+                        content = parsed if isinstance(parsed, dict) else {"output": content}
+                    parts.append(
+                        {"functionResponse": {"name": part.name, "response": dict(content)}}
+                    )
+            contents.append(
+                {
+                    # Gemini's assistant role is "model".
+                    "role": "model" if message.role == "assistant" else "user",
+                    "parts": parts,
+                }
+            )
         if not contents:
             raise KeyCallError(
                 "gemini requires at least one non-system message",
@@ -259,8 +293,34 @@ class GeminiAdapter(ProviderAdapter):
             generation_config["responseSchema"] = dict(request.response_schema)
         if generation_config:
             body["generationConfig"] = generation_config
+        tools: list[dict[str, Any]] = []
+        if request.tools:
+            tools.append(
+                {
+                    "functionDeclarations": [
+                        {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": dict(tool.input_schema),
+                        }
+                        for tool in request.tools
+                    ]
+                }
+            )
         if request.web_search:
-            body["tools"] = [{"google_search": {}}]
+            tools.append({"google_search": {}})
+        if tools:
+            body["tools"] = tools
+        tool_config: dict[str, Any] = {}
+        if request.tools and request.web_search:
+            # Gemini rejects mixing functionDeclarations with built-in tools
+            # unless this flag is set (live-verified 2026-08-08).
+            tool_config["includeServerSideToolInvocations"] = True
+        if request.tool_choice is not None:
+            mode = {"auto": "AUTO", "required": "ANY", "none": "NONE"}[request.tool_choice]
+            tool_config["functionCallingConfig"] = {"mode": mode}
+        if tool_config:
+            body["toolConfig"] = tool_config
         path = op["path"].format(model=quote(_strip_prefix(request.model), safe=""))
         return RequestSpec(method=op["method"], path=path, json_body=body)
 
@@ -291,9 +351,29 @@ class GeminiAdapter(ProviderAdapter):
                 content = candidate.get("content")
                 if isinstance(content, dict):
                     for part in content.get("parts", []):
-                        if isinstance(part, dict) and "text" in part:
+                        if not isinstance(part, dict):
+                            continue
+                        if "text" in part:
                             parts.append(TextOutput(text=str(part["text"])))
-                        elif isinstance(part, dict):
+                        elif "functionCall" in part and isinstance(part["functionCall"], dict):
+                            call = part["functionCall"]
+                            echo = {
+                                key: value
+                                for key, value in (
+                                    ("thoughtSignature", part.get("thoughtSignature")),
+                                    ("id", call.get("id")),
+                                )
+                                if value
+                            }
+                            parts.append(
+                                ToolCall(
+                                    id=str(call.get("id", "")),
+                                    name=str(call.get("name", "")),
+                                    arguments=self.parse_tool_arguments(call.get("args", {})),
+                                    opaque=json.dumps(echo) if echo else None,
+                                )
+                            )
+                        else:
                             kind = next(iter(part.keys()), "?")
                             parts.append(UnknownOutput(provider_kind=str(kind)))
                 grounding = candidate.get("groundingMetadata")

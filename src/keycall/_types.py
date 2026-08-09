@@ -38,6 +38,9 @@ __all__ = [
     "TextGenerationRequest",
     "TextInput",
     "TextOutput",
+    "Tool",
+    "ToolCall",
+    "ToolResult",
     "TranscriptOutput",
     "UnknownOutput",
     "UnknownStreamEvent",
@@ -95,8 +98,54 @@ class FileInput:
             raise ValueError("FileInput requires exactly one of url or data")
 
 
-InputPart = TextInput | ImageInput | AudioInput | FileInput
-_INPUT_PART_TYPES = (TextInput, ImageInput, AudioInput, FileInput)
+# --- tool calling ----------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Tool:
+    """A caller-defined tool the model may request. KeyCall never executes
+    tools; it normalizes the request/response wire shapes."""
+
+    name: str
+    description: str
+    input_schema: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if not self.name or not isinstance(self.name, str):
+            raise ValueError("Tool.name must be a non-empty string")
+        if not isinstance(self.input_schema, Mapping) or "type" not in self.input_schema:
+            raise ValueError("Tool.input_schema must be a JSON Schema object with a 'type' key")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolCall:
+    """The model's request to invoke a tool. Appears in result parts and is
+    replayed inside an assistant message. ``opaque`` is adapter-owned echo
+    data the provider requires back verbatim (e.g. Gemini's thought
+    signature); callers must pass it through unmodified and never interpret
+    it."""
+
+    id: str
+    name: str
+    arguments: Mapping[str, Any]
+    opaque: str | None = None
+    kind: Literal["tool_call"] = "tool_call"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolResult:
+    """The caller's answer to a ToolCall, sent inside a user message.
+    ``content`` may be a string or a JSON-serializable mapping; adapters
+    convert to each provider's required form."""
+
+    tool_call_id: str
+    name: str
+    content: str | Mapping[str, Any]
+    kind: Literal["tool_result"] = "tool_result"
+
+
+InputPart = TextInput | ImageInput | AudioInput | FileInput | ToolCall | ToolResult
+_INPUT_PART_TYPES = (TextInput, ImageInput, AudioInput, FileInput, ToolCall, ToolResult)
 
 
 # --- output parts ----------------------------------------------------------
@@ -168,6 +217,7 @@ OutputPart = (
     | EmbeddingOutput
     | VideoOutput
     | FileOutput
+    | ToolCall
     | UnknownOutput
 )
 
@@ -212,6 +262,17 @@ class TextGenerationRequest:
     (DeepSeek, Moonshot, custom targets) raise UNSUPPORTED_OPERATION rather
     than silently ignoring the request. Perplexity's Sonar always searches
     regardless of this flag; setting it False there is a no-op, warned."""
+    tools: Sequence[Tool] = ()
+    """Caller-defined tools the model may request. KeyCall normalizes the
+    definitions, the model's ToolCall parts, and ToolResult replies across
+    providers; executing a tool and looping is the caller's job."""
+    tool_choice: str | None = None
+    """One of "auto" (default when tools are present), "required", or
+    "none". Forcing a specific named tool is not yet supported: the named
+    variants are unverified on most providers. Some providers reject
+    "required" for some models (DeepSeek thinking models return 400); the
+    provider's typed error is surfaced rather than KeyCall maintaining a
+    rejection matrix."""
     response_schema: Mapping[str, Any] | None = None
     """A JSON Schema object the response must conform to. Enforced
     provider-side where the provider supports it (OpenAI, Anthropic,
@@ -234,6 +295,16 @@ class TextGenerationRequest:
                     f"(got {type(message).__name__})"
                 )
         object.__setattr__(self, "messages", msgs)
+        tools = tuple(self.tools)
+        for tool in tools:
+            if not isinstance(tool, Tool):
+                raise TypeError(f"tools accepts Tool objects only (got {type(tool).__name__})")
+        object.__setattr__(self, "tools", tools)
+        if self.tool_choice is not None:
+            if self.tool_choice not in ("auto", "required", "none"):
+                raise ValueError("tool_choice must be one of 'auto', 'required', 'none'")
+            if not tools:
+                raise ValueError("tool_choice requires tools")
         if self.response_schema is not None and (
             not isinstance(self.response_schema, Mapping) or "type" not in self.response_schema
         ):
@@ -371,3 +442,21 @@ class InvocationResult:
         Its presence must not imply every invocation produces text."""
         texts = [part.text for part in self.parts if isinstance(part, TextOutput)]
         return "".join(texts) if texts else None
+
+    @property
+    def tool_calls(self) -> tuple[ToolCall, ...]:
+        """The model's tool-call requests, in order. Several per response
+        is normal, not an edge case."""
+        return tuple(part for part in self.parts if isinstance(part, ToolCall))
+
+    def to_assistant_message(self) -> Message:
+        """This response as an assistant Message for conversation replay:
+        text parts become TextInput, ToolCall parts carry over (including
+        their provider echo data). Non-text, non-tool parts are dropped."""
+        content: list[InputPart] = []
+        for part in self.parts:
+            if isinstance(part, TextOutput):
+                content.append(TextInput(text=part.text))
+            elif isinstance(part, ToolCall):
+                content.append(part)
+        return Message(role="assistant", content=content)

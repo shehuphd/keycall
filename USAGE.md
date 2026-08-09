@@ -195,6 +195,58 @@ Behavior and guarantees:
   convention; usage may be unreported there and surfaces as the standard
   missing-usage warning.
 
+## Tool calling
+
+Define tools, receive the model's call requests as typed parts, execute on
+your side, and send results back. KeyCall normalizes all four wire shapes;
+it never executes a tool and never runs the loop — that stays your code:
+
+```python
+from keycall import Message, TextInput, Tool, ToolResult
+
+weather = Tool(
+    name="get_weather",
+    description="Get current weather for a city",
+    input_schema={"type": "object", "properties": {"city": {"type": "string"}},
+                  "required": ["city"]},
+)
+
+messages = [Message(role="user", content=[TextInput(text="Weather in London?")])]
+result = client.generate_text(model="...", messages=messages, tools=[weather])
+
+while result.tool_calls:
+    replies = []
+    for call in result.tool_calls:            # several per turn is normal
+        output = my_dispatch(call.name, call.arguments)
+        replies.append(ToolResult(tool_call_id=call.id, name=call.name, content=output))
+    messages += [result.to_assistant_message(),
+                 Message(role="user", content=replies)]
+    result = client.generate_text(model="...", messages=messages, tools=[weather])
+
+print(result.text)
+```
+
+Rules and behavior:
+
+- `to_assistant_message()` replays the model's turn, including provider
+  echo data some providers require back verbatim (`ToolCall.opaque`, e.g.
+  Gemini's thought signature — never modify or interpret it).
+- `ToolResult.content` may be a string or a JSON-serializable mapping;
+  adapters convert to each provider's required form.
+- `tool_choice` accepts `"auto"`, `"required"`, or `"none"`. Forcing one
+  named tool is not yet supported. Some provider/model pairs reject
+  `"required"` (DeepSeek thinking models return 400); the provider's typed
+  error is surfaced.
+- `web_search` combines with tools on OpenAI, Anthropic, and Gemini (where
+  KeyCall sets the required `toolConfig` flag automatically).
+- Perplexity has no tool calling and raises `UNSUPPORTED_OPERATION` before
+  any network call; the live suite carries a drift probe that fails if
+  that ever changes. Custom OpenAI-compatible targets pass through with a
+  result warning that support is unverified.
+- Not combinable: Anthropic tools + `response_schema` (schema enforcement
+  is itself a forced tool call), and streaming + tools (raises until
+  streamed tool events ship).
+
 ## Web search
 
 Providers with a native server-side search tool can ground a generation in

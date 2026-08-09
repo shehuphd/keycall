@@ -66,6 +66,16 @@ WEB_SEARCH_PROVIDERS = frozenset({"openai", "anthropic", "gemini", "perplexity"}
 # with a result warning that the schema was not enforced, rather than
 # assuming it works and finding out from a live 400.
 JSON_SCHEMA_COMPAT_PROVIDERS = frozenset({"moonshot", "perplexity"})
+
+# Tool calling, live-verified 2026-08-08 with a full definition -> call ->
+# result -> answer round per provider. Perplexity's Sonar rejects tools
+# outright ("Tool calling is not supported for this model", HTTP 400), so
+# it is gated before any network call; the live suite carries a drift probe
+# that fails if that ever changes. Custom OpenAI-compatible targets are not
+# listed: they pass through unverified with a result warning, because the
+# tools field is protocol-standard and endpoints like vLLM commonly
+# support it.
+TOOL_CALLING_PROVIDERS = frozenset({"openai", "anthropic", "gemini", "deepseek", "moonshot"})
 SCHEMA_ENFORCING_PROVIDERS = frozenset({"openai", "anthropic", "gemini"}) | JSON_SCHEMA_COMPAT_PROVIDERS
 
 

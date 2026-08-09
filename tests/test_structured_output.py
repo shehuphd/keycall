@@ -127,16 +127,18 @@ def test_anthropic_rejects_web_search_with_response_schema():
     assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
 
 
-def test_anthropic_unrelated_tool_use_still_surfaces_as_unknown():
+def test_anthropic_unrelated_tool_use_is_a_tool_call_not_schema_output():
     """A tool_use block that ISN'T the structured-output tool must not be
-    mistaken for one — only the exact synthetic name is special-cased."""
+    mistaken for one — only the exact synthetic name is special-cased. It
+    surfaces as a ToolCall part, and its input never enters result.text."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
             json={
                 "content": [
-                    {"type": "tool_use", "name": "some_other_tool", "input": {"x": 1}},
+                    {"type": "tool_use", "id": "toolu_1", "name": "some_other_tool",
+                     "input": {"x": 1}},
                     {"type": "text", "text": "hello"},
                 ],
                 "usage": {},
@@ -145,8 +147,9 @@ def test_anthropic_unrelated_tool_use_still_surfaces_as_unknown():
 
     client = make_client("anthropic", handler)
     result = client.generate_text(model="claude-opus-5", messages=simple_messages())
-    kinds = [type(p).__name__ for p in result.parts]
-    assert "UnknownOutput" in kinds
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].name == "some_other_tool"
+    assert result.tool_calls[0].arguments == {"x": 1}
     assert result.text == "hello"
 
 

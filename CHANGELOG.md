@@ -5,6 +5,30 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Tool calling** (`tools=` and `tool_choice=` on `generate_text()` and
+  `TextGenerationRequest`): caller-defined tools normalized across all four
+  wire protocols, live-verified with a full call → result → answer round
+  per provider. The model's requests surface as typed `ToolCall` parts
+  (`result.tool_calls`; parallel calls are normal), results go back as
+  `ToolResult` parts in a user message, and
+  `result.to_assistant_message()` replays the model's turn including
+  provider echo data some providers require verbatim (Gemini rejects a
+  replay missing its thought signature). KeyCall never executes a tool and
+  never runs the loop. `web_search` combines with tools on OpenAI,
+  Anthropic, and Gemini (the required Gemini `toolConfig` flag is set
+  automatically). Gated before any network call: Perplexity (no tool
+  support, verified), Anthropic tools + `response_schema`, and streaming +
+  tools. Custom OpenAI-compatible targets pass through with a result
+  warning that support is unverified. Malformed tool-call arguments from a
+  provider raise `invalid_provider_response` rather than being dropped.
+- The live suite runs a full tool round per supporting provider, plus a
+  capability-drift probe that fails if Perplexity ever starts accepting
+  tools, so the gate cannot silently outlive its evidence.
+
 ## [0.5.1] — 2026-08-08
 
 ### Added

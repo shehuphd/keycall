@@ -7,6 +7,7 @@ extensions are not (registry research section 9).
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -24,7 +25,10 @@ from .._types import (
     StreamStart,
     TextDelta,
     TextGenerationRequest,
+    TextInput,
     TextOutput,
+    ToolCall,
+    ToolResult,
     Usage,
 )
 from ._base import ProviderAdapter, StreamAssembler
@@ -145,14 +149,66 @@ class OpenAICompatibleAdapter(ProviderAdapter):
     def build_generation_spec(self, request: TextGenerationRequest) -> RequestSpec:
         self.validate_generation_request(request)
         op = self.resolved.operations["text_generation"]
-        messages = []
+        messages: list[dict[str, Any]] = []
         for message in request.messages:
-            text = "\n".join(part.text for part in message.content)
-            messages.append({"role": message.role, "content": text})
+            text = "\n".join(
+                part.text for part in message.content if isinstance(part, TextInput)
+            )
+            calls = [part for part in message.content if isinstance(part, ToolCall)]
+            results = [part for part in message.content if isinstance(part, ToolResult)]
+            if message.role == "assistant" and calls:
+                entry: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": text or None,
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": json.dumps(dict(call.arguments)),
+                            },
+                        }
+                        for call in calls
+                    ],
+                }
+                messages.append(entry)
+                continue
+            # Chat Completions carries tool results as their own messages
+            # with a role nothing else uses; a user turn mixing results and
+            # text splits, results first (they answer the preceding
+            # assistant turn).
+            for result in results:
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": result.tool_call_id,
+                        "content": self.tool_result_text(result.content),
+                    }
+                )
+            if text or not results:
+                messages.append({"role": message.role, "content": text})
         body: dict[str, Any] = {"model": request.model, "messages": messages}
         if request.max_output_tokens is not None:
             body["max_tokens"] = request.max_output_tokens
         body.update(self.sampling_fields(request))
+        if request.tools:
+            body["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": dict(tool.input_schema),
+                    },
+                }
+                for tool in request.tools
+            ]
+        if request.tool_choice is not None:
+            # Passed through as-is; support varies by provider and model
+            # (DeepSeek thinking models reject "required", live-verified
+            # 2026-08-08) and the provider's typed error answers.
+            body["tool_choice"] = request.tool_choice
         if request.response_schema is not None:
             from .._capabilities import JSON_SCHEMA_COMPAT_PROVIDERS
 
@@ -227,6 +283,20 @@ class OpenAICompatibleAdapter(ProviderAdapter):
             if isinstance(choice, dict):
                 finish_reason = choice.get("finish_reason")
                 message = choice.get("message")
+                if isinstance(message, dict):
+                    for raw_call in message.get("tool_calls") or []:
+                        if not isinstance(raw_call, dict):
+                            continue
+                        function = raw_call.get("function")
+                        if not isinstance(function, dict):
+                            continue
+                        parts.append(
+                            ToolCall(
+                                id=str(raw_call.get("id", "")),
+                                name=str(function.get("name", "")),
+                                arguments=self.parse_tool_arguments(function.get("arguments")),
+                            )
+                        )
                 if isinstance(message, dict) and message.get("content"):
                     parts.append(TextOutput(text=str(message["content"])))
                 elif isinstance(message, dict) and message.get("reasoning_content"):

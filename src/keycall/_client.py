@@ -34,6 +34,7 @@ from ._types import (
     ModelDiscovery,
     StreamEvent,
     TextGenerationRequest,
+    Tool,
 )
 from .adapters import ProviderAdapter, adapter_for
 from .adapters._base import InbandStreamError, StreamAssembler
@@ -264,6 +265,18 @@ class _BaseClient:
             model=request.model,
         )
         invocation = _with_schema_warning(invocation, request, self.provider)
+        if request.tools and self._resolved.is_custom:
+            invocation = dataclasses.replace(
+                invocation,
+                warnings=(
+                    *invocation.warnings,
+                    (
+                        f"tool calling on custom target {self.provider!r} is "
+                        "unverified; keycall passes the standard tools field "
+                        "through without evidence the endpoint honors it"
+                    ),
+                ),
+            )
         trace.event(
             "model",
             operation="text_generation",
@@ -283,6 +296,14 @@ class _StreamCore:
     """State shared by the sync and async stream wrappers."""
 
     def __init__(self, client: _BaseClient, request: TextGenerationRequest) -> None:
+        if request.tools:
+            raise KeyCallError(
+                "streaming with tools is not implemented yet; use "
+                "generate_text() for tool calling",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=client.provider,
+                operation="text_generation",
+            )
         self._client = client
         self._request = request
         self._assembler: StreamAssembler = client._adapter.stream_assembler(request)
@@ -536,6 +557,8 @@ class KeyCall(_BaseClient):
         top_p: float | None = None,
         web_search: bool = False,
         response_schema: Mapping[str, Any] | None = None,
+        tools: Sequence[Tool] = (),
+        tool_choice: str | None = None,
     ) -> InvocationResult:
         return self.invoke(
             TextGenerationRequest(
@@ -546,6 +569,8 @@ class KeyCall(_BaseClient):
                 top_p=top_p,
                 web_search=web_search,
                 response_schema=response_schema,
+                tools=tools,
+                tool_choice=tool_choice,
             )
         )
 
@@ -698,6 +723,8 @@ class AsyncKeyCall(_BaseClient):
         top_p: float | None = None,
         web_search: bool = False,
         response_schema: Mapping[str, Any] | None = None,
+        tools: Sequence[Tool] = (),
+        tool_choice: str | None = None,
     ) -> InvocationResult:
         return await self.invoke(
             TextGenerationRequest(
@@ -708,6 +735,8 @@ class AsyncKeyCall(_BaseClient):
                 top_p=top_p,
                 web_search=web_search,
                 response_schema=response_schema,
+                tools=tools,
+                tool_choice=tool_choice,
             )
         )
 

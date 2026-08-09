@@ -194,21 +194,64 @@ class ProviderAdapter(ABC):
 
     def validate_generation_request(self, request: TextGenerationRequest) -> None:
         """Pre-flight checks that mirror what the provider would reject:
-        text-only parts (v1), and sampling params against models with
-        maintained evidence that they reject them."""
-        from .._capabilities import rejects_sampling_params
-        from .._errors import KeyCallError
-        from .._types import TextInput
+        part types and placement, capability gates, and sampling params
+        against models with maintained evidence that they reject them."""
+        from .._capabilities import TOOL_CALLING_PROVIDERS, rejects_sampling_params
+        from .._types import TextInput, ToolCall, ToolResult
 
         for message in request.messages:
             for part in message.content:
-                if not isinstance(part, TextInput):
-                    raise KeyCallError(
-                        f"v1 text generation supports text input parts only, "
-                        f"got {type(part).__name__}",
-                        code=ErrorCode.UNSUPPORTED_OPERATION,
-                        operation=Operation.TEXT_GENERATION.value,
-                    )
+                if isinstance(part, TextInput):
+                    continue
+                if isinstance(part, ToolCall):
+                    if message.role != "assistant":
+                        raise KeyCallError(
+                            "ToolCall parts belong in assistant messages (the model's "
+                            f"turn), not role {message.role!r}",
+                            code=ErrorCode.UNSUPPORTED_OPERATION,
+                            operation=Operation.TEXT_GENERATION.value,
+                        )
+                    continue
+                if isinstance(part, ToolResult):
+                    if message.role != "user":
+                        raise KeyCallError(
+                            "ToolResult parts belong in user messages (the caller's "
+                            f"turn), not role {message.role!r}",
+                            code=ErrorCode.UNSUPPORTED_OPERATION,
+                            operation=Operation.TEXT_GENERATION.value,
+                        )
+                    continue
+                raise KeyCallError(
+                    f"text generation supports text and tool parts only, "
+                    f"got {type(part).__name__}",
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    operation=Operation.TEXT_GENERATION.value,
+                )
+        if request.tools:
+            if (
+                not self.resolved.is_custom
+                and self.resolved.provider not in TOOL_CALLING_PROVIDERS
+            ):
+                raise KeyCallError(
+                    f"provider {self.resolved.provider!r} does not support tool "
+                    "calling; tools are supported on: "
+                    + ", ".join(sorted(TOOL_CALLING_PROVIDERS)),
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    provider=self.resolved.provider,
+                    operation=Operation.TEXT_GENERATION.value,
+                )
+            if request.response_schema is not None and self.resolved.provider == "anthropic":
+                # Schema enforcement on Anthropic is itself a forced tool
+                # call; combining it with caller tools is mechanically
+                # impossible in one turn.
+                raise KeyCallError(
+                    "anthropic cannot combine tools with response_schema: "
+                    "schema enforcement forces its own tool call, excluding "
+                    "the caller's tools in the same turn",
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    provider=self.resolved.provider,
+                    operation=Operation.TEXT_GENERATION.value,
+                )
         if (request.temperature is not None or request.top_p is not None) and (
             rejects_sampling_params(request.model)
         ):
@@ -250,6 +293,30 @@ class ProviderAdapter(ABC):
                 provider=self.resolved.provider,
                 operation=Operation.TEXT_GENERATION.value,
             )
+
+    def parse_tool_arguments(self, raw: Any) -> Mapping[str, Any]:
+        """Providers that send arguments as a JSON string (OpenAI, the
+        compat family) get parsed here; malformed argument JSON from a
+        provider is a typed error, never a silently dropped call."""
+        if isinstance(raw, Mapping):
+            return raw
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except (ValueError, TypeError):
+            parsed = None
+        if not isinstance(parsed, dict):
+            raise KeyCallError(
+                "provider sent malformed tool-call arguments",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.TEXT_GENERATION.value,
+            )
+        return parsed
+
+    @staticmethod
+    def tool_result_text(content: Any) -> str:
+        """ToolResult.content as the string most providers want."""
+        return content if isinstance(content, str) else json.dumps(content)
 
     @staticmethod
     def sampling_fields(request: TextGenerationRequest) -> dict[str, float]:

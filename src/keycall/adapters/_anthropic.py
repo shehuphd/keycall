@@ -23,7 +23,10 @@ from .._types import (
     StreamStart,
     TextDelta,
     TextGenerationRequest,
+    TextInput,
     TextOutput,
+    ToolCall,
+    ToolResult,
     UnknownOutput,
     UnknownStreamEvent,
     Usage,
@@ -191,17 +194,34 @@ class AnthropicAdapter(ProviderAdapter):
         system_texts: list[str] = []
         messages: list[dict[str, Any]] = []
         for message in request.messages:
-            texts = [part.text for part in message.content]
             if message.role == "system":
                 # Anthropic takes system content as a top-level parameter.
-                system_texts.extend(texts)
-            else:
-                messages.append(
-                    {
-                        "role": message.role,
-                        "content": [{"type": "text", "text": text} for text in texts],
-                    }
+                system_texts.extend(
+                    part.text for part in message.content if isinstance(part, TextInput)
                 )
+                continue
+            blocks: list[dict[str, Any]] = []
+            for part in message.content:
+                if isinstance(part, TextInput):
+                    blocks.append({"type": "text", "text": part.text})
+                elif isinstance(part, ToolCall):
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": part.id,
+                            "name": part.name,
+                            "input": dict(part.arguments),
+                        }
+                    )
+                elif isinstance(part, ToolResult):
+                    blocks.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": part.tool_call_id,
+                            "content": self.tool_result_text(part.content),
+                        }
+                    )
+            messages.append({"role": message.role, "content": blocks})
         if not messages:
             raise KeyCallError(
                 "anthropic requires at least one non-system message",
@@ -217,12 +237,27 @@ class AnthropicAdapter(ProviderAdapter):
         if system_texts:
             body["system"] = "\n\n".join(system_texts)
         body.update(self.sampling_fields(request))
+        tools: list[dict[str, Any]] = [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": dict(tool.input_schema),
+            }
+            for tool in request.tools
+        ]
         if request.web_search:
-            body["tools"] = [{"type": "web_search_20250305", "name": "web_search"}]
+            tools.append({"type": "web_search_20250305", "name": "web_search"})
+        if tools:
+            body["tools"] = tools
+        if request.tool_choice is not None:
+            # Anthropic's spellings, live-verified 2026-08-08.
+            body["tool_choice"] = (
+                {"type": "any"} if request.tool_choice == "required"
+                else {"type": request.tool_choice}
+            )
         if request.response_schema is not None:
             # validate_generation_request already rejects this combined
-            # with web_search, so no risk of overwriting the tools list set
-            # above.
+            # with web_search or caller tools, so overwriting is safe.
             body["tools"] = [
                 {
                     "name": _STRUCTURED_OUTPUT_TOOL_NAME,
@@ -266,6 +301,14 @@ class AnthropicAdapter(ProviderAdapter):
                                 cited_text=note.get("cited_text"),
                             )
                         )
+            elif block_type == "tool_use" and block.get("name") != _STRUCTURED_OUTPUT_TOOL_NAME:
+                parts.append(
+                    ToolCall(
+                        id=str(block.get("id", "")),
+                        name=str(block.get("name", "")),
+                        arguments=self.parse_tool_arguments(block.get("input", {})),
+                    )
+                )
             elif block_type == "tool_use" and block.get("name") == _STRUCTURED_OUTPUT_TOOL_NAME:
                 # The forced structured-output tool: its input *is* the
                 # answer. Serialize back to a JSON string so result.text
