@@ -397,6 +397,17 @@ async function streamGeneration(out, body) {
   }
 }
 
+function usageLabel(usage) {
+  // Providers report different fields: a missing total is not a missing
+  // count, so fall back to the parts rather than claiming nothing arrived.
+  if (!usage) return "usage unreported";
+  if (usage.total_tokens != null) return `${usage.total_tokens} tokens`;
+  const parts = [];
+  if (usage.input_tokens != null) parts.push(`${usage.input_tokens} in`);
+  if (usage.output_tokens != null) parts.push(`${usage.output_tokens} out`);
+  return parts.length ? `${parts.join(" / ")} tokens` : "usage unreported";
+}
+
 function renderGeneration(out, data) {
   clear(out);
   if (data.error) {
@@ -415,9 +426,8 @@ function renderGeneration(out, data) {
 
   const meta = document.createElement("div");
   meta.className = "meta";
-  const tokens = data.usage && data.usage.total_tokens != null ? data.usage.total_tokens : "unreported";
   meta.textContent =
-    `${data.model} · ${Math.round(data.round_trip_duration_ms)} ms · ${tokens} tokens` +
+    `${data.model} · ${Math.round(data.round_trip_duration_ms)} ms · ${usageLabel(data.usage)}` +
     (data.finish_reason ? ` · ${data.finish_reason}` : "");
   card.appendChild(meta);
 
@@ -494,8 +504,10 @@ function renderVerify(target, data) {
     const line = document.createElement("div");
     line.className = a.ok ? "attempt" : "attempt fail";
     if (a.ok) {
+      // Only the total reaches the attempt record, so name the field the
+      // CLI names: a provider can report per-direction counts and no total.
       const tokens = a.total_tokens != null ? a.total_tokens : "unreported";
-      line.textContent = `✓ ${a.model_id} (pos ${a.position}) — ${Math.round(a.round_trip_duration_ms)} ms, ${tokens} tokens`;
+      line.textContent = `✓ ${a.model_id} (pos ${a.position}) — ${Math.round(a.round_trip_duration_ms)} ms, total tokens: ${tokens}`;
     } else {
       line.textContent = `✗ ${a.model_id} (pos ${a.position}) — ${a.error_code}: ${a.error_message}`;
     }

@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `round_trip_duration_ms` on a streamed result excluded the request and
+  the wait for the first byte, timing only from the response headers to
+  the last event. On providers that buffer before responding it reported a
+  small fraction of the real duration — about 1% on Anthropic, which read
+  like a cache hit. The clock now starts before the request goes out, as
+  it always has on the non-streamed path.
+- The viewer reported "unreported tokens" whenever a provider sent no
+  total, even though it had per-direction counts in hand; it now shows
+  those (`16 in / 4 out tokens`), and the verify walk names the field it
+  actually has, matching the CLI's "total tokens" wording.
 - README described streaming and tool calling as unimplemented, which had
   been stale since 0.5.0.
 

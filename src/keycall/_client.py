@@ -378,6 +378,9 @@ class TextStream(_StreamCore):
     the block closes it, even on early break or exception."""
 
     def __enter__(self) -> Self:
+        # Before the request goes out: time to first byte is part of the
+        # round trip, and on providers that buffer it is most of it.
+        self._started_at = time.monotonic()
         self._ctx = self._client._transport.stream_request(
             self._spec,
             operation="text_generation",
@@ -386,7 +389,6 @@ class TextStream(_StreamCore):
         headers, events = self._ctx.__enter__()
         self._assembler.response_headers = headers
         self._events = events
-        self._started_at = time.monotonic()
         return self
 
     def __exit__(
@@ -414,6 +416,8 @@ class AsyncTextStream(_StreamCore):
     """Async twin of TextStream."""
 
     async def __aenter__(self) -> Self:
+        # See TextStream.__enter__: the clock starts before the request.
+        self._started_at = time.monotonic()
         self._ctx = self._client._transport.stream_request(
             self._spec,
             operation="text_generation",
@@ -422,7 +426,6 @@ class AsyncTextStream(_StreamCore):
         headers, events = await self._ctx.__aenter__()
         self._assembler.response_headers = headers
         self._events = events
-        self._started_at = time.monotonic()
         return self
 
     async def __aexit__(

@@ -4,6 +4,7 @@ Fixture streams mirror the shapes captured live 2026-08-08.
 """
 
 import json
+import time
 
 import httpx
 import pytest
@@ -83,6 +84,25 @@ def openai_stream_body(include_terminal=True):
             )
         )
     return sse(*events)
+
+
+def test_stream_duration_includes_time_to_first_byte():
+    """Providers that buffer before the first byte spend most of the round
+    trip there; measuring only from the response headers reported ~1% of
+    the real duration on Anthropic."""
+    latency_s = 0.05
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        time.sleep(latency_s)
+        return stream_response(openai_stream_body())
+
+    with make_client("openai", handler).stream_text(
+        model="gpt-4o-mini", messages=messages()
+    ) as stream:
+        list(stream)
+        result = stream.result()
+
+    assert result.round_trip_duration_ms >= latency_s * 1000
 
 
 def test_openai_stream_events_and_result():
