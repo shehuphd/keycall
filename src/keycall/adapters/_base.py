@@ -21,11 +21,36 @@ from .._types import (
     Citation,
     InvocationResult,
     Model,
+    OutputPart,
     StreamEvent,
     TextGenerationRequest,
     TextOutput,
+    ToolCall,
+    ToolCallArgumentsDelta,
+    ToolCallComplete,
+    ToolCallStarted,
     Usage,
 )
+
+
+def parse_tool_arguments(raw: Any, *, provider: str) -> Mapping[str, Any]:
+    """Providers that send arguments as a JSON string (OpenAI, the compat
+    family) get parsed here; malformed argument JSON from a provider is a
+    typed error, never a silently dropped call."""
+    if isinstance(raw, Mapping):
+        return raw
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        parsed = None
+    if not isinstance(parsed, dict):
+        raise KeyCallError(
+            "provider sent malformed tool-call arguments",
+            code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+            provider=provider,
+            operation=Operation.TEXT_GENERATION.value,
+        )
+    return parsed
 
 
 class InbandStreamError(Exception):
@@ -56,7 +81,10 @@ class StreamAssembler(ABC):
         self.provider_request_id: str | None = None
         self.citations: list[Citation] = []
         self.warnings: list[str] = []
+        self.tool_calls: list[ToolCall] = []
         self._text: list[str] = []
+        # Provider key (block index, item id, choice index) -> in-flight call.
+        self._pending_calls: dict[Any, dict[str, Any]] = {}
 
     @abstractmethod
     def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
@@ -88,6 +116,67 @@ class StreamAssembler(ABC):
     def text(self) -> str:
         return "".join(self._text)
 
+    # --- streamed tool calls ---
+    #
+    # Three of the four protocols announce a call, stream its arguments as
+    # JSON fragments, then close it; only the keys differ (Anthropic block
+    # index, OpenAI item id, compat tool-call index). These helpers hold
+    # that shared shape so each adapter only maps its own event names.
+
+    def begin_tool_call(
+        self, key: Any, *, call_id: str, name: str, opaque: str | None = None
+    ) -> ToolCallStarted:
+        self._pending_calls[key] = {
+            "id": call_id,
+            "name": name,
+            "opaque": opaque,
+            "fragments": [],
+        }
+        return ToolCallStarted(id=call_id, name=name)
+
+    def append_tool_arguments(self, key: Any, fragment: str) -> list[StreamEvent]:
+        pending = self._pending_calls.get(key)
+        if pending is None or not fragment:
+            return []
+        pending["fragments"].append(fragment)
+        return [ToolCallArgumentsDelta(id=pending["id"], fragment=fragment)]
+
+    def complete_tool_call(self, key: Any, *, arguments: Any = None) -> list[StreamEvent]:
+        """Close an in-flight call and record it. ``arguments`` overrides the
+        accumulated fragments for providers that also send the finished
+        argument string (OpenAI)."""
+        pending = self._pending_calls.pop(key, None)
+        if pending is None:
+            return []
+        raw = arguments if arguments is not None else "".join(pending["fragments"])
+        call = ToolCall(
+            id=pending["id"],
+            name=pending["name"],
+            arguments=parse_tool_arguments(raw, provider=self.resolved.provider),
+            opaque=pending["opaque"],
+        )
+        self.tool_calls.append(call)
+        return [ToolCallComplete(tool_call=call)]
+
+    def flush_tool_calls(self) -> list[StreamEvent]:
+        """Close every still-open call, in the order they were announced.
+        Providers that never mark a call finished (the compat family closes
+        the whole message instead) land here."""
+        events: list[StreamEvent] = []
+        for key in list(self._pending_calls):
+            events.extend(self.complete_tool_call(key))
+        return events
+
+    def record_tool_call(self, call: ToolCall) -> list[StreamEvent]:
+        """Record a call that arrived whole (Gemini), with no fragments to
+        accumulate. Still reported as started-then-complete so callers can
+        treat every provider the same way."""
+        self.tool_calls.append(call)
+        return [
+            ToolCallStarted(id=call.id, name=call.name),
+            ToolCallComplete(tool_call=call),
+        ]
+
     def finalize(self, *, round_trip_duration_ms: float) -> InvocationResult:
         if self.provider_request_id is None and self.resolved.provider_request_id_header:
             self.provider_request_id = safe_request_id(
@@ -95,11 +184,15 @@ class StreamAssembler(ABC):
             )
         if not self.usage_reported:
             self.warnings.append("provider reported no usage information")
+        parts: list[OutputPart] = []
+        if self._text:
+            parts.append(TextOutput(text=self.text))
+        parts.extend(self.tool_calls)
         return InvocationResult(
             provider=self.resolved.provider,
             model=self.model,
             operation=Operation.TEXT_GENERATION,
-            parts=(TextOutput(text=self.text),) if self._text else (),
+            parts=tuple(parts),
             usage=self.usage,
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=self.provider_request_id,
@@ -295,23 +388,7 @@ class ProviderAdapter(ABC):
             )
 
     def parse_tool_arguments(self, raw: Any) -> Mapping[str, Any]:
-        """Providers that send arguments as a JSON string (OpenAI, the
-        compat family) get parsed here; malformed argument JSON from a
-        provider is a typed error, never a silently dropped call."""
-        if isinstance(raw, Mapping):
-            return raw
-        try:
-            parsed = json.loads(raw) if raw else {}
-        except (ValueError, TypeError):
-            parsed = None
-        if not isinstance(parsed, dict):
-            raise KeyCallError(
-                "provider sent malformed tool-call arguments",
-                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
-                provider=self.resolved.provider,
-                operation=Operation.TEXT_GENERATION.value,
-            )
-        return parsed
+        return parse_tool_arguments(raw, provider=self.resolved.provider)
 
     @staticmethod
     def tool_result_text(content: Any) -> str:

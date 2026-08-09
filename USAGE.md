@@ -173,14 +173,17 @@ Event types, discriminated by `kind`:
 | `StreamStart` | `stream_start` | model id the provider confirmed |
 | `TextDelta` | `text_delta` | a text increment; with `response_schema`, a fragment of the final JSON |
 | `CitationFound` | `citation` | one web-search source, as it surfaces |
+| `ToolCallStarted` | `tool_call_started` | id and name of a call beginning; arguments not known yet |
+| `ToolCallArgumentsDelta` | `tool_call_arguments_delta` | a raw fragment of that call's argument JSON |
+| `ToolCallComplete` | `tool_call_complete` | the assembled `ToolCall`, arguments parsed |
 | `StreamFinish` | `stream_finish` | finish reason and usage |
 | `UnknownStreamEvent` | `unknown` | bounded provider kind for content KeyCall doesn't recognize yet |
 
 Behavior and guarantees:
 
-- `web_search` and `response_schema` combine with streaming on every
-  provider that supports them non-streamed; the same gates apply (Anthropic
-  still refuses the web_search + response_schema combination).
+- `web_search`, `response_schema`, and `tools` combine with streaming on
+  every provider that supports them non-streamed; the same gates apply
+  (Anthropic still refuses the web_search + response_schema combination).
 - Streaming is never retried, before or after the first byte.
 - The stream must end with the provider's own terminal signal. A connection
   that closes early raises `NETWORK_ERROR` from the iterator, and
@@ -243,9 +246,37 @@ Rules and behavior:
   any network call; the live suite carries a drift probe that fails if
   that ever changes. Custom OpenAI-compatible targets pass through with a
   result warning that support is unverified.
-- Not combinable: Anthropic tools + `response_schema` (schema enforcement
-  is itself a forced tool call), and streaming + tools (raises until
-  streamed tool events ship).
+- Not combinable: Anthropic tools + `response_schema`, because schema
+  enforcement is itself a forced tool call.
+
+### Streaming tool calls
+
+`stream_text()` takes `tools` and `tool_choice` too. Calls arrive as three
+events: `tool_call_started` when the model names a tool,
+`tool_call_arguments_delta` as its arguments stream in, and
+`tool_call_complete` once they parse. Act on the complete event only:
+
+```python
+with client.stream_text(model="...", messages=messages, tools=[weather]) as stream:
+    for event in stream:
+        if event.kind == "text_delta":
+            print(event.text, end="", flush=True)
+        elif event.kind == "tool_call_started":
+            print(f"\n[calling {event.name}]")
+        elif event.kind == "tool_call_complete":
+            pending.append(event.tool_call)
+    result = stream.result()
+```
+
+- `result.tool_calls` after a stream matches what the same request returns
+  non-streamed, so the loop above and the `generate_text()` loop can share
+  their dispatch and replay code.
+- Argument fragments are provider bytes, not KeyCall's: they split
+  mid-token and only the concatenation is valid JSON. Show them as
+  progress, never parse them. A provider that sends arguments whole
+  (Gemini) emits no fragments at all, so treat their absence as normal.
+- Malformed argument JSON raises `INVALID_PROVIDER_RESPONSE` from the
+  iterator rather than yielding a call with silently dropped arguments.
 
 ## Web search
 

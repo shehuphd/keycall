@@ -37,7 +37,7 @@ from .._types import (
     UnknownStreamEvent,
     Usage,
 )
-from ._base import ProviderAdapter, StreamAssembler
+from ._base import ProviderAdapter, StreamAssembler, parse_tool_arguments
 
 _PAGE_SIZE = "1000"
 
@@ -101,6 +101,32 @@ class _GeminiStreamAssembler(StreamAssembler):
                         text = str(part["text"])
                         self.append_text(text)
                         events.append(TextDelta(text=text))
+                    elif isinstance(part, dict) and isinstance(part.get("functionCall"), dict):
+                        # Gemini sends each call whole, with the thought
+                        # signature as a sibling of functionCall; the echo
+                        # data is required back verbatim on replay.
+                        call = part["functionCall"]
+                        echo = {
+                            key: value
+                            for key, value in (
+                                ("thoughtSignature", part.get("thoughtSignature")),
+                                ("id", call.get("id")),
+                            )
+                            if value
+                        }
+                        events.extend(
+                            self.record_tool_call(
+                                ToolCall(
+                                    id=str(call.get("id", "")),
+                                    name=str(call.get("name", "")),
+                                    arguments=parse_tool_arguments(
+                                        call.get("args", {}),
+                                        provider=self.resolved.provider,
+                                    ),
+                                    opaque=json.dumps(echo) if echo else None,
+                                )
+                            )
+                        )
                     elif isinstance(part, dict):
                         kind = next(iter(part.keys()), "?")
                         events.append(UnknownStreamEvent(provider_kind=str(kind)))

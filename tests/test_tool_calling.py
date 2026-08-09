@@ -180,18 +180,6 @@ def test_anthropic_tools_with_schema_gated():
     assert "count" not in captured
 
 
-def test_streaming_with_tools_gated():
-    from keycall import TextGenerationRequest
-    from keycall._client import TextStream
-
-    client = make_client("openai", lambda r: httpx.Response(500))
-    request = TextGenerationRequest(model="m", messages=[user()], tools=[WEATHER])
-
-    with pytest.raises(KeyCallError) as excinfo:
-        TextStream(client, request)
-    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
-
-
 # --- provider payload parsing (hostile first) -------------------------------
 
 

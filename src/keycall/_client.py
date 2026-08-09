@@ -88,6 +88,30 @@ def _with_schema_warning(
     return dataclasses.replace(invocation, warnings=tuple(warnings))
 
 
+def _with_custom_tool_warning(
+    invocation: InvocationResult,
+    request: TextGenerationRequest,
+    provider: str,
+    *,
+    is_custom: bool,
+) -> InvocationResult:
+    """Custom targets get tools passed through unverified, so say so on
+    every result rather than implying the endpoint honored them."""
+    if not request.tools or not is_custom:
+        return invocation
+    return dataclasses.replace(
+        invocation,
+        warnings=(
+            *invocation.warnings,
+            (
+                f"tool calling on custom target {provider!r} is unverified; "
+                "keycall passes the standard tools field through without "
+                "evidence the endpoint honors it"
+            ),
+        ),
+    )
+
+
 def _filter_models(
     models: tuple[Model, ...], categories: frozenset[ModelCategory]
 ) -> tuple[Model, ...]:
@@ -265,18 +289,9 @@ class _BaseClient:
             model=request.model,
         )
         invocation = _with_schema_warning(invocation, request, self.provider)
-        if request.tools and self._resolved.is_custom:
-            invocation = dataclasses.replace(
-                invocation,
-                warnings=(
-                    *invocation.warnings,
-                    (
-                        f"tool calling on custom target {self.provider!r} is "
-                        "unverified; keycall passes the standard tools field "
-                        "through without evidence the endpoint honors it"
-                    ),
-                ),
-            )
+        invocation = _with_custom_tool_warning(
+            invocation, request, self.provider, is_custom=self._resolved.is_custom
+        )
         trace.event(
             "model",
             operation="text_generation",
@@ -296,14 +311,6 @@ class _StreamCore:
     """State shared by the sync and async stream wrappers."""
 
     def __init__(self, client: _BaseClient, request: TextGenerationRequest) -> None:
-        if request.tools:
-            raise KeyCallError(
-                "streaming with tools is not implemented yet; use "
-                "generate_text() for tool calling",
-                code=ErrorCode.UNSUPPORTED_OPERATION,
-                provider=client.provider,
-                operation="text_generation",
-            )
         self._client = client
         self._request = request
         self._assembler: StreamAssembler = client._adapter.stream_assembler(request)
@@ -355,7 +362,13 @@ class _StreamCore:
                 (time.monotonic() - self._started_at) * 1000.0 if self._started_at else 0.0
             )
             invocation = self._assembler.finalize(round_trip_duration_ms=duration)
-            self._result = _with_schema_warning(invocation, self._request, self._client.provider)
+            invocation = _with_schema_warning(invocation, self._request, self._client.provider)
+            self._result = _with_custom_tool_warning(
+                invocation,
+                self._request,
+                self._client.provider,
+                is_custom=self._client._resolved.is_custom,
+            )
         return self._result
 
 
@@ -584,6 +597,8 @@ class KeyCall(_BaseClient):
         top_p: float | None = None,
         web_search: bool = False,
         response_schema: Mapping[str, Any] | None = None,
+        tools: Sequence[Tool] = (),
+        tool_choice: str | None = None,
     ) -> TextStream:
         """Stream a text generation. Use as a context manager; iterate the
         typed events, then call result() for the full InvocationResult."""
@@ -598,6 +613,8 @@ class KeyCall(_BaseClient):
                 top_p=top_p,
                 web_search=web_search,
                 response_schema=response_schema,
+                tools=tools,
+                tool_choice=tool_choice,
             ),
         )
 
@@ -750,6 +767,8 @@ class AsyncKeyCall(_BaseClient):
         top_p: float | None = None,
         web_search: bool = False,
         response_schema: Mapping[str, Any] | None = None,
+        tools: Sequence[Tool] = (),
+        tool_choice: str | None = None,
     ) -> AsyncTextStream:
         """Stream a text generation. Use as an async context manager;
         iterate with `async for`, then call result()."""
@@ -764,5 +783,7 @@ class AsyncKeyCall(_BaseClient):
                 top_p=top_p,
                 web_search=web_search,
                 response_schema=response_schema,
+                tools=tools,
+                tool_choice=tool_choice,
             ),
         )

@@ -40,6 +40,9 @@ __all__ = [
     "TextOutput",
     "Tool",
     "ToolCall",
+    "ToolCallArgumentsDelta",
+    "ToolCallComplete",
+    "ToolCallStarted",
     "ToolResult",
     "TranscriptOutput",
     "UnknownOutput",
@@ -346,6 +349,39 @@ class CitationFound:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class ToolCallStarted:
+    """The model began requesting a tool. The name is known; the arguments
+    are not yet. Never act on this event — wait for ToolCallComplete."""
+
+    id: str
+    name: str
+    kind: Literal["tool_call_started"] = "tool_call_started"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolCallArgumentsDelta:
+    """A fragment of a tool call's argument JSON, exactly as the provider
+    sent it. Fragments are individually meaningless: they split mid-token
+    and only the concatenation is valid JSON. Useful for showing progress,
+    not for parsing. Providers that send arguments whole (Gemini) emit
+    none of these, so a stream can go from started to complete with no
+    deltas in between."""
+
+    id: str
+    fragment: str
+    kind: Literal["tool_call_arguments_delta"] = "tool_call_arguments_delta"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolCallComplete:
+    """A fully assembled tool call, arguments parsed. This is the event to
+    act on; the same ToolCall also appears in the final result's parts."""
+
+    tool_call: ToolCall
+    kind: Literal["tool_call_complete"] = "tool_call_complete"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class StreamFinish:
     """Last event of a completed stream. After this, ``stream.result()``
     returns the full InvocationResult."""
@@ -364,7 +400,16 @@ class UnknownStreamEvent:
     kind: Literal["unknown"] = "unknown"
 
 
-StreamEvent = StreamStart | TextDelta | CitationFound | StreamFinish | UnknownStreamEvent
+StreamEvent = (
+    StreamStart
+    | TextDelta
+    | CitationFound
+    | ToolCallStarted
+    | ToolCallArgumentsDelta
+    | ToolCallComplete
+    | StreamFinish
+    | UnknownStreamEvent
+)
 
 
 # --- results ---------------------------------------------------------------

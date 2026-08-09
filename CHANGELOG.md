@@ -5,6 +5,33 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Streamed tool calls**: `stream_text()` accepts `tools` and
+  `tool_choice`, and reports calls as three typed events —
+  `ToolCallStarted` when the model names a tool,
+  `ToolCallArgumentsDelta` as the argument JSON arrives in fragments, and
+  `ToolCallComplete` once it parses. `result.tool_calls` after a stream
+  matches what the same request returns non-streamed, so dispatch and
+  replay code is shared between both paths. Live-verified across every
+  supporting provider, including Gemini, which sends each call whole and
+  so emits no fragments at all.
+
+### Changed
+
+- Streaming and tools are no longer mutually exclusive; the gate that
+  raised `UNSUPPORTED_OPERATION` for the combination is gone. Every other
+  tool-calling gate still applies to streams, before any network call.
+- Custom OpenAI-compatible targets now get the unverified-tool-support
+  warning on streamed results too, not only non-streamed ones.
+
+### Fixed
+
+- README described streaming and tool calling as unimplemented, which had
+  been stale since 0.5.0.
+
 ## [0.6.0] — 2026-08-09
 
 ### Added

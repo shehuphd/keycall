@@ -59,8 +59,6 @@ class CompatStreamAssembler(StreamAssembler):
         choices = payload.get("choices")
         choice = choices[0] if isinstance(choices, list) and choices else None
         if isinstance(choice, dict):
-            if choice.get("finish_reason"):
-                self.finish_reason = str(choice["finish_reason"])
             delta = choice.get("delta")
             if isinstance(delta, dict):
                 if delta.get("content"):
@@ -69,6 +67,12 @@ class CompatStreamAssembler(StreamAssembler):
                     events.append(TextDelta(text=text))
                 elif delta.get("reasoning_content"):
                     self._saw_reasoning = True
+                events.extend(self._tool_call_events(delta))
+            if choice.get("finish_reason"):
+                self.finish_reason = str(choice["finish_reason"])
+                # This protocol has no per-call end marker: the message
+                # finishing is what closes every call still open.
+                events.extend(self.flush_tool_calls())
         usage_raw = payload.get("usage")
         if isinstance(usage_raw, dict) and usage_raw.get("completion_tokens") is not None:
             details = usage_raw.get("prompt_tokens_details") or {}
@@ -82,10 +86,37 @@ class CompatStreamAssembler(StreamAssembler):
             self.usage_reported = True
         return events
 
+    def _tool_call_events(self, delta: dict[str, Any]) -> list[StreamEvent]:
+        """delta.tool_calls entries are index-keyed: the first fragment for
+        an index carries id and name, later ones append argument text
+        (live-verified 2026-08-08)."""
+        raw_calls = delta.get("tool_calls")
+        if not isinstance(raw_calls, list):
+            return []
+        events: list[StreamEvent] = []
+        for entry in raw_calls:
+            if not isinstance(entry, dict):
+                continue
+            index = entry.get("index", 0)
+            function = entry.get("function")
+            function = function if isinstance(function, dict) else {}
+            if index not in self._pending_calls:
+                events.append(
+                    self.begin_tool_call(
+                        index,
+                        call_id=str(entry.get("id", "")),
+                        name=str(function.get("name", "")),
+                    )
+                )
+            events.extend(self.append_tool_arguments(index, str(function.get("arguments") or "")))
+        return events
+
     def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
         if data.strip() == "[DONE]":
             self.saw_terminal = True
-            return [StreamFinish(finish_reason=self.finish_reason, usage=self.usage)]
+            events = self.flush_tool_calls()
+            events.append(StreamFinish(finish_reason=self.finish_reason, usage=self.usage))
+            return events
         payload = self._parse_data(data)
         if not isinstance(payload, dict):
             return []

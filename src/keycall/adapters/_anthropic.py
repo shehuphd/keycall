@@ -83,7 +83,16 @@ class _AnthropicStreamAssembler(StreamAssembler):
             block = payload.get("content_block")
             block_type = str(block.get("type", "?")) if isinstance(block, dict) else "?"
             if block_type == "tool_use" and isinstance(block, dict):
-                block_type = f"tool_use:{block.get('name', '')}"
+                name = str(block.get("name", ""))
+                block_type = f"tool_use:{name}"
+                self._blocks[index] = block_type
+                if name != _STRUCTURED_OUTPUT_TOOL_NAME:
+                    return [
+                        self.begin_tool_call(
+                            index, call_id=str(block.get("id", "")), name=name
+                        )
+                    ]
+                return []
             self._blocks[index] = block_type
             return []
         if kind == "content_block_delta":
@@ -96,15 +105,16 @@ class _AnthropicStreamAssembler(StreamAssembler):
                 text = str(delta.get("text", ""))
                 self.append_text(text)
                 return [TextDelta(text=text)]
-            if delta_type == "input_json_delta" and self._blocks.get(index) == (
-                f"tool_use:{_STRUCTURED_OUTPUT_TOOL_NAME}"
-            ):
-                # The forced structured-output tool: its input is the answer,
-                # streamed as JSON fragments, matching the non-streaming
-                # contract that result.text carries the JSON string.
+            if delta_type == "input_json_delta":
                 fragment = str(delta.get("partial_json", ""))
-                self.append_text(fragment)
-                return [TextDelta(text=fragment)]
+                if self._blocks.get(index) == f"tool_use:{_STRUCTURED_OUTPUT_TOOL_NAME}":
+                    # The forced structured-output tool: its input is the
+                    # answer, streamed as JSON fragments, matching the
+                    # non-streaming contract that result.text carries the
+                    # JSON string.
+                    self.append_text(fragment)
+                    return [TextDelta(text=fragment)]
+                return self.append_tool_arguments(index, fragment)
             if delta_type == "citations_delta":
                 note = delta.get("citation")
                 if isinstance(note, dict) and note.get("url"):
@@ -118,7 +128,7 @@ class _AnthropicStreamAssembler(StreamAssembler):
                 return []
             return []
         if kind == "content_block_stop":
-            return []
+            return self.complete_tool_call(int(payload.get("index", 0)))
         if kind == "message_delta":
             delta = payload.get("delta")
             if isinstance(delta, dict) and delta.get("stop_reason"):
@@ -132,7 +142,9 @@ class _AnthropicStreamAssembler(StreamAssembler):
             return []
         if kind == "message_stop":
             self.saw_terminal = True
-            return [StreamFinish(finish_reason=self.finish_reason, usage=self.usage)]
+            events = self.flush_tool_calls()
+            events.append(StreamFinish(finish_reason=self.finish_reason, usage=self.usage))
+            return events
         if kind == "error":
             code, retryable, message = self._adapter.translate_error(500, payload)
             raise InbandStreamError(code, retryable, message)

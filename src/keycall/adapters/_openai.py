@@ -39,7 +39,6 @@ from ._base import InbandStreamError, ProviderAdapter, StreamAssembler
 _STREAM_PLUMBING = frozenset(
     {
         "response.in_progress",
-        "response.output_item.added",
         "response.output_item.done",
         "response.content_part.added",
         "response.content_part.done",
@@ -68,6 +67,28 @@ class _OpenAIStreamAssembler(StreamAssembler):
             delta = str(payload.get("delta", ""))
             self.append_text(delta)
             return [TextDelta(text=delta)]
+        if kind == "response.output_item.added":
+            item = payload.get("item")
+            if isinstance(item, dict) and item.get("type") == "function_call":
+                # Keyed by item id, which is what the argument deltas
+                # reference; the call_id is the id the caller replies with.
+                return [
+                    self.begin_tool_call(
+                        str(item.get("id", "")),
+                        call_id=str(item.get("call_id", "")),
+                        name=str(item.get("name", "")),
+                        opaque=json.dumps({"id": item["id"]}) if item.get("id") else None,
+                    )
+                ]
+            return []
+        if kind == "response.function_call_arguments.delta":
+            return self.append_tool_arguments(
+                str(payload.get("item_id", "")), str(payload.get("delta", ""))
+            )
+        if kind == "response.function_call_arguments.done":
+            return self.complete_tool_call(
+                str(payload.get("item_id", "")), arguments=payload.get("arguments")
+            )
         if kind in ("response.completed", "response.incomplete"):
             self.saw_terminal = True
             self._final = self._adapter.parse_generation_response(
