@@ -590,3 +590,67 @@ def test_audio_and_file_gates_name_who_does_support_them():
     # A URL form nobody verified must not be smuggled through as bytes.
     remote = refuse("gemini", FileInput(url="https://x.example/doc.pdf"))
     assert "does not fetch file URLs" in remote
+
+
+def test_non_token_billing_surfaces_in_provider_units():
+    """Perplexity charges per request on top of tokens, so a budget built
+    on token counts alone cannot see it. The field existed since 0.2.0 and
+    nothing ever populated it."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "sonar",
+                "choices": [{"message": {"content": "Paris"}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 17,
+                    "total_tokens": 24,
+                    "search_context_size": "low",
+                    "cost": {
+                        "input_tokens_cost": 1e-05,
+                        "output_tokens_cost": 2e-05,
+                        "request_cost": 0.005,
+                        "total_cost": 0.00502,
+                    },
+                },
+            },
+        )
+
+    client = KeyCall(
+        provider="perplexity", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    result = client.generate_text(
+        model="sonar", messages=[Message(role="user", content=[TextInput(text="hi")])]
+    )
+    client.close()
+
+    units = dict(result.usage.provider_units or ())
+    assert units["request_cost"] == 0.005
+    assert units["total_cost"] == 0.00502
+    # Descriptive fields are not units and must not be coerced into one.
+    assert "search_context_size" not in units
+    # Token counts stay where they were.
+    assert result.usage.total_tokens == 24
+
+
+def test_providers_without_non_token_billing_report_none():
+    """None means the provider said nothing, which is different from zero."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "deepseek-chat",
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    client = KeyCall(
+        provider="deepseek", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    result = client.generate_text(
+        model="deepseek-chat", messages=[Message(role="user", content=[TextInput(text="hi")])]
+    )
+    client.close()
+    assert result.usage.provider_units is None

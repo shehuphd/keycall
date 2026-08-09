@@ -58,6 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Usage.provider_units` carries non-token billing.** Perplexity reports
+  a `cost` object whose `request_cost` is charged per call rather than per
+  token (verified 2026-08-09), which a token budget cannot see. Numeric
+  entries now surface as `(name, value)` pairs; descriptive fields like
+  `search_context_size` are not units and are left out. The field had
+  existed since 0.2.0 with nothing ever assigning it, the same broken
+  promise `catalog_stale` carried. Providers that report no cost leave it
+  `None`, meaning not reported rather than zero.
 - **Audio and document input.** `AudioInput` and `FileInput` join
   `ImageInput` as real content parts. Documents (PDF) work on OpenAI,
   Anthropic, and Gemini; audio is Gemini-only, because OpenAI's Responses

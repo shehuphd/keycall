@@ -41,6 +41,23 @@ from ._base import (
 )
 
 
+def _provider_units(usage_raw: dict[str, Any]) -> tuple[tuple[str, float], ...] | None:
+    """Billing the token counts do not cover. Perplexity reports a `cost`
+    object whose `request_cost` is charged per call rather than per token
+    (verified 2026-08-09), which is money a token budget cannot see. Only
+    numeric entries are carried; a descriptive field like
+    search_context_size is not a unit."""
+    cost = usage_raw.get("cost")
+    if not isinstance(cost, dict):
+        return None
+    units = tuple(
+        (str(name), float(value))
+        for name, value in cost.items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    )
+    return units or None
+
+
 def _image_url(part: ImageInput) -> str:
     """The compat family takes a URL or an inline data URL in one field.
     Moonshot rejects remote URLs, which the validation gate refuses before
@@ -383,6 +400,7 @@ class OpenAICompatibleAdapter(ProviderAdapter):
                 cached_input_tokens=details.get("cached_tokens")
                 or usage_raw.get("prompt_cache_hit_tokens"),
                 total_tokens=usage_raw.get("total_tokens"),
+                provider_units=_provider_units(usage_raw),
             )
         else:
             usage = Usage()

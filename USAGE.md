@@ -410,11 +410,15 @@ What the citation list does and doesn't guarantee:
   `result.citations` is the only option, and the tokens are already spent
   by the time you do. If capping matters, cap `max_output_tokens`, which
   does bound the answer the citations attach to.
-- **Search costs are not reported.** `Usage.provider_units` exists for
-  non-token billing units but no adapter populates it today, so a
-  per-search charge (as opposed to per-token) does not appear anywhere in
-  `result.usage`. A token budget built on `Usage` will not see it. Check
-  the provider's own billing for search-priced calls.
+- **Non-token charges appear in `Usage.provider_units`.** Perplexity bills
+  a flat `request_cost` per call on top of tokens, so a budget counting
+  only tokens misses it. Where a provider reports such figures, KeyCall
+  passes them through as `(name, value)` pairs:
+  `dict(result.usage.provider_units)["request_cost"]`. Providers that
+  report nothing leave it `None`, which means "not reported", never zero.
+  OpenAI, Anthropic, Gemini, DeepSeek, and Moonshot report no cost fields
+  today, so their search or per-call pricing has to come from their own
+  billing pages.
 - **`context_limit` is populated only where the provider's list endpoint
   reports it**, which today means Gemini alone. OpenAI, Anthropic,
   DeepSeek, Perplexity, and Moonshot all return model lists with no token
