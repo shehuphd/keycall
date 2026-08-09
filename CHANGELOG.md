@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check that fails if a parameter is added to one client and not the other,
   and a live async test in the release gate. No defects turned up: the
   async path was correct, it was untested.
+- **The Playground is a two-column workspace.** Settings live in a left
+  sidebar grouped as "Key and model" and "Extras"; the conversation owns
+  the right, with turns as bubbles and a composer pinned at the bottom
+  that also sends on Ctrl/Cmd+Enter. The single stacked column made the
+  controls compete with the reply for attention, and the reply had nowhere
+  to grow. Optional features are switches rather than checkboxes, so their
+  state reads at a glance, and each reveals its settings inline.
 - **The viewer is written for someone who has never seen it.** Each tab now
   opens with a heading and a plain-language explanation of what the screen
   does and what it costs. Controls are labelled by what they do rather than

@@ -243,6 +243,7 @@ async function boot() {
   el("dash-embed-header").title =
     "Models this key can use to turn text into vectors, via embed(). Zero means "
     + "the provider has no embeddings API, not that the key is limited.";
+  transcriptEmpty();
   // The Verify tab opens with no results, which is a state, not a blank.
   emptyState(
     el("verify-empty"),
@@ -438,6 +439,50 @@ async function loadPlaygroundModels() {
 
 el("pg-target").addEventListener("change", loadPlaygroundModels);
 
+// --- transcript -------------------------------------------------------------
+
+function transcriptEmpty() {
+  const box = el("pg-transcript");
+  clear(box);
+  const empty = document.createElement("div");
+  empty.className = "pg-empty";
+  const title = document.createElement("strong");
+  title.textContent = "Your conversation will appear here";
+  const hint = document.createElement("span");
+  hint.textContent = "Pick a key and a model on the left, then type below.";
+  empty.appendChild(title);
+  empty.appendChild(hint);
+  box.appendChild(empty);
+}
+
+function clearTranscriptPlaceholder() {
+  const placeholder = el("pg-transcript").querySelector(".pg-empty");
+  if (placeholder) placeholder.remove();
+}
+
+function addBubble(kind) {
+  clearTranscriptPlaceholder();
+  const bubble = document.createElement("div");
+  bubble.className = `bubble ${kind}`;
+  el("pg-transcript").appendChild(bubble);
+  return bubble;
+}
+
+function addUserTurn(text, hasImage) {
+  const bubble = addBubble("user");
+  const body = document.createElement("div");
+  body.className = "result-text";
+  body.textContent = text || "(no message)";
+  bubble.appendChild(body);
+  if (hasImage) {
+    const note = document.createElement("div");
+    note.className = "meta";
+    note.textContent = "with a picture attached";
+    bubble.appendChild(note);
+  }
+  return bubble;
+}
+
 // --- images -----------------------------------------------------------------
 
 // Holds the picked file's bytes as base64. The server decodes it back into
@@ -582,14 +627,25 @@ function renderToolCalls(result) {
 
 el("pg-run").addEventListener("click", () => runGeneration({ continuation: false }));
 
+el("pg-prompt").addEventListener("keydown", (event) => {
+  // Ctrl/Cmd+Enter sends, plain Enter keeps making paragraphs.
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    if (!el("pg-run").disabled) runGeneration({ continuation: false });
+  }
+});
+
 async function runGeneration({ continuation }) {
   const btn = el("pg-run");
-  const out = el("pg-result");
   const model = el("pg-model").value;
   const prompt = el("pg-prompt").value.trim();
   const images = imagesFromInput();
   if (!model || (!prompt && !continuation && !images)) {
-    out.textContent = "pick a model and enter a prompt";
+    // Say which half is missing rather than restating both.
+    const note = addBubble("model");
+    note.textContent = model
+      ? "Type a message below, or attach a picture, then press Generate."
+      : "Pick a key and a model on the left first.";
     return;
   }
   if (!continuation) {
@@ -600,12 +656,13 @@ async function runGeneration({ continuation }) {
   try {
     tooling = toolsFromInput();
   } catch (err) {
-    clear(out);
-    renderGeneration(out, { error: { code: "bad_request", message: err.message } });
+    const note = addBubble("model");
+    renderGeneration(note, { error: { code: "bad_request", message: err.message } });
     return;
   }
   working(btn, "Generating…");
-  clear(out);
+  if (!continuation) addUserTurn(prompt, Boolean(images));
+  const out = addBubble("model");
   out.textContent = "Waiting for the model…";
   const body = {
     target: Number(el("pg-target").value),

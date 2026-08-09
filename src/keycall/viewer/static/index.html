@@ -79,87 +79,96 @@
     </section>
 
     <section id="playground" class="tab">
-      <h2>Try a model</h2>
-      <p class="intro">
-        Send a real message to a real model and see what comes back.
-        <strong>Pick a key and a model, type something, then press
-        Generate.</strong> This spends tokens on your account, the same as
-        using the provider directly.
-      </p>
-      <div class="controls">
-        <select id="pg-target"></select>
-        <select id="pg-model"></select>
-      </div>
-      <div class="controls">
-        <input id="pg-system" type="text" placeholder="Optional: standing instructions, such as &quot;answer in one short sentence&quot;">
-      </div>
-      <textarea id="pg-prompt" rows="4" placeholder="Type your message to the model here…"></textarea>
-      <div class="controls">
-        <label>Longest reply
-          <input id="pg-maxtok" type="number" value="256" min="1" style="width:5rem">
-          tokens
-        </label>
-        <button id="pg-run">Generate</button>
-      </div>
-      <p class="hint">
-        Optional extras, tick one to reveal its settings. Support varies by
-        model as well as by provider, so if one is refused the reply says
-        which model turned it down and you can pick another.
-      </p>
-      <div class="controls">
-        <label><input id="pg-search" type="checkbox"> Let the model search the web</label>
-        <label><input id="pg-image-on" type="checkbox"> Show the model a picture</label>
-        <label><input id="pg-tools-on" type="checkbox"> Give the model a tool to call</label>
-      </div>
-      <div id="pg-image-panel" hidden>
-        <div class="card">
-          <strong>Show the model a picture</strong>
-          <p class="hint">
-            Choose a picture from this computer, or paste a link to one, and the
-            model will look at it and answer questions about it. Try asking
-            "what is in this picture?"
-          </p>
-          <p class="hint">
-            This does <strong>not</strong> make new pictures. KeyCall only sends
-            pictures to a model and reads its written reply, so a request like
-            "generate an image of a rabbit" comes back as words, not a picture.
-          </p>
-          <div class="controls">
-            <input id="pg-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
-            <input id="pg-image-url" type="text" placeholder="…or paste a link to a picture">
-            <button id="pg-image-clear" class="secondary">Remove picture</button>
+      <div class="pg-layout">
+        <aside class="pg-side">
+          <div class="pg-group">
+            <h3>Key and model</h3>
+            <div class="pg-row">
+              <label for="pg-target">Key</label>
+              <select id="pg-target"></select>
+            </div>
+            <div class="pg-row">
+              <label for="pg-model">Model</label>
+              <select id="pg-model"></select>
+            </div>
+            <div class="pg-row">
+              <label for="pg-maxtok">Longest reply</label>
+              <input id="pg-maxtok" type="number" value="256" min="1">
+            </div>
+            <div class="pg-row stacked">
+              <label for="pg-system">Standing instructions</label>
+              <input id="pg-system" type="text"
+                     placeholder="Optional, e.g. &quot;answer in one short sentence&quot;">
+            </div>
           </div>
-          <div id="pg-image-status" class="meta"></div>
-          <p class="hint">
-            Not every provider takes pictures. If yours doesn't, the reply will
-            say so and tell you what it does accept.
-          </p>
+
+          <div class="pg-group">
+            <h3>Extras</h3>
+            <p class="hint">
+              Support varies by model as well as provider. If one is refused,
+              the reply names the model that turned it down.
+            </p>
+            <label class="pg-toggle">
+              <span>Search the web</span>
+              <input id="pg-search" type="checkbox">
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <label class="pg-toggle">
+              <span>Show a picture</span>
+              <input id="pg-image-on" type="checkbox">
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <div id="pg-image-panel" hidden>
+              <p class="hint">
+                The model looks at a picture and answers about it. It does not
+                make pictures.
+              </p>
+              <input id="pg-image-file" type="file"
+                     accept="image/png,image/jpeg,image/gif,image/webp">
+              <input id="pg-image-url" type="text" placeholder="…or paste a link to a picture">
+              <div class="pg-row-end">
+                <button id="pg-image-clear" class="secondary">Remove</button>
+              </div>
+              <div id="pg-image-status" class="meta"></div>
+            </div>
+            <label class="pg-toggle">
+              <span>Offer a tool</span>
+              <input id="pg-tools-on" type="checkbox">
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <div id="pg-tools-panel" hidden>
+              <p class="hint">
+                The model asks, you answer, and the conversation carries on.
+                KeyCall never runs the tool itself.
+              </p>
+              <div class="pg-row">
+                <label for="pg-tool-choice">When to use</label>
+                <select id="pg-tool-choice">
+                  <option value="">Model decides</option>
+                  <option value="required">Always</option>
+                  <option value="none">Never</option>
+                </select>
+              </div>
+              <textarea id="pg-tools" rows="7" spellcheck="false"
+                        placeholder="Tool definitions as JSON."></textarea>
+              <div class="pg-row-end">
+                <button id="pg-tools-example" class="secondary">Load example</button>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <div class="pg-main">
+          <div id="pg-transcript" class="pg-transcript"></div>
+          <div id="pg-tool-calls"></div>
+          <div class="pg-composer">
+            <textarea id="pg-prompt" rows="3"
+                      placeholder="Ask anything. Press Generate, or Ctrl+Enter."></textarea>
+            <button id="pg-run">Generate</button>
+          </div>
         </div>
       </div>
-      <div id="pg-tools-panel" hidden>
-        <div class="card">
-          <strong>Give the model a tool to call</strong>
-          <p class="hint">
-            A tool is something the model can ask you to do for it, like looking
-            up the weather. The model never runs it. It asks, you type the
-            answer, and the conversation carries on with your answer.
-            <strong>Press "Load example" to see a working one.</strong>
-          </p>
-          <div class="controls">
-            <button id="pg-tools-example" class="secondary">Load example</button>
-            <label for="pg-tool-choice">When to use a tool</label>
-            <select id="pg-tool-choice">
-              <option value="">Let the model decide</option>
-              <option value="required">Always use one</option>
-              <option value="none">Never use one</option>
-            </select>
-          </div>
-          <textarea id="pg-tools" rows="8" spellcheck="false"
-                    placeholder='Tool definitions go here as JSON. Press "Load example" to fill this in.'></textarea>
-        </div>
-      </div>
-      <div id="pg-result"></div>
-      <div id="pg-tool-calls"></div>
+      <div id="pg-result" hidden></div>
     </section>
 
     <section id="verify" class="tab">
