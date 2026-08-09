@@ -238,6 +238,11 @@ async function boot() {
 
   attachSort(el("dashboard-table"));
   attachSort(el("models-table"));
+  el("dash-text-header").title =
+    "Models this key can use to write text, which is what the Playground calls.";
+  el("dash-embed-header").title =
+    "Models this key can use to turn text into vectors, via embed(). Zero means "
+    + "the provider has no embeddings API, not that the key is limited.";
   // The Verify tab opens with no results, which is a state, not a blank.
   emptyState(
     el("verify-empty"),
@@ -261,6 +266,7 @@ function renderDashboard() {
     statusCell.appendChild(pill("not checked", "pending"));
     row.appendChild(statusCell);
     row.appendChild(td("—", "num"));
+    row.appendChild(td("—", "num"));
     row.addEventListener("click", () => checkTarget(t.id, row));
     tbody.appendChild(row);
   });
@@ -270,15 +276,22 @@ async function checkTarget(id, row) {
   const statusCell = row.children[2];
   clear(statusCell);
   statusCell.appendChild(pill("checking…", "pending"));
-  const data = await api(`/api/models?target=${id}&category=text_generation`);
+  // Count both operations KeyCall can perform with a key, not just one:
+  // a key with no text models but working embeddings is still useful, and
+  // reporting only text made it look dead.
+  const data = await api(`/api/models?target=${id}`);
   clear(statusCell);
   if (data.error) {
     statusCell.appendChild(pill(data.error.code, "err"));
     row.children[3].textContent = data.error.message;
+    row.children[4].textContent = "";
     return;
   }
   statusCell.appendChild(pill("key valid", "ok"));
-  row.children[3].textContent = String(data.models.length);
+  const count = (category) =>
+    data.models.filter((m) => m.categories.includes(category)).length;
+  row.children[3].textContent = String(count("text_generation"));
+  row.children[4].textContent = String(count("embedding"));
 }
 
 // --- shared target selects --------------------------------------------------

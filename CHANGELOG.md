@@ -125,6 +125,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that a malformed response pointed the caller at their own request rather
   than at the model. The error repeats the provider's wording and adds
   that another model will do it.
+- The dashboard counted text models only, which undersold a key now that
+  KeyCall can also embed. It shows both counts, one per operation the
+  library can perform, and says that a zero under embeddings means the
+  provider has no embeddings API rather than a limited key.
 - The model browser's Context column was blank on every row for five of
   six providers, because only Gemini's list endpoint reports a token
   limit. It now appears only when a provider fills it, explains itself on
