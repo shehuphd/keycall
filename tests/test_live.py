@@ -512,6 +512,52 @@ def test_live_audio_and_file_input():
     assert not failures, "\n".join(failures)
 
 
+def test_live_embeddings():
+    """Both embedding endpoints batch and must return one vector per input
+    in order; a provider quietly changing that would misalign every
+    caller's index."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import KeyCall
+    from keycall._registry import providers_with
+
+    # Embedding models are not what the text walk selects, so name one per
+    # provider; a retirement here shows up as a clean model_not_available.
+    models = {"openai": "text-embedding-3-small", "gemini": "gemini-embedding-001"}
+    inputs = ["the first string", "an entirely different second string"]
+
+    targets, _ = load_targets(source)
+    supporting = providers_with("embeddings")
+    checked = []
+    for target in targets:
+        if target.provider not in supporting:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            result = client.embed(model=models[target.provider], inputs=inputs)
+            assert len(result.parts) == len(inputs)
+            dims = {len(part.values) for part in result.parts}
+            assert len(dims) == 1, f"ragged vector widths: {dims}"
+            assert result.parts[0].values != result.parts[1].values, (
+                "different inputs produced identical vectors, so the batch "
+                "may not be mapping inputs to outputs"
+            )
+            print(
+                f"{target.display_name}: {len(result.parts)} vectors of "
+                f"{dims.pop()} dims from {models[target.provider]}"
+            )
+            checked.append(target.provider)
+        finally:
+            client.close()
+    assert checked, "no embedding-capable target in the live source"
+
+
 def test_live_async_client_parity():
     """The async client shares the adapters but has its own transport,
     context managers, and stream iteration. Everything shipped since 0.5.0
