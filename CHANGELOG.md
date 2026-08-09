@@ -17,6 +17,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   viewer's request-body cap moved from 64 KB to 8 MB to fit an encoded
   photo.
 
+### Changed
+
+- **The viewer is written for someone who has never seen it.** Each tab now
+  opens with a heading and a plain-language explanation of what the screen
+  does and what it costs. Controls are labelled by what they do rather than
+  by the API field behind them: "Show the model a picture" instead of
+  "Image", "When to use a tool" instead of "tool_choice", model categories
+  as "Writes text" rather than `text_generation`. The picture panel says
+  outright that it sends a picture to a model and cannot make one, because
+  "Image" read as image generation to a first-time user. Empty results are
+  a designed state everywhere, saying what happened and what to try next,
+  and the Generate and Run verify buttons report progress in their label
+  instead of only greying out. Tab labels also line up with the header and
+  content, which they had not since the nav and main used different
+  gutters.
+
 ## [0.8.0] — 2026-08-09
 
 ### Added

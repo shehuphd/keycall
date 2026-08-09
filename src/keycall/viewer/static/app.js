@@ -33,6 +33,33 @@ function td(text, className) {
   return cell;
 }
 
+function emptyState(node, title, hint) {
+  // An empty panel is a question the user has to answer by guessing. Say
+  // what happened and what to do about it, every time.
+  clear(node);
+  const box = document.createElement("div");
+  box.className = "empty";
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  box.appendChild(heading);
+  const line = document.createElement("p");
+  line.textContent = hint;
+  box.appendChild(line);
+  node.appendChild(box);
+}
+
+function working(button, label) {
+  // Disabling alone leaves the user unsure the click registered.
+  if (!button.dataset.idleLabel) button.dataset.idleLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = label;
+}
+
+function done(button) {
+  button.disabled = false;
+  if (button.dataset.idleLabel) button.textContent = button.dataset.idleLabel;
+}
+
 function pill(text, kind) {
   const span = document.createElement("span");
   span.className = `pill ${kind}`;
@@ -158,6 +185,12 @@ async function boot() {
 
   attachSort(el("dashboard-table"));
   attachSort(el("models-table"));
+  // The Verify tab opens with no results, which is a state, not a blank.
+  emptyState(
+    el("verify-empty"),
+    "No check has been run yet",
+    "Press \u201cRun verify\u201d above to test every key you have loaded. Results appear here, one card per key."
+  );
   await refreshTargets();
 }
 
@@ -216,7 +249,8 @@ async function loadModels(refresh = false) {
   const id = el("models-target").value;
   const category = el("models-category").value;
   if (id === "") return;
-  el("models-status").textContent = "loading…";
+  el("models-status").textContent = "Asking the provider…";
+  clear(el("models-empty"));
   const q = new URLSearchParams({ target: id });
   if (category) q.set("category", category);
   if (refresh) q.set("refresh", "1");
@@ -224,12 +258,32 @@ async function loadModels(refresh = false) {
   const tbody = el("models-table").querySelector("tbody");
   clear(tbody);
   if (data.error) {
-    el("models-status").textContent = `${data.error.code}: ${data.error.message}`;
+    el("models-status").textContent = "";
+    emptyState(
+      el("models-empty"),
+      "Could not load models",
+      `${data.error.message} (${data.error.code}). Check the key on the Dashboard tab, then press Refresh.`
+    );
     return;
   }
-  el("models-status").textContent =
-    `${data.models.length} model(s)${data.from_cache ? " (cached)" : ""} · catalog ${data.catalog_version}`;
   populateCategoryOptions(data);
+  if (!data.models.length) {
+    el("models-status").textContent = "";
+    const filtered = Boolean(el("models-category").value);
+    emptyState(
+      el("models-empty"),
+      "No models to show",
+      filtered
+        ? "This key has no models of that kind. Set the dropdown back to \u201cAll categories\u201d to see everything it can use."
+        : "This key returned no models at all. That can be normal — some providers only list models you have created yourself. Try another key, or press Refresh."
+    );
+    el("models-table").classList.add("hidden");
+    return;
+  }
+  el("models-table").classList.remove("hidden");
+  el("models-status").textContent =
+    `${data.models.length} model${data.models.length === 1 ? "" : "s"}` +
+    `${data.from_cache ? ", from a saved copy" : ""} · model list ${data.catalog_version}`;
   // Source only earns its column when it varies (e.g. Gemini mixes
   // provider_metadata with keycall_rule); a constant column is noise.
   const sources = new Set(data.models.map((m) => m.classification_source));
@@ -251,11 +305,21 @@ function populateCategoryOptions() {
     "text_generation", "image_generation", "embedding", "transcription",
     "speech_generation", "video_generation", "realtime", "unknown",
   ];
+  const labels = {
+    text_generation: "Writes text",
+    image_generation: "Makes images",
+    embedding: "Embeddings",
+    transcription: "Transcribes audio",
+    speech_generation: "Speaks text aloud",
+    video_generation: "Makes video",
+    realtime: "Realtime voice",
+    unknown: "Unrecognised",
+  };
   const sel = el("models-category");
   cats.forEach((c) => {
     const opt = document.createElement("option");
     opt.value = c;
-    opt.textContent = c;
+    opt.textContent = labels[c] || c;
     sel.appendChild(opt);
   });
   categoryOptionsFilled = true;
@@ -459,9 +523,9 @@ async function runGeneration({ continuation }) {
     renderGeneration(out, { error: { code: "bad_request", message: err.message } });
     return;
   }
-  btn.disabled = true;
+  working(btn, "Generating…");
   clear(out);
-  out.textContent = "generating…";
+  out.textContent = "Waiting for the model…";
   const body = {
     target: Number(el("pg-target").value),
     model,
@@ -491,7 +555,7 @@ async function runGeneration({ continuation }) {
       renderToolCalls(data);
     }
   }
-  btn.disabled = false;
+  done(btn);
 }
 
 async function streamGeneration(out, body) {
@@ -624,9 +688,12 @@ el("verify-run").addEventListener("click", async () => {
   const btn = el("verify-run");
   const generate = el("verify-generate").checked;
   const results = el("verify-results");
-  btn.disabled = true;
+  working(btn, "Checking…");
   clear(results);
-  el("verify-status").textContent = "running…";
+  clear(el("verify-empty"));
+  el("verify-status").textContent = generate
+    ? "Checking each key and sending one short message…"
+    : "Checking each key…";
 
   for (const t of TARGETS) {
     const data = await api("/api/verify", {
@@ -635,8 +702,9 @@ el("verify-run").addEventListener("click", async () => {
     });
     results.appendChild(renderVerify(t, data));
   }
-  el("verify-status").textContent = "done";
-  btn.disabled = false;
+  el("verify-status").textContent =
+    `Finished. Checked ${TARGETS.length} key${TARGETS.length === 1 ? "" : "s"}.`;
+  done(btn);
 });
 
 function renderVerify(target, data) {

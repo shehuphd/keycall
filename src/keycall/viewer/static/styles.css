@@ -48,7 +48,11 @@ h1 { font-size: 1.25rem; margin: 0; font-weight: 600; }
 nav#tabs {
   display: flex;
   gap: 0.25rem;
-  padding: 0 1.5rem;
+  /* The buttons carry 1rem of their own side padding, so the nav adds
+     0.5rem to land the first label on the same 1.5rem gutter the header
+     and main content use. Matching the numbers here instead would push
+     the labels a full rem to the right of everything else. */
+  padding: 0 0.5rem;
   border-bottom: 1px solid var(--border);
 }
 nav#tabs button {
@@ -159,3 +163,27 @@ th.sort-desc::after { content: " ↓"; }
 ::selection { background: var(--accent); color: var(--accent-fg); }
 
 a { color: var(--accent); }
+
+/* Empty states: an explanation and a way forward, never a blank panel. */
+.empty {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--muted);
+}
+.empty strong { display: block; color: var(--fg); margin-bottom: 0.35rem; font-size: 0.95rem; }
+.empty p { margin: 0; font-size: 0.85rem; line-height: 1.5; }
+
+/* Short explanation above a panel's controls. */
+.intro {
+  color: var(--muted);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  margin: 0 0 1rem;
+  max-width: 62ch;
+}
+.intro strong { color: var(--fg); font-weight: 600; }
+
+/* A note attached to a control whose meaning is easy to mistake. */
+.hint { color: var(--muted); font-size: 0.8rem; line-height: 1.5; margin: 0.5rem 0 0; max-width: 62ch; }

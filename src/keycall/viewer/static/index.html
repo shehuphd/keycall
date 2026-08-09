@@ -40,7 +40,13 @@
 
   <main>
     <section id="dashboard" class="tab active">
-      <p class="muted">Loaded targets. Click one to check its key and see its model count.</p>
+      <h2>Your API keys</h2>
+      <p class="intro">
+        These are the keys loaded from your key file. <strong>Click any row to
+        test that key.</strong> KeyCall asks the provider whether the key
+        works and how many text models it can use. Nothing is sent anywhere
+        else, and your keys never leave this computer.
+      </p>
       <table id="dashboard-table">
         <thead><tr><th>Name</th><th>Provider</th><th>Status</th><th>Text models</th></tr></thead>
         <tbody></tbody>
@@ -48,6 +54,13 @@
     </section>
 
     <section id="models" class="tab">
+      <h2>Browse models</h2>
+      <p class="intro">
+        Every model the selected key can see. Use the second dropdown to show
+        only one kind, for example just the models that write text.
+        <strong>Refresh</strong> asks the provider again instead of using the
+        copy from a few minutes ago.
+      </p>
       <div class="controls">
         <select id="models-target"></select>
         <select id="models-category">
@@ -56,6 +69,7 @@
         <button id="models-refresh">Refresh</button>
       </div>
       <div id="models-status" class="muted"></div>
+      <div id="models-empty"></div>
       <table id="models-table">
         <thead><tr><th>Model ID</th><th>Categories</th><th>Source</th><th>Context</th></tr></thead>
         <tbody></tbody>
@@ -63,57 +77,106 @@
     </section>
 
     <section id="playground" class="tab">
+      <h2>Try a model</h2>
+      <p class="intro">
+        Send a real message to a real model and see what comes back.
+        <strong>Pick a key and a model, type something, then press
+        Generate.</strong> This spends tokens on your account, the same as
+        using the provider directly.
+      </p>
       <div class="controls">
         <select id="pg-target"></select>
         <select id="pg-model"></select>
       </div>
       <div class="controls">
-        <input id="pg-system" type="text" placeholder="System prompt (optional)">
+        <input id="pg-system" type="text" placeholder="Optional: standing instructions, such as &quot;answer in one short sentence&quot;">
       </div>
-      <textarea id="pg-prompt" rows="4" placeholder="Your prompt…"></textarea>
+      <textarea id="pg-prompt" rows="4" placeholder="Type your message to the model here…"></textarea>
       <div class="controls">
-        <label><input id="pg-search" type="checkbox"> Web search</label>
-        <label><input id="pg-tools-on" type="checkbox"> Tools</label>
-        <label><input id="pg-image-on" type="checkbox"> Image</label>
-        <label>max tokens <input id="pg-maxtok" type="number" value="256" min="1" style="width:5rem"></label>
+        <label>Longest reply
+          <input id="pg-maxtok" type="number" value="256" min="1" style="width:5rem">
+          tokens
+        </label>
         <button id="pg-run">Generate</button>
       </div>
+      <p class="hint">Optional extras, tick one to reveal its settings:</p>
+      <div class="controls">
+        <label><input id="pg-search" type="checkbox"> Let the model search the web</label>
+        <label><input id="pg-image-on" type="checkbox"> Show the model a picture</label>
+        <label><input id="pg-tools-on" type="checkbox"> Give the model a tool to call</label>
+      </div>
       <div id="pg-image-panel" hidden>
-        <div class="controls">
-          <input id="pg-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
-          <input id="pg-image-url" type="text" placeholder="…or an image URL">
-          <button id="pg-image-clear" class="secondary">Clear</button>
+        <div class="card">
+          <strong>Show the model a picture</strong>
+          <p class="hint">
+            Choose a picture from this computer, or paste a link to one, and the
+            model will look at it and answer questions about it. Try asking
+            "what is in this picture?"
+          </p>
+          <p class="hint">
+            This does <strong>not</strong> make new pictures. KeyCall only sends
+            pictures to a model and reads its written reply, so a request like
+            "generate an image of a rabbit" comes back as words, not a picture.
+          </p>
+          <div class="controls">
+            <input id="pg-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
+            <input id="pg-image-url" type="text" placeholder="…or paste a link to a picture">
+            <button id="pg-image-clear" class="secondary">Remove picture</button>
+          </div>
+          <div id="pg-image-status" class="meta"></div>
+          <p class="hint">
+            Not every provider takes pictures. If yours doesn't, the reply will
+            say so and tell you what it does accept.
+          </p>
         </div>
-        <div id="pg-image-status" class="meta"></div>
       </div>
       <div id="pg-tools-panel" hidden>
-        <div class="controls">
-          <label for="pg-tools">Tool definitions (JSON array)</label>
-          <select id="pg-tool-choice">
-            <option value="">tool_choice: auto</option>
-            <option value="required">tool_choice: required</option>
-            <option value="none">tool_choice: none</option>
-          </select>
-          <button id="pg-tools-example" class="secondary">Load example</button>
+        <div class="card">
+          <strong>Give the model a tool to call</strong>
+          <p class="hint">
+            A tool is something the model can ask you to do for it, like looking
+            up the weather. The model never runs it. It asks, you type the
+            answer, and the conversation carries on with your answer.
+            <strong>Press "Load example" to see a working one.</strong>
+          </p>
+          <div class="controls">
+            <button id="pg-tools-example" class="secondary">Load example</button>
+            <label for="pg-tool-choice">When to use a tool</label>
+            <select id="pg-tool-choice">
+              <option value="">Let the model decide</option>
+              <option value="required">Always use one</option>
+              <option value="none">Never use one</option>
+            </select>
+          </div>
+          <textarea id="pg-tools" rows="8" spellcheck="false"
+                    placeholder='Tool definitions go here as JSON. Press "Load example" to fill this in.'></textarea>
         </div>
-        <textarea id="pg-tools" rows="8" spellcheck="false"
-                  placeholder='[{"name": "get_weather", "description": "…", "input_schema": {…}}]'></textarea>
-        <p class="meta">
-          KeyCall never runs a tool. The model asks, you answer below, and the
-          conversation continues with your answer.
-        </p>
       </div>
       <div id="pg-result"></div>
       <div id="pg-tool-calls"></div>
     </section>
 
     <section id="verify" class="tab">
+      <h2>Check every key at once</h2>
+      <p class="intro">
+        Tests all of your keys in one go and shows what each one can actually
+        do. A key can look fine and still fail in practice, because providers
+        list models that they then refuse to run. Verify tries them in order
+        and reports every attempt, so you can see exactly where a key stands.
+      </p>
+      <p class="intro">
+        Leave the box below unticked to check the keys only. Tick it to also
+        send one short message per key, which proves the key can generate
+        text. <strong>That costs a small number of tokens on each
+        account.</strong>
+      </p>
       <div class="controls">
-        <label><input id="verify-generate" type="checkbox"> Also generate (one bounded call per target)</label>
+        <label><input id="verify-generate" type="checkbox"> Also send one short test message per key</label>
         <button id="verify-run">Run verify</button>
       </div>
       <div id="verify-status" class="muted"></div>
       <div id="verify-results"></div>
+      <div id="verify-empty"></div>
     </section>
   </main>
 
