@@ -31,7 +31,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the Generate and Run verify buttons report progress in their label
   instead of only greying out. Tab labels also line up with the header and
   content, which they had not since the nav and main used different
-  gutters.
+  gutters, and a hint that introduces a row of controls no longer sits
+  crammed against them.
+
+### Fixed
+
+- **Reloading the viewer logged you out.** The access token arrives in the
+  page URL and is stripped from the address bar so it does not linger in
+  browser history, but it was only held in a page variable, so a plain
+  refresh left the page with no token and it died with "Not authorized".
+  The token now lives in `sessionStorage` for the tab: reloads work, the
+  address bar stays clean, and closing the tab still discards it. A token
+  the server no longer accepts (because KeyCall was restarted) is cleared
+  rather than kept to fail again, and the message says to use the newest
+  link the terminal printed.
 
 ## [0.8.0] — 2026-08-09
 

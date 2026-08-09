@@ -1,13 +1,45 @@
 // KeyCall viewer frontend. Vanilla ES module, no dependencies (the CSP
-// blocks external anything). The auth token arrives once in the page URL's
-// ?token=; we read it, then strip it from the address bar so it doesn't
-// linger in history, and send it as a header on every /api/* call.
+// blocks external anything).
+//
+// The access token arrives once in the page URL's ?token=. We move it into
+// sessionStorage and strip it from the address bar: keeping it in the URL
+// would leave the secret in browser history and in anything the user
+// bookmarks or copies, and keeping it only in a page variable meant a
+// plain reload lost it and the app died with "Not authorized". Session
+// storage is scoped to this tab and this origin, and it clears when the
+// tab closes, so a reload works and the token still stays out of history.
 
-const params = new URLSearchParams(location.search);
-const TOKEN = params.get("token") || "";
-if (params.has("token")) {
-  history.replaceState(null, "", location.pathname);
+const TOKEN_KEY = "keycall.viewer.token";
+
+function readToken() {
+  const params = new URLSearchParams(location.search);
+  const fromUrl = params.get("token");
+  if (fromUrl) {
+    try {
+      sessionStorage.setItem(TOKEN_KEY, fromUrl);
+    } catch {
+      // Private modes can refuse storage; the token still works for this
+      // page load, it just won't survive a reload.
+    }
+    history.replaceState(null, "", location.pathname);
+    return fromUrl;
+  }
+  try {
+    return sessionStorage.getItem(TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
 }
+
+function forgetToken() {
+  try {
+    sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // Nothing stored, nothing to clear.
+  }
+}
+
+const TOKEN = readToken();
 
 async function api(path, options = {}) {
   const opts = { ...options, headers: { ...(options.headers || {}), "X-KeyCall-Token": TOKEN } };
@@ -173,11 +205,15 @@ el("source-load").addEventListener("click", async () => {
 async function boot() {
   const health = await api("/api/health");
   if (health.error) {
-    // Most likely: this tab has no token (stale URL or restarted server).
+    // Either this tab never had a token, or the server restarted and
+    // issued a new one. A stale token can only mislead the next reload,
+    // so drop it and say plainly where the working link comes from.
+    forgetToken();
     showFatal(
-      "Not authorized. Open the viewer with the exact URL keycall printed " +
-      "to the terminal — it carries the required access token. If the " +
-      "viewer was restarted, the old tab's token is no longer valid."
+      "This page needs the link from your terminal. KeyCall printed a web " +
+      "address ending in ?token=… when it started — open that exact link " +
+      "and this page will work. If you have restarted KeyCall since, use " +
+      "the newest link it printed, because the earlier one stops working."
     );
     return;
   }

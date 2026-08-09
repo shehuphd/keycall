@@ -187,3 +187,10 @@ a { color: var(--accent); }
 
 /* A note attached to a control whose meaning is easy to mistake. */
 .hint { color: var(--muted); font-size: 0.8rem; line-height: 1.5; margin: 0.5rem 0 0; max-width: 62ch; }
+/* A hint that introduces the controls under it needs room to read as a
+   label for them rather than as a line crammed against them. */
+.hint + .controls { margin-top: 0.85rem; }
+/* Checkbox groups sitting side by side need more separation than the
+   0.75rem used between a select and its button, or the labels read as one
+   run-on sentence. */
+.controls label + label { margin-left: 0.75rem; }
