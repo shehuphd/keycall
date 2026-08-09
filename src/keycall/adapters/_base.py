@@ -19,6 +19,7 @@ from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
     Citation,
+    EmbeddingOutput,
     InvocationResult,
     Model,
     OutputPart,
@@ -340,6 +341,67 @@ class ProviderAdapter(ABC):
     ) -> InvocationResult:
         """Decode into the common envelope. Raw provider objects must not
         leak through the public API."""
+
+    # --- embeddings ---
+
+    def build_embedding_spec(self, request: Any) -> RequestSpec:
+        """Adapters without a verified embeddings endpoint refuse here
+        rather than guessing a path."""
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} has no embeddings API; "
+            "embeddings are supported on: "
+            + ", ".join(sorted(providers_with("embeddings"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.EMBEDDING.value,
+        )
+
+    def parse_embedding_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        model: str,
+        expected: int,
+    ) -> InvocationResult:
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} has no embeddings API",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.EMBEDDING.value,
+        )
+
+    def embedding_result(
+        self,
+        vectors: list[tuple[float, ...]],
+        *,
+        usage: Usage,
+        model: str,
+        round_trip_duration_ms: float,
+        provider_request_id: str | None = None,
+        expected: int,
+    ) -> InvocationResult:
+        """One EmbeddingOutput per input, in the order they were sent. A
+        provider returning a different count is a typed error: silently
+        misaligning vectors with inputs would corrupt a caller's index."""
+        if len(vectors) != expected:
+            raise KeyCallError(
+                f"provider returned {len(vectors)} embeddings for {expected} "
+                "inputs; the vectors cannot be matched to their inputs",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.EMBEDDING.value,
+            )
+        return InvocationResult(
+            provider=self.resolved.provider,
+            model=model,
+            operation=Operation.EMBEDDING,
+            parts=tuple(EmbeddingOutput(values=vector) for vector in vectors),
+            usage=usage,
+            round_trip_duration_ms=round_trip_duration_ms,
+            provider_request_id=provider_request_id,
+        )
 
     # --- error translation (transport calls this, then scrubs) ---
 

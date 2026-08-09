@@ -203,6 +203,49 @@ class OpenAIAdapter(ProviderAdapter):
             )
         return models, None  # GET /models is unpaginated
 
+    def build_embedding_spec(self, request: Any) -> RequestSpec:
+        op = self.resolved.operations["embeddings"]
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"],
+            json_body={"model": request.model, "input": list(request.inputs)},
+        )
+
+    def parse_embedding_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        model: str,
+        expected: int,
+    ) -> InvocationResult:
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise KeyCallError(
+                "embedding response missing 'data' array",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.EMBEDDING.value,
+            )
+        # data entries carry an index; order by it rather than trusting
+        # arrival order to line vectors up with their inputs.
+        entries = sorted(payload["data"], key=lambda e: e.get("index", 0))
+        vectors = [tuple(float(v) for v in e.get("embedding", ())) for e in entries]
+        usage_raw = payload.get("usage") or {}
+        return self.embedding_result(
+            vectors,
+            usage=Usage(
+                input_tokens=usage_raw.get("prompt_tokens"),
+                total_tokens=usage_raw.get("total_tokens"),
+            ),
+            model=str(payload.get("model", model)),
+            round_trip_duration_ms=round_trip_duration_ms,
+            provider_request_id=safe_request_id(
+                headers.get(self.resolved.provider_request_id_header or "")
+            ),
+            expected=expected,
+        )
+
     def build_generation_spec(self, request: TextGenerationRequest) -> RequestSpec:
         self.validate_generation_request(request)
         op = self.resolved.operations["text_generation"]

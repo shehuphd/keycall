@@ -58,6 +58,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Embeddings** (`embed()` on both clients), KeyCall's second operation.
+  One `EmbeddingOutput` per input, in input order, so results zip against
+  the strings that produced them; a provider returning a different count
+  raises rather than handing back vectors that silently misalign with a
+  caller's index. Supported on OpenAI (1536 dimensions) and Gemini (3072),
+  both batching every input into one request. Anthropic publishes no
+  embeddings endpoint and DeepSeek, Perplexity, and Moonshot return 404 or
+  403 for one (verified 2026-08-09), so those refuse before any network
+  call. This closes the asymmetry where `list_models` could surface
+  embedding models that nothing in KeyCall could then invoke.
 - **`Usage.provider_units` carries non-token billing.** Perplexity reports
   a `cost` object whose `request_cost` is charged per call rather than per
   token (verified 2026-08-09), which a token budget cannot see. Numeric

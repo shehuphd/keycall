@@ -479,6 +479,39 @@ same turn); combining them raises `UNSUPPORTED_OPERATION` before any network
 call. The same combination on Gemini is untested and not gated — KeyCall
 passes it through rather than guessing at behavior it hasn't verified.
 
+## Embeddings
+
+```python
+result = client.embed(
+    model="text-embedding-3-small",
+    inputs=["first string", "second string"],
+)
+
+for text, part in zip(inputs, result.parts):
+    part.values          # tuple[float, ...]
+```
+
+`result.parts` holds one `EmbeddingOutput` per input, **in the order the
+inputs were given**, so they zip together. A provider returning a different
+number of vectors raises `INVALID_PROVIDER_RESPONSE` rather than handing
+back a list that silently misaligns with your inputs.
+
+| Provider | Embeddings | Example model | Dimensions |
+|---|---|---|---|
+| OpenAI | yes | `text-embedding-3-small` | 1536 |
+| Gemini | yes | `gemini-embedding-001` | 3072 |
+| Anthropic, DeepSeek, Perplexity, Moonshot | no | | |
+
+Anthropic publishes no embeddings endpoint, and the other three return 404
+or 403 for one (verified 2026-08-09). Calling `embed()` on them raises
+`UNSUPPORTED_OPERATION` before any network call, naming the providers that
+do support it. `AsyncKeyCall.embed()` is the awaitable twin.
+
+Both providers batch: pass every string in one call rather than looping,
+which is one request instead of N. OpenAI reports token usage for the
+batch; Gemini's batch endpoint reports none, so `usage` is empty there
+rather than fabricated.
+
 ## Error handling
 
 Every failure raises `KeyCallError` with a typed `code`:

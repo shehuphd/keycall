@@ -34,6 +34,7 @@ from ._registry import (
 )
 from ._transport import AsyncTransport, Transport
 from ._types import (
+    EmbeddingRequest,
     InvocationResult,
     Message,
     Model,
@@ -290,6 +291,32 @@ class _BaseClient:
             result={"models": len(models), "filtered": len(discovery.models)},
         )
         return discovery
+
+    def _embedding_spec(self, request: EmbeddingRequest) -> Any:
+        # The refusal lives in ProviderAdapter.build_embedding_spec, whose
+        # default raises for every adapter that has not implemented one.
+        # Gating here as well would duplicate the message in a second
+        # place that could drift from it.
+        return self._adapter.build_embedding_spec(request)
+
+    def _parse_embedding(
+        self, request: EmbeddingRequest, result: Any, trace: Any
+    ) -> InvocationResult:
+        invocation = self._adapter.parse_embedding_response(
+            result.payload,
+            headers=result.headers,
+            round_trip_duration_ms=result.duration_ms,
+            model=request.model,
+            expected=len(request.inputs),
+        )
+        trace.event(
+            "model",
+            operation="embedding",
+            target=invocation.model,
+            duration_ms=invocation.round_trip_duration_ms,
+            result={"inputs": len(request.inputs), "vectors": len(invocation.parts)},
+        )
+        return invocation
 
     def _generation_spec(self, request: TextGenerationRequest) -> Any:
         if not isinstance(request, TextGenerationRequest):
@@ -583,6 +610,21 @@ class KeyCall(_BaseClient):
             )
             return self._parse_invocation(request, result, trace)
 
+    def embed(self, *, model: str, inputs: Sequence[str]) -> InvocationResult:
+        """Embed one or more strings. The result's parts are EmbeddingOutput
+        values in the order the inputs were given, so they zip together."""
+        self._require_open()
+        request = EmbeddingRequest(model=model, inputs=inputs)
+        spec = self._embedding_spec(request)
+        with _tracing.span("keycall.embedding", provider=self.provider, model=model) as trace:
+            result = self._transport.request(
+                spec,
+                operation="embedding",
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            return self._parse_embedding(request, result, trace)
+
     def generate_text(
         self,
         *,
@@ -752,6 +794,20 @@ class AsyncKeyCall(_BaseClient):
                 translate_error=self._adapter.translate_error,
             )
             return self._parse_invocation(request, result, trace)
+
+    async def embed(self, *, model: str, inputs: Sequence[str]) -> InvocationResult:
+        """Async twin of KeyCall.embed()."""
+        self._require_open()
+        request = EmbeddingRequest(model=model, inputs=inputs)
+        spec = self._embedding_spec(request)
+        with _tracing.span("keycall.embedding", provider=self.provider, model=model) as trace:
+            result = await self._transport.request(
+                spec,
+                operation="embedding",
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            return self._parse_embedding(request, result, trace)
 
     async def generate_text(
         self,

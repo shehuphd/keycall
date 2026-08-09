@@ -30,7 +30,8 @@ class ProviderProtocol(str, Enum):
 
 
 class Operation(str, Enum):
-    """What KeyCall was asked to do. Seeded with v1's only operation;
-    members ship with the adapter code that implements them."""
+    """What KeyCall was asked to do. Members ship with the adapter code
+    that implements them, never ahead of it."""
 
     TEXT_GENERATION = "text_generation"
+    EMBEDDING = "embedding"

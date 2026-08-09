@@ -277,6 +277,49 @@ class GeminiAdapter(ProviderAdapter):
             )
         return models, next_spec
 
+    def build_embedding_spec(self, request: Any) -> RequestSpec:
+        op = self.resolved.operations["embeddings"]
+        model = request.model if request.model.startswith("models/") else f"models/{request.model}"
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"].replace("{model}", quote(_strip_prefix(request.model), safe="")),
+            json_body={
+                "requests": [
+                    {"model": model, "content": {"parts": [{"text": text}]}}
+                    for text in request.inputs
+                ]
+            },
+        )
+
+    def parse_embedding_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        model: str,
+        expected: int,
+    ) -> InvocationResult:
+        if not isinstance(payload, dict) or not isinstance(payload.get("embeddings"), list):
+            raise KeyCallError(
+                "embedding response missing 'embeddings' array",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.EMBEDDING.value,
+            )
+        vectors = [
+            tuple(float(v) for v in entry.get("values", ()))
+            for entry in payload["embeddings"]
+        ]
+        # batchEmbedContents reports no token usage of its own.
+        return self.embedding_result(
+            vectors,
+            usage=Usage(),
+            model=model,
+            round_trip_duration_ms=round_trip_duration_ms,
+            expected=expected,
+        )
+
     def build_generation_spec(self, request: TextGenerationRequest) -> RequestSpec:
         self.validate_generation_request(request)
         op = self.resolved.operations["text_generation"]

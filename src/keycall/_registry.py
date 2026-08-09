@@ -54,6 +54,7 @@ class ProviderCapabilities:
 
     tool_calling: bool = False
     web_search: bool = False
+    embeddings: bool = False
     # None: no provider-side enforcement, KeyCall falls back to JSON mode.
     schema_enforcement: str | None = None
     sampling_constraints: tuple[SamplingConstraint, ...] = ()
@@ -128,6 +129,7 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
     raw = profile.get("capabilities") or {}
     return ProviderCapabilities(
         tool_calling=bool(raw.get("tool_calling", False)),
+        embeddings=bool(raw.get("embeddings", False)),
         web_search=bool(raw.get("web_search", False)),
         schema_enforcement=raw.get("schema_enforcement"),
         sampling_constraints=tuple(

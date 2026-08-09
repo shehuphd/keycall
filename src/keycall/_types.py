@@ -20,6 +20,7 @@ __all__ = [
     "Citation",
     "CitationFound",
     "EmbeddingOutput",
+    "EmbeddingRequest",
     "FileInput",
     "FileOutput",
     "ImageInput",
@@ -342,6 +343,29 @@ class TextGenerationRequest:
             raise ValueError("temperature must be between 0 and 2")
         if self.top_p is not None and not 0.0 < self.top_p <= 1.0:
             raise ValueError("top_p must be between 0 (exclusive) and 1")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EmbeddingRequest:
+    """Carries no provider and no credential — those are client identity.
+    Inputs are embedded in order, and the result's parts come back in that
+    same order so a caller can zip them against the inputs."""
+
+    model: str
+    inputs: Sequence[str]
+
+    def __post_init__(self) -> None:
+        inputs = tuple(self.inputs)
+        if not inputs:
+            raise ValueError("EmbeddingRequest.inputs must not be empty")
+        for value in inputs:
+            if not isinstance(value, str):
+                raise TypeError(
+                    f"inputs accepts strings only (got {type(value).__name__})"
+                )
+            if not value:
+                raise ValueError("inputs must not contain an empty string")
+        object.__setattr__(self, "inputs", inputs)
 
 
 # --- stream events ---------------------------------------------------------
