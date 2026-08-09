@@ -63,6 +63,10 @@ class ProviderCapabilities:
     # refuse to fetch a URL, so one boolean would be wrong either way.
     image_input_bytes: bool = False
     image_input_url: bool = False
+    audio_input_bytes: bool = False
+    audio_input_url: bool = False
+    file_input_bytes: bool = False
+    file_input_url: bool = False
     verified: str = ""
 
 
@@ -137,6 +141,10 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
         non_text_model_families=tuple(raw.get("non_text_model_families", ())),
         image_input_bytes=bool((raw.get("image_input") or {}).get("bytes", False)),
         image_input_url=bool((raw.get("image_input") or {}).get("url", False)),
+        audio_input_bytes=bool((raw.get("audio_input") or {}).get("bytes", False)),
+        audio_input_url=bool((raw.get("audio_input") or {}).get("url", False)),
+        file_input_bytes=bool((raw.get("file_input") or {}).get("bytes", False)),
+        file_input_url=bool((raw.get("file_input") or {}).get("url", False)),
         verified=str(raw.get("verified", "")),
     )
 

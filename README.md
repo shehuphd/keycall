@@ -4,9 +4,9 @@ One consistent interface for validating AI-provider API keys, listing and filter
 
 **Status: early release.** Key validation, model listing and filtering,
 text generation, streaming, tool calling, native web search with normalized
-citations, structured JSON output, and image input all work and are
-live-verified against every supported provider. Audio and file input are not
-implemented yet. The API is settled but may still shift before 1.0.
+citations, structured JSON output, and image, audio, and document input all
+work and are live-verified against every provider that supports them. The API
+is settled but may still shift before 1.0.
 
 Docs: [USAGE.md](https://github.com/shehuphd/keycall/blob/main/USAGE.md) for the full API and CLI reference · [ARCHITECTURE.md](https://github.com/shehuphd/keycall/blob/main/ARCHITECTURE.md) for the layer diagram and component contracts · [CHANGELOG.md](https://github.com/shehuphd/keycall/blob/main/CHANGELOG.md) for version history.
 
@@ -34,7 +34,7 @@ print(result.round_trip_duration_ms)
 - **Typed errors.** Invalid key, rate limit, provider outage, timeout, and malformed response are distinguishable, never collapsed into "invalid key."
 - **Streaming.** `stream_text()` yields typed events (text increments, citations, tool calls, finish) across all four wire protocols, and refuses to call a stream complete without the provider's own terminal signal.
 - **Tool calling.** Define tools once and KeyCall normalizes all four call/result wire shapes, streamed or not, carrying the provider echo data some models require back verbatim. It never executes a tool.
-- **Image input.** Pass image bytes or a URL beside your text; KeyCall maps each provider's shape, detects the media type from the content, and refuses before the network when a provider can't take that form (it never fetches a URL for you).
+- **Images, audio, and documents.** Pass bytes (or a URL where the provider fetches one) beside your text; KeyCall maps each provider's shape and detects the media type from the content. Support varies by provider and by form, so a refusal happens before the network and names who does accept that kind.
 - **Web search with citations.** `web_search=True` turns on the provider's native search tool (OpenAI, Anthropic, Gemini; Perplexity always searches) and returns sources normalized to one `Citation` shape.
 - **Structured output.** `response_schema=<JSON Schema>` is enforced provider-side on OpenAI, Anthropic, Gemini, Moonshot, and Perplexity; on providers without enforcement (DeepSeek, unverified custom targets) KeyCall falls back to guaranteed-valid-JSON mode and adds a result warning rather than claiming a guarantee it can't back. `result.text` is always the JSON string, regardless of which mechanism produced it.
 - **Hardened transport.** TLS always verified, redirects refused, response sizes capped, SSRF and DNS-rebinding guards on custom endpoints, and generation is never silently retried.

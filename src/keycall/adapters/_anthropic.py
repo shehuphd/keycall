@@ -16,6 +16,7 @@ from .._transport import RequestSpec
 from .._types import (
     Citation,
     CitationFound,
+    FileInput,
     ImageInput,
     InvocationResult,
     Model,
@@ -39,6 +40,7 @@ from ._base import (
     StreamAssembler,
     dedupe_citations,
     image_media_type,
+    media_type_for,
 )
 
 # Anthropic requires max_tokens on every messages call; used when the
@@ -236,6 +238,21 @@ class AnthropicAdapter(ProviderAdapter):
                         }
                     )
                     blocks.append({"type": "image", "source": source})
+                elif isinstance(part, FileInput):
+                    # Anthropic calls a document its own block type rather
+                    # than a variant of image (verified 2026-08-09).
+                    blocks.append(
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type_for(
+                                    part, kind="file", provider="anthropic"
+                                ),
+                                "data": base64.b64encode(part.data or b"").decode(),
+                            },
+                        }
+                    )
                 elif isinstance(part, ToolCall):
                     blocks.append(
                         {

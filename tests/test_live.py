@@ -417,6 +417,101 @@ def test_live_image_input_every_supporting_target():
     assert not failures, "\n".join(failures)
 
 
+def test_live_audio_and_file_input():
+    """Audio is Gemini-only and documents work on three providers; both
+    wire shapes are easy to get subtly wrong, so each release re-reads a
+    real WAV and a real PDF."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import struct
+    import wave
+    from io import BytesIO
+
+    from keycall import AudioInput, FileInput, KeyCall, Message, ModelCategory, TextInput
+    from keycall._registry import providers_with
+
+    buffer = BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"".join(struct.pack("<h", (i % 200) * 60) for i in range(2400)))
+    wav = buffer.getvalue()
+
+    pdf = (
+        b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+        b"4 0 obj\n<< /Length 52 >>\nstream\n"
+        b"BT /F1 24 Tf 72 700 Td (KEYCALL TEST DOCUMENT) Tj ET\nendstream\nendobj\n"
+        b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
+        b"trailer\n<< /Size 6 /Root 1 0 R >>\n%%EOF\n"
+    )
+
+    cases = (
+        (
+            "audio",
+            providers_with("audio_input"),
+            [TextInput(text="Describe this sound in one short sentence."), AudioInput(data=wav)],
+            None,
+        ),
+        (
+            "document",
+            providers_with("file_input"),
+            [
+                TextInput(text="What does this document say? Quote it."),
+                FileInput(data=pdf, filename="test.pdf"),
+            ],
+            "keycall",
+        ),
+    )
+
+    targets, _ = load_targets(source)
+    failures = []
+    for label, supporting, parts, expected in cases:
+        for target in targets:
+            if target.provider not in supporting:
+                continue
+            client = KeyCall(
+                provider=target.provider,
+                api_key=target.key,
+                protocol=target.protocol,
+                base_url=target.base_url,
+            )
+            try:
+                discovery = client.list_models(
+                    categories={ModelCategory.TEXT_GENERATION}, refresh=True
+                )
+                attempt_errors = []
+                for model in candidates(discovery, 5):
+                    try:
+                        result = client.generate_text(
+                            model=model.id,
+                            messages=[Message(role="user", content=parts)],
+                            max_output_tokens=250,
+                        )
+                        answer = (result.text or "").strip()
+                        assert answer, f"{model.id} returned no text for the {label}"
+                        if expected:
+                            assert expected in answer.lower(), (
+                                f"{model.id} did not read the {label}: {answer[:60]!r}"
+                            )
+                        print(f"{target.display_name}: {label} read by {model.id} -> {answer[:40]!r}")
+                        break
+                    except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                        attempt_errors.append(f"    {model.id}: {exc}")
+                else:
+                    failures.append(
+                        f"{target.display_name}: no model read the {label}\n"
+                        + "\n".join(attempt_errors)
+                    )
+            finally:
+                client.close()
+    assert not failures, "\n".join(failures)
+
+
 def test_live_async_client_parity():
     """The async client shares the adapters but has its own transport,
     context managers, and stream iteration. Everything shipped since 0.5.0

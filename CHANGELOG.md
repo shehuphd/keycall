@@ -58,6 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Audio and document input.** `AudioInput` and `FileInput` join
+  `ImageInput` as real content parts. Documents (PDF) work on OpenAI,
+  Anthropic, and Gemini; audio is Gemini-only, because OpenAI's Responses
+  API has no audio content part and Anthropic, Moonshot, and Perplexity
+  each reject one (all verified 2026-08-09 by sending a WAV and a PDF).
+  Media type is detected from the content for every kind, and a refusal
+  names the providers that do accept it. This closes the last of the
+  half-promised input types: nothing in the content taxonomy is now
+  exported without either working or saying precisely why it cannot.
 - **Image input** on `generate_text()` and `stream_text()`: pass an
   `ImageInput` beside your text in a user message. Live-verified on OpenAI,
   Anthropic, Gemini, Perplexity, and Moonshot. Support splits by form

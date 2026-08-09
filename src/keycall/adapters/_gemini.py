@@ -20,8 +20,10 @@ from .._errors import ErrorCode, KeyCallError
 from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
+    AudioInput,
     Citation,
     CitationFound,
+    FileInput,
     ImageInput,
     InvocationResult,
     Model,
@@ -43,7 +45,7 @@ from ._base import (
     ProviderAdapter,
     StreamAssembler,
     dedupe_citations,
-    image_media_type,
+    media_type_for,
     parse_tool_arguments,
 )
 
@@ -290,14 +292,23 @@ class GeminiAdapter(ProviderAdapter):
             for part in message.content:
                 if isinstance(part, TextInput):
                     parts.append({"text": part.text})
-                elif isinstance(part, ImageInput):
-                    # Bytes only: Gemini's fileData URI is for its own Files
-                    # API, not an arbitrary web URL, and the validation gate
-                    # already refused a URL for this provider.
+                elif isinstance(part, (ImageInput, AudioInput, FileInput)):
+                    # Pictures, audio and documents all ride the same
+                    # inlineData part; only the media type differs. Bytes
+                    # only: Gemini's fileData URI is for its own Files API,
+                    # not an arbitrary web URL, and the gate already refused
+                    # a URL for this provider.
+                    kind = {
+                        ImageInput: "image",
+                        AudioInput: "audio",
+                        FileInput: "file",
+                    }[type(part)]
                     parts.append(
                         {
                             "inlineData": {
-                                "mimeType": image_media_type(part, provider="gemini"),
+                                "mimeType": media_type_for(
+                                    part, kind=kind, provider="gemini"
+                                ),
                                 "data": base64.b64encode(part.data or b"").decode(),
                             }
                         }

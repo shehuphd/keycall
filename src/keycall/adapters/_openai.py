@@ -16,6 +16,7 @@ from .._transport import RequestSpec
 from .._types import (
     Citation,
     CitationFound,
+    FileInput,
     ImageInput,
     InvocationResult,
     Model,
@@ -39,6 +40,7 @@ from ._base import (
     StreamAssembler,
     dedupe_citations,
     image_media_type,
+    media_type_for,
 )
 
 # Stream plumbing events that carry no content of their own; the terminal
@@ -217,6 +219,19 @@ class OpenAIAdapter(ProviderAdapter):
                     content.append({"type": part_type, "text": part.text})
                 elif isinstance(part, ImageInput):
                     content.append({"type": "input_image", "image_url": _image_url(part)})
+                elif isinstance(part, FileInput):
+                    # Documents go as their own item type with a data URL,
+                    # and the Responses API wants a filename alongside it
+                    # (verified 2026-08-09 with a PDF).
+                    encoded = base64.b64encode(part.data or b"").decode()
+                    media = media_type_for(part, kind="file", provider="openai")
+                    content.append(
+                        {
+                            "type": "input_file",
+                            "filename": part.filename or "document.pdf",
+                            "file_data": f"data:{media};base64,{encoded}",
+                        }
+                    )
             if content:
                 input_items.append({"role": message.role, "content": content})
             for part in message.content:

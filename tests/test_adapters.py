@@ -272,13 +272,11 @@ def test_non_text_input_parts_raise_typed_error():
             ],
         )
     assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
-    # An integrator reasonably read the exported ImageInput type as a
-    # promise of support. The refusal has to say it is unimplemented rather
-    # than sounding like the caller built the message wrong, and it has to
-    # name what does work.
+    # OpenAI takes no audio, and the refusal has to name who does rather
+    # than leaving the caller to work it out.
     message = str(excinfo.value)
-    assert "not implemented" in message
-    assert "TextInput" in message
+    assert "does not accept audio input" in message
+    assert "gemini" in message
 
 
 def test_gemini_non_text_families_stay_out_of_the_text_picker():
@@ -513,9 +511,9 @@ def test_image_gates_name_the_form_that_works():
         assert "does not fetch image URLs" in message
         assert "data=" in message, "the error should name the form that works"
 
-    text_only = refuse("deepseek", ImageInput(data=PNG_BYTES))
-    assert "text only" in text_only
-    assert "openai" in text_only, "list the providers that do support images"
+    unsupported = refuse("deepseek", ImageInput(data=PNG_BYTES))
+    assert "does not accept image input" in unsupported
+    assert "openai" in unsupported, "list the providers that do support images"
 
 
 def test_images_belong_in_user_messages():
@@ -533,3 +531,62 @@ def test_images_belong_in_user_messages():
         )
     client.close()
     assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+
+
+WAV_BYTES = b"RIFF$\x00\x00\x00WAVEfmt " + b"\x00" * 24
+PDF_BYTES = b"%PDF-1.4\n1 0 obj\nendobj\ntrailer\n%%EOF\n"
+
+
+def test_audio_and_file_map_to_each_provider_wire_shape():
+    """Shapes verified live 2026-08-09 with a WAV tone and a one-line PDF."""
+    from keycall import AudioInput, FileInput
+
+    gemini_audio = _image_body("gemini", AudioInput(data=WAV_BYTES))["contents"][0]["parts"]
+    inline = next(p for p in gemini_audio if "inlineData" in p)["inlineData"]
+    assert inline["mimeType"] == "audio/wav"
+
+    document = FileInput(data=PDF_BYTES, filename="report.pdf")
+
+    openai = _image_body("openai", document)["input"][0]["content"]
+    entry = next(c for c in openai if c["type"] == "input_file")
+    assert entry["filename"] == "report.pdf"
+    assert entry["file_data"].startswith("data:application/pdf;base64,")
+
+    anthropic = _image_body("anthropic", document)["messages"][0]["content"]
+    block = next(b for b in anthropic if b["type"] == "document")
+    assert block["source"]["media_type"] == "application/pdf"
+
+    gemini_file = _image_body("gemini", document)["contents"][0]["parts"]
+    doc = next(p for p in gemini_file if "inlineData" in p)["inlineData"]
+    assert doc["mimeType"] == "application/pdf"
+
+
+def test_audio_and_file_gates_name_who_does_support_them():
+    """Audio is Gemini-only across the supported providers, and neither
+    modality should fail with a vague refusal."""
+    from keycall import AudioInput, FileInput
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must fail before any network call")
+
+    def refuse(provider, part):
+        client = KeyCall(
+            provider=provider, api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+        )
+        with pytest.raises(KeyCallError) as excinfo:
+            client.generate_text(model="m", messages=[Message(role="user", content=[part])])
+        client.close()
+        assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+        return str(excinfo.value)
+
+    audio = refuse("openai", AudioInput(data=WAV_BYTES))
+    assert "does not accept audio input" in audio
+    assert "gemini" in audio
+
+    files = refuse("deepseek", FileInput(data=PDF_BYTES))
+    assert "does not accept file input" in files
+    assert "openai" in files and "anthropic" in files
+
+    # A URL form nobody verified must not be smuggled through as bytes.
+    remote = refuse("gemini", FileInput(url="https://x.example/doc.pdf"))
+    assert "does not fetch file URLs" in remote

@@ -302,9 +302,9 @@ with client.stream_text(model="...", messages=messages, tools=[weather]) as stre
 - Malformed argument JSON raises `INVALID_PROVIDER_RESPONSE` from the
   iterator rather than yielding a call with silently dropped arguments.
 
-## Image input
+## Images, audio, and documents
 
-Pass an `ImageInput` alongside your text in a user message. Bytes are read
+Pass an `ImageInput`, `AudioInput`, or `FileInput` alongside your text in a user message. Bytes are read
 directly; no file is uploaded and KeyCall never fetches anything on your
 behalf:
 
@@ -343,8 +343,25 @@ any network call:
   recognize, because Anthropic and Gemini both reject a mismatched type and
   the bytes are the better evidence. An image KeyCall can't identify raises
   rather than being sent with a guess.
-- Images belong in user messages. `AudioInput` and `FileInput` are still
-  unimplemented and refuse before the network, as before.
+- Media belongs in user messages.
+
+`AudioInput` and `FileInput` work the same way, with narrower support:
+
+| Provider | Image | Audio | Document (PDF) |
+|---|---|---|---|
+| OpenAI | yes | no | yes |
+| Anthropic | yes | no | yes |
+| Gemini | yes | **yes** | yes |
+| Perplexity | yes | no | no |
+| Moonshot | yes | no | no |
+| DeepSeek | no | no | no |
+
+Audio is Gemini-only among the supported providers: OpenAI's Responses API
+takes no audio content part, and Anthropic, Moonshot, and Perplexity all
+reject one. Documents are sent as bytes everywhere that takes them, and
+`FileInput.filename` is passed through where the provider wants a name.
+Every refusal names the providers that do accept that kind, so a gate is a
+signpost rather than a dead end.
 
 ## Web search
 
