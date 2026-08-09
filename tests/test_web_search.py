@@ -274,3 +274,125 @@ def test_perplexity_accepts_web_search_flag_as_noop():
     # Sonar always searches; the flag must not inject a tools param it
     # doesn't understand.
     assert "tools" not in captured["body"]
+
+
+def test_identical_citations_collapse_but_per_claim_ones_survive():
+    """OpenAI repeats a source once per claim with no excerpt, which is
+    pure duplication; Anthropic repeats it with distinct cited_text, which
+    is the attribution and must survive."""
+    from keycall._types import Citation
+    from keycall.adapters._base import dedupe_citations
+
+    node = "https://nodejs.org/en/download"
+    identical = [
+        Citation(url=node, title="Download Node.js"),
+        Citation(url=node, title="Download Node.js"),
+        Citation(url=node, title="Download Node.js"),
+    ]
+    assert len(dedupe_citations(identical)) == 1
+
+    per_claim = [
+        Citation(url=node, title="Download Node.js", cited_text="LTS is 22.x"),
+        Citation(url=node, title="Download Node.js", cited_text="ships with npm"),
+    ]
+    assert len(dedupe_citations(per_claim)) == 2
+
+    # Order is the provider's, first occurrence wins.
+    mixed = [*identical, *per_claim]
+    assert [c.cited_text for c in dedupe_citations(mixed)] == [None, "LTS is 22.x", "ships with npm"]
+
+
+def test_openai_repeated_url_citations_collapse():
+    payload = {
+        "model": "gpt-4o-mini",
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "Node 22 is current.",
+                        "annotations": [
+                            {"type": "url_citation", "url": "https://nodejs.org/en/download",
+                             "title": "Download Node.js"},
+                            {"type": "url_citation", "url": "https://nodejs.org/en/download",
+                             "title": "Download Node.js"},
+                        ],
+                    }
+                ],
+            }
+        ],
+        "usage": {"input_tokens": 5, "output_tokens": 4, "total_tokens": 9},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    client = KeyCall(
+        provider="openai", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    result = client.generate_text(
+        model="gpt-4o-mini",
+        messages=[Message(role="user", content=[TextInput(text="node version?")])],
+        web_search=True,
+    )
+    client.close()
+    assert [c.url for c in result.citations] == ["https://nodejs.org/en/download"]
+
+
+def test_gemini_citations_match_between_streamed_and_non_streamed():
+    """Gemini deduped on the streaming path only, so the same request
+    returned different citations depending on how it was called."""
+    chunk = {
+        "modelVersion": "gemini-flash-latest",
+        "candidates": [
+            {
+                "content": {"parts": [{"text": "ok"}]},
+                "groundingMetadata": {
+                    "groundingChunks": [
+                        {"web": {"uri": "https://example.com/a", "title": "A"}},
+                        {"web": {"uri": "https://example.com/a", "title": "A"}},
+                        {"web": {"uri": "https://example.com/b", "title": "B"}},
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 1},
+    }
+
+    plain = KeyCall(
+        provider="gemini",
+        api_key=CANARY,
+        httpx_transport=httpx.MockTransport(lambda r: httpx.Response(200, json=chunk)),
+    )
+    ask = [Message(role="user", content=[TextInput(text="hi")])]
+    non_streamed = plain.generate_text(model="gemini-flash-latest", messages=ask, web_search=True)
+    plain.close()
+
+    body = b"data: " + json.dumps(chunk).encode() + b"\n\n"
+    streaming = KeyCall(
+        provider="gemini",
+        api_key=CANARY,
+        httpx_transport=httpx.MockTransport(
+            lambda r: httpx.Response(
+                200, content=body, headers={"content-type": "text/event-stream"}
+            )
+        ),
+    )
+    with streaming.stream_text(
+        model="gemini-flash-latest", messages=ask, web_search=True
+    ) as stream:
+        events = list(stream)
+        streamed = stream.result()
+    streaming.close()
+
+    assert [c.url for c in non_streamed.citations] == [
+        "https://example.com/a",
+        "https://example.com/b",
+    ]
+    assert streamed.citations == non_streamed.citations
+    # The events a caller saw match the result they get back.
+    found = [e.citation for e in events if e.kind == "citation"]
+    assert tuple(found) == streamed.citations

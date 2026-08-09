@@ -31,7 +31,12 @@ from .._types import (
     UnknownStreamEvent,
     Usage,
 )
-from ._base import InbandStreamError, ProviderAdapter, StreamAssembler
+from ._base import (
+    InbandStreamError,
+    ProviderAdapter,
+    StreamAssembler,
+    dedupe_citations,
+)
 
 # Stream plumbing events that carry no content of their own; the terminal
 # response.completed/incomplete event carries the whole final response.
@@ -311,6 +316,6 @@ class OpenAIAdapter(ProviderAdapter):
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=safe_request_id(headers.get("x-request-id")),
             finish_reason=str(finish) if finish else None,
-            citations=tuple(citations),
+            citations=dedupe_citations(citations),
             warnings=tuple(warnings),
         )

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .._enums import Operation
@@ -51,6 +51,31 @@ def parse_tool_arguments(raw: Any, *, provider: str) -> Mapping[str, Any]:
             operation=Operation.TEXT_GENERATION.value,
         )
     return parsed
+
+
+def dedupe_citations(citations: Sequence[Citation]) -> tuple[Citation, ...]:
+    """Drop citations that repeat one already present in full, keeping the
+    first occurrence and the provider's order.
+
+    Deliberately not "one entry per URL". Providers differ in what a
+    citation means: Anthropic attaches distinct ``cited_text`` per claim, so
+    the same source legitimately appears several times and collapsing by URL
+    would destroy the attribution. OpenAI sends url and title with no
+    excerpt, so a source cited for three claims arrives as three identical
+    records carrying no information the first does not. Only the second kind
+    is removed. Before this rule KeyCall collapsed by URL on Perplexity and
+    on streamed Gemini but not on non-streamed Gemini, so the same request
+    returned different citations depending on the path.
+    """
+    seen: set[tuple[str, str | None, str | None]] = set()
+    unique: list[Citation] = []
+    for citation in citations:
+        identity = (citation.url, citation.title, citation.cited_text)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(citation)
+    return tuple(unique)
 
 
 class InbandStreamError(Exception):
@@ -197,7 +222,7 @@ class StreamAssembler(ABC):
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=self.provider_request_id,
             finish_reason=self.finish_reason,
-            citations=tuple(self.citations),
+            citations=dedupe_citations(self.citations),
             warnings=tuple(self.warnings),
         )
 

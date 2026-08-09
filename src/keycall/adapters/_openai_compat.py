@@ -31,7 +31,7 @@ from .._types import (
     ToolResult,
     Usage,
 )
-from ._base import ProviderAdapter, StreamAssembler
+from ._base import ProviderAdapter, StreamAssembler, dedupe_citations
 
 # Providers confirmed to honor stream_options include_usage (live-verified
 # 2026-08-08). Unverified custom targets don't get the extra field: an
@@ -368,6 +368,6 @@ class OpenAICompatibleAdapter(ProviderAdapter):
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=None,  # not documented for compat targets
             finish_reason=str(finish_reason) if finish_reason else None,
-            citations=tuple(citations),
+            citations=dedupe_citations(citations),
             warnings=tuple(warnings),
         )

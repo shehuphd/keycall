@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data was. It turns true when the catalog's verification stamp is more
   than 90 days old.
 
+### Fixed
+
+- **Citations were deduplicated inconsistently**, so the same request could
+  return different citation lists depending on how it was called: the
+  compat family collapsed by URL, Gemini collapsed while streaming but not
+  otherwise, and OpenAI and Anthropic never did. One rule now applies
+  everywhere — a citation is dropped only when it repeats an earlier one
+  exactly, in URL, title, and excerpt. Per-claim citations that share a URL
+  but carry different `cited_text` survive, because that text is the
+  attribution. Streamed `citation` events match the final result exactly.
+
 ### Changed
 
 - **Provider capability evidence moved into the registry.** Which providers

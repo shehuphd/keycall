@@ -31,7 +31,12 @@ from .._types import (
     UnknownStreamEvent,
     Usage,
 )
-from ._base import InbandStreamError, ProviderAdapter, StreamAssembler
+from ._base import (
+    InbandStreamError,
+    ProviderAdapter,
+    StreamAssembler,
+    dedupe_citations,
+)
 
 # Anthropic requires max_tokens on every messages call; used when the
 # caller didn't specify one.
@@ -353,7 +358,7 @@ class AnthropicAdapter(ProviderAdapter):
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=safe_request_id(headers.get("request-id")),
             finish_reason=payload.get("stop_reason"),
-            citations=tuple(citations),
+            citations=dedupe_citations(citations),
             warnings=tuple(warnings),
         )
 

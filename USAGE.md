@@ -309,6 +309,34 @@ network call rather than silently ignoring the request.
 normalized across all four provider response shapes. Fields the provider
 didn't supply are `None`.
 
+What the citation list does and doesn't guarantee:
+
+- **One URL can legitimately appear more than once.** Providers cite per
+  claim, not per source. Anthropic gives each citation its own
+  `cited_text`, so three citations of one page are three different
+  excerpts. KeyCall drops only citations that repeat an earlier one
+  *exactly* — same URL, title, and excerpt — because those carry nothing
+  the first didn't. Building a sources list means collapsing by URL
+  yourself, and only you know whether to keep the longest excerpt, the
+  first, or all of them.
+- **The count can't be bounded in the request.** No provider exposes a
+  "return at most N citations" parameter; Anthropic's `max_uses` limits how
+  many searches the model runs, not how many sources come back. Slicing
+  `result.citations` is the only option, and the tokens are already spent
+  by the time you do. If capping matters, cap `max_output_tokens`, which
+  does bound the answer the citations attach to.
+- **Search costs are not reported.** `Usage.provider_units` exists for
+  non-token billing units but no adapter populates it today, so a
+  per-search charge (as opposed to per-token) does not appear anywhere in
+  `result.usage`. A token budget built on `Usage` will not see it. Check
+  the provider's own billing for search-priced calls.
+- **`context_limit` is populated only where the provider's list endpoint
+  reports it**, which today means Gemini alone. OpenAI, Anthropic,
+  DeepSeek, Perplexity, and Moonshot all return model lists with no token
+  limit, so `Model.context_limit` is `None` there. It is left `None` rather
+  than filled from a bundled table, because a wrong window is worse than a
+  missing one: KeyCall never guesses a number a caller may budget against.
+
 ## Structured output
 
 ```python

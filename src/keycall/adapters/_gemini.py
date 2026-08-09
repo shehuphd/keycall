@@ -37,7 +37,12 @@ from .._types import (
     UnknownStreamEvent,
     Usage,
 )
-from ._base import ProviderAdapter, StreamAssembler, parse_tool_arguments
+from ._base import (
+    ProviderAdapter,
+    StreamAssembler,
+    dedupe_citations,
+    parse_tool_arguments,
+)
 
 _PAGE_SIZE = "1000"
 
@@ -86,7 +91,7 @@ class _GeminiStreamAssembler(StreamAssembler):
     def __init__(self, resolved, request) -> None:
         super().__init__(resolved, request)
         self._started = False
-        self._seen_citation_urls: set[str] = set()
+        self._seen_citations: set[tuple[str, str | None, str | None]] = set()
 
     def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
         payload = self._parse_data(data)
@@ -145,10 +150,13 @@ class _GeminiStreamAssembler(StreamAssembler):
                 for chunk in grounding.get("groundingChunks") or []:
                     web = chunk.get("web") if isinstance(chunk, dict) else None
                     if isinstance(web, dict) and web.get("uri"):
-                        url = str(web["uri"])
-                        if url not in self._seen_citation_urls:
-                            self._seen_citation_urls.add(url)
-                            citation = Citation(url=url, title=web.get("title"))
+                        # Chunks repeat across stream events. Guard on the
+                        # same identity dedupe_citations uses, so the events
+                        # a caller sees match the final result exactly.
+                        citation = Citation(url=str(web["uri"]), title=web.get("title"))
+                        identity = (citation.url, citation.title, citation.cited_text)
+                        if identity not in self._seen_citations:
+                            self._seen_citations.add(identity)
                             self.citations.append(citation)
                             events.append(CitationFound(citation=citation))
 
@@ -452,7 +460,7 @@ class GeminiAdapter(ProviderAdapter):
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=safe_request_id(payload.get("responseId")),
             finish_reason=str(finish_reason) if finish_reason else None,
-            citations=tuple(citations),
+            citations=dedupe_citations(citations),
             warnings=tuple(warnings),
         )
 
