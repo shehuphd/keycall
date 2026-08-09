@@ -331,6 +331,17 @@ class ProviderAdapter(ABC):
             return ErrorCode.INVALID_API_KEY, False, message or "invalid API key"
         if status_code == 403:
             return ErrorCode.PERMISSION_DENIED, False, message or "permission denied"
+        if status_code == 402:
+            # The credential is valid and the account is not entitled to
+            # use it: unpaid balance, exhausted credit, billing hold. Not a
+            # malformed response, which is where an unmapped status lands
+            # and which sends a caller looking for a bug in their request.
+            # The provider's own message carries the actionable detail.
+            return (
+                ErrorCode.PERMISSION_DENIED,
+                False,
+                message or "payment required: the account cannot make calls until billing is settled",
+            )
         if status_code == 404:
             return ErrorCode.MODEL_NOT_AVAILABLE, False, message or "not found"
         if status_code == 429:

@@ -494,6 +494,10 @@ class GeminiAdapter(ProviderAdapter):
                 else ErrorCode.INVALID_API_KEY
             )
             return code, False, message or "invalid API key"
+        if status_code == 402:
+            # Same posture as the base adapter and Anthropic: valid key,
+            # unfunded account, not a malformed response.
+            return ErrorCode.PERMISSION_DENIED, False, message or "payment required"
         if status_code == 429 or status_name == "RESOURCE_EXHAUSTED":
             return ErrorCode.RATE_LIMITED, True, message or "rate or quota limited"
         if status_name == "NOT_FOUND" or status_code == 404:

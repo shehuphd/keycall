@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HTTP 402 is reported as `PERMISSION_DENIED` rather than falling through
+  to `INVALID_PROVIDER_RESPONSE`. A 402 means the key is valid and the
+  account is unfunded or on a billing hold, so calling it a malformed
+  response sent callers hunting for a bug in their own request. The
+  provider's message, which carries the billing link, is preserved.
+  Anthropic already mapped it this way; the base and Gemini adapters now
+  match.
 - **OpenAI reasoning models rejected any replayed tool call.** When the
   model emits a `reasoning` item alongside a `function_call`, the call
   cannot be replayed without it: the next request fails with HTTP 400

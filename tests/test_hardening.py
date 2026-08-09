@@ -487,3 +487,24 @@ def test_hostile_request_id_header_sanitized_in_result():
         model="gpt-4o-mini", messages=simple_messages()
     )
     assert result.provider_request_id == "ok[31mid"
+
+
+def test_payment_required_is_not_reported_as_a_malformed_response():
+    """A 402 means the key is fine and the account is not funded. Falling
+    through to invalid_provider_response sends the caller hunting for a bug
+    in their request. Seen live from Tinker: "Access ... is blocked due to
+    billing status. Please add payment at ...\"."""
+    detail = "Access is blocked due to billing status. Please add payment at https://example/billing"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(402, json={"error": {"message": detail}})
+
+    client = KeyCall(
+        provider="openai", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(KeyCallError) as excinfo:
+        client.list_models(refresh=True)
+    client.close()
+    assert excinfo.value.code is ErrorCode.PERMISSION_DENIED
+    # The provider's message carries the only actionable part: where to pay.
+    assert "billing" in str(excinfo.value)
