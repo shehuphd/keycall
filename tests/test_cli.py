@@ -193,3 +193,53 @@ def test_run_verify_list_failure_has_no_digest():
     client.close()
     assert not result.listed_ok
     assert result.model_list_digest is None
+
+
+def test_verify_walk_tries_maintained_aliases_first():
+    """Gemini advertised six withdrawn models ahead of every working one
+    on 2026-08-09; walking in list order spends the budget on models the
+    provider has already shut down."""
+    from keycall import KeyCall
+    from keycall._sources import Target
+    from keycall._verify_core import run_verify
+
+    retired = "This model is no longer available to new users."
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {"name": f"models/{m}", "supportedGenerationMethods": ["generateContent"]}
+                        for m in ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest")
+                    ]
+                },
+            )
+        model = request.url.path.split("/models/")[1].split(":")[0]
+        calls.append(model)
+        if model != "gemini-flash-latest":
+            return httpx.Response(404, json={"error": {"status": "NOT_FOUND", "message": retired}})
+        return httpx.Response(
+            200,
+            json={
+                "modelVersion": model,
+                "candidates": [
+                    {"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}
+                ],
+                "usageMetadata": {"promptTokenCount": 4, "candidatesTokenCount": 1},
+            },
+        )
+
+    client = KeyCall(
+        provider="gemini", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    result = run_verify(Target(provider="gemini", key=CANARY), generate=True, client=client)
+    client.close()
+
+    assert calls[0] == "gemini-flash-latest", "the maintained alias must be tried first"
+    assert result.generate_ok
+    assert len(result.attempts) == 1
+    # Promotion must not lose where the model really sat in the raw list.
+    assert result.attempts[0].raw_position == 2

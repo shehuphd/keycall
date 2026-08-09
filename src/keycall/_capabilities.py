@@ -32,6 +32,13 @@ _SAMPLING_REJECTING = (
     re.compile(r"^claude-opus-4-[7-9]"),
     re.compile(r"^claude-opus-[5-9]"),
     re.compile(r"^claude-sonnet-[5-9]"),
+    # Gemini is deliberately absent. Google's changelog announced
+    # temperature/top_p/top_k as deprecated on its latest models on
+    # 2026-07-21, but deprecation there is an announcement, not a
+    # rejection: gemini-3.6-flash, 3.5-flash, 3.1-flash-lite, and
+    # gemini-flash-latest all still accept both parameters (verified
+    # 2026-08-09). Gate on what a provider rejects, never on what it says
+    # it plans to stop supporting — the wrong gate breaks working calls.
 )
 
 

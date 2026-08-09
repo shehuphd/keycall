@@ -1,5 +1,5 @@
 # Internal design docs (PRD, naming decisions, research) — not part of the public package.
-/internal/
+/project/
 
 # macOS and system files.
 .DS_Store

@@ -27,8 +27,17 @@ DEFAULT_ATTEMPTS = 8
 # Bumped whenever the candidate-selection procedure changes, so an old
 # report can be read against the rule that produced it. "1" selected the
 # first filtered candidate and made exactly one attempt; "2" is the
-# bounded, fully-reported walk.
-SELECTION_RULE_VERSION = "2"
+# bounded, fully-reported walk; "3" adds maintained-alias-first ordering
+# within that walk.
+SELECTION_RULE_VERSION = "3"
+
+
+def _is_maintained_alias(model_id: str) -> bool:
+    """A provider-maintained pointer to a current model rather than a dated
+    snapshot — `gemini-flash-latest`, `chatgpt-4o-latest`. Deliberately
+    narrow: only the explicit suffix counts, because a false positive here
+    promotes a model that may not exist and wastes an attempt."""
+    return model_id.lower().endswith("-latest")
 
 
 def _model_list_digest(model_ids: list[str]) -> str:
@@ -126,6 +135,16 @@ def run_verify(
             for raw_position, model in enumerate(discovery.models)
             if ModelCategory.TEXT_GENERATION in model.categories
         ]
+        # Try the provider's own maintained aliases first. A provider that
+        # publishes a "-latest" pointer keeps it aimed at a model that
+        # currently works, which is exactly what verification needs; the
+        # dated ids around it are the ones that get retired. This is not
+        # cosmetic: on 2026-08-09 the first six text models Gemini
+        # advertised to a new key were all withdrawn, so a walk in list
+        # order spent most of its budget on models Google had already shut
+        # down. Order is otherwise the provider's own, and every attempt
+        # still reports both its filtered and raw position.
+        text_models.sort(key=lambda entry: not _is_maintained_alias(entry[1].id))
         if not generate:
             return VerifyResult(
                 label=label,

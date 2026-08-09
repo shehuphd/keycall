@@ -24,6 +24,18 @@ from keycall._verify_core import run_verify
 pytestmark = pytest.mark.live
 
 
+def candidates(discovery, limit: int = 8):
+    """Walk the provider's maintained aliases first, then its list order —
+    the same rule run_verify uses. Without it a Gemini run spends most of
+    its budget on models Google has already withdrawn (six of the first
+    eight advertised, 2026-08-09), which is what made this suite flaky
+    against Gemini rather than any adapter fault."""
+    from keycall._verify_core import _is_maintained_alias
+
+    ordered = sorted(discovery.models, key=lambda m: not _is_maintained_alias(m.id))
+    return ordered[:limit]
+
+
 def test_live_smoke_every_target_generates():
     source = os.environ.get("KEYCALL_LIVE_SOURCE")
     if not source:
@@ -86,7 +98,7 @@ def test_live_stream_smoke_every_target():
                 categories={ModelCategory.TEXT_GENERATION}, refresh=True
             )
             attempt_errors = []
-            for model in discovery.models[:8]:
+            for model in candidates(discovery):
                 try:
                     with client.stream_text(
                         model=model.id,
@@ -148,7 +160,7 @@ def test_live_tool_round_every_supporting_target():
                 categories={ModelCategory.TEXT_GENERATION}, refresh=True
             )
             attempt_errors = []
-            for model in discovery.models[:8]:
+            for model in candidates(discovery):
                 try:
                     first = client.generate_text(
                         model=model.id, messages=ask, tools=[weather],
@@ -229,7 +241,7 @@ def test_live_streamed_tool_call_every_supporting_target():
                 categories={ModelCategory.TEXT_GENERATION}, refresh=True
             )
             attempt_errors = []
-            for model in discovery.models[:8]:
+            for model in candidates(discovery):
                 try:
                     started, fragments = [], []
                     with client.stream_text(

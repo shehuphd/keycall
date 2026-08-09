@@ -5,6 +5,38 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Verification tries a provider's maintained `-latest` aliases before its
+  dated model ids** (selection rule version 3). Gemini withdraws models per
+  account ahead of their published shutdown dates while still listing them:
+  on 2026-08-09 the first six text models it advertised to a new key were
+  all refused, including `gemini-2.5-*` whose documented shutdown is months
+  away. A walk in list order spent almost its whole budget on models Google
+  had already shut down; it now verifies on the first attempt. Each attempt
+  still reports both its filtered and its raw position, so promotion is
+  visible rather than silent.
+- Gemini model families that advertise `generateContent` and then refuse a
+  text call no longer enter the default text picker: the Interactions-only
+  models (`deep-research-*`, `antigravity-*`, `gemini-omni-*`), the
+  computer-use preview, and Lyria (music generation). They remain listable
+  under the unknown category. Verified by calling each one.
+- A retired Gemini model's error now explains that the model came from
+  Gemini's own list and names the `-latest` aliases that survive these
+  retirements, instead of leaving the caller to wonder why a listed model
+  is unusable.
+
+### Notes
+
+- Google announced `temperature`, `top_p`, and `top_k` as deprecated on its
+  latest Gemini models on 2026-07-21. KeyCall does **not** gate them:
+  `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.1-flash-lite`, and
+  `gemini-flash-latest` all still accept both parameters (verified
+  2026-08-09). The sampling gate covers what a provider rejects today, not
+  what it has announced it will stop supporting.
+
 ## [0.7.0] — 2026-08-09
 
 ### Added

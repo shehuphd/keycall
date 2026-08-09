@@ -54,12 +54,19 @@ Live-verified 2026-08-05 (one model-list call plus one bounded generation per pr
 
 Two provider quirks worth knowing, both handled:
 
-**Gemini** keeps retired models in its list endpoint (`gemini-2.5-flash` returns
-"no longer available to new users") with no lifecycle field to pre-filter on,
-and meters quota per model and tier, so one model's 429 says nothing about the
-next. Its `supportedGenerationMethods` is also a transport signal rather than a
-modality claim: TTS variants advertise `generateContent` and then refuse a text
-response, so KeyCall lets a distinctive identifier modality outrank it.
+**Gemini** keeps retired models in its list endpoint with no lifecycle field to
+pre-filter on, and withdraws them per account ahead of the published shutdown
+date: on 2026-08-09 the first six text models it advertised to a new key were
+all refused, `gemini-2.5-*` with "no longer available to new users" months
+before its documented shutdown. KeyCall tries the provider's maintained
+`-latest` aliases first, so verification lands on a model that works instead of
+walking a list of withdrawn ones, and the error for a retired model names those
+aliases. It also meters quota per model and tier, so one model's 429 says
+nothing about the next. Its `supportedGenerationMethods` is a transport signal
+rather than a modality claim: TTS variants advertise `generateContent` and then
+refuse a text response, and so do the Interactions-only, computer-use, and
+music families, so KeyCall lets the identifier outrank it and keeps those out
+of the default text picker.
 
 **Perplexity**'s `GET /v1/models` is scoped to the Agent API and returns
 vendor-prefixed router models (`anthropic/...`, `perplexity/sonar`) that the

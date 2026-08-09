@@ -32,7 +32,7 @@ fi
 # Find a key source: explicit argument wins, then conventional locations.
 SOURCE="$1"
 if [ -z "$SOURCE" ]; then
-    for candidate in keycall-keys.toml keycall-test-keys.toml internal/keycall-test-keys.toml; do
+    for candidate in keycall-keys.toml keycall-test-keys.toml project/keycall-test-keys.toml; do
         if [ -f "$candidate" ]; then
             SOURCE="$candidate"
             break

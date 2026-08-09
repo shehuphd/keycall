@@ -53,6 +53,23 @@ _DISTINCTIVE_MODALITIES = frozenset(
     }
 )
 
+# Families that advertise generateContent but refuse a normal text call,
+# each verified 2026-08-09 by calling it: the Interactions-only models
+# answer "This model only supports Interactions API", the computer-use
+# preview demands its own tool, and Lyria is music generation that returns
+# a 500 here. Provider metadata is wrong for these, so the identifier is
+# the better evidence and they classify UNKNOWN — never silently in a
+# caller's default text picker. Keep this list tight: a Gemini text model
+# with an unfamiliar name must stay usable, so only add a family after a
+# live call proves it rejects text generation.
+_NON_TEXT_GEMINI_FAMILIES: tuple[str, ...] = (
+    "antigravity",
+    "computer-use",
+    "deep-research",
+    "lyria",
+    "omni",
+)
+
 _METHOD_CATEGORIES = {
     "generateContent": ModelCategory.TEXT_GENERATION,
     "embedContent": ModelCategory.EMBEDDING,
@@ -223,6 +240,10 @@ class GeminiAdapter(ProviderAdapter):
             ):
                 categories.discard(ModelCategory.TEXT_GENERATION)
                 categories.add(rule_category)
+                source = "provider_metadata+keycall_rule"
+            elif any(family in model_id.lower() for family in _NON_TEXT_GEMINI_FAMILIES):
+                categories.discard(ModelCategory.TEXT_GENERATION)
+                categories.add(ModelCategory.UNKNOWN)
                 source = "provider_metadata+keycall_rule"
             if not categories:
                 categories = {rule_category}
@@ -457,6 +478,24 @@ class GeminiAdapter(ProviderAdapter):
         if status_code == 429 or status_name == "RESOURCE_EXHAUSTED":
             return ErrorCode.RATE_LIMITED, True, message or "rate or quota limited"
         if status_name == "NOT_FOUND" or status_code == 404:
+            if "no longer available" in message:
+                # Gemini keeps retired models in its list response and
+                # withdraws them per account, ahead of the published
+                # shutdown date: as of 2026-08-09 a new key is refused
+                # gemini-2.5-* ("no longer available to new users") whose
+                # documented shutdown is still months out, and the whole
+                # 2.0-flash family (shut down 2026-06-01) is still listed.
+                # The list alone cannot tell a caller which models they can
+                # actually invoke, so say what does.
+                guidance = (
+                    f"{message} (gemini lists models an account cannot invoke and "
+                    "gives no lifecycle field to filter on, so this one came back "
+                    "from its own model list; the 'latest' aliases, "
+                    "gemini-flash-latest, gemini-flash-lite-latest and "
+                    "gemini-pro-latest, track google's current models and survive "
+                    "these retirements)"
+                )
+                return ErrorCode.MODEL_NOT_AVAILABLE, False, guidance
             return ErrorCode.MODEL_NOT_AVAILABLE, False, message or "model not found"
         if status_name in ("UNAVAILABLE", "DEADLINE_EXCEEDED") or status_code >= 500:
             return ErrorCode.PROVIDER_UNAVAILABLE, True, message or "provider unavailable"

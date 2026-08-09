@@ -270,3 +270,93 @@ def test_non_text_input_parts_raise_typed_error():
             ],
         )
     assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+
+
+def test_gemini_non_text_families_stay_out_of_the_text_picker():
+    """These advertise generateContent and then refuse a text call: the
+    Interactions-only models, the computer-use preview, and Lyria (music).
+    Verified against the live list 2026-08-09."""
+    from keycall import ModelCategory
+
+    advertised = [
+        "gemini-3.5-flash",
+        "gemini-omni-flash-preview",
+        "deep-research-pro-preview-12-2025",
+        "antigravity-preview-05-2026",
+        "gemini-2.5-computer-use-preview-10-2025",
+        "lyria-3-pro-preview",
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {"name": f"models/{m}", "supportedGenerationMethods": ["generateContent"]}
+                    for m in advertised
+                ]
+            },
+        )
+
+    client = KeyCall(
+        provider="gemini", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    text = [m.id for m in client.list_models(refresh=True).models]
+    every = client.list_models(categories=set(ModelCategory), refresh=True).models
+    client.close()
+
+    assert text == ["gemini-3.5-flash"]
+    # Excluded, not dropped: they stay listable under UNKNOWN.
+    assert len(every) == len(advertised)
+    assert {m.id for m in every if ModelCategory.UNKNOWN in m.categories} == set(advertised[1:])
+
+
+def test_gemini_retired_model_error_names_the_maintained_aliases():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={
+                "error": {
+                    "status": "NOT_FOUND",
+                    "message": (
+                        "This model models/gemini-2.5-flash is no longer available "
+                        "to new users."
+                    ),
+                }
+            },
+        )
+
+    client = KeyCall(
+        provider="gemini", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(
+            model="gemini-2.5-flash",
+            messages=[Message(role="user", content=[TextInput(text="hi")])],
+        )
+    client.close()
+    assert excinfo.value.code is ErrorCode.MODEL_NOT_AVAILABLE
+    message = str(excinfo.value)
+    assert "no longer available" in message
+    assert "gemini-flash-latest" in message, "the error should name a model that works"
+
+
+def test_gemini_ordinary_not_found_keeps_the_provider_message_alone():
+    """Only the retirement case earns the extra guidance; a plain 404 must
+    not be padded with advice that doesn't apply."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={"error": {"status": "NOT_FOUND", "message": "models/typo is not found"}},
+        )
+
+    client = KeyCall(
+        provider="gemini", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(
+            model="typo", messages=[Message(role="user", content=[TextInput(text="hi")])]
+        )
+    client.close()
+    assert "gemini-flash-latest" not in str(excinfo.value)
