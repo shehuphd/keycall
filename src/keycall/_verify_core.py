@@ -107,12 +107,27 @@ def run_verify(
     label = safe_display_name(target.display_name)
     owns_client = client is None
     if owns_client:
-        client = KeyCall(
-            provider=target.provider,
-            api_key=target.key,
-            protocol=target.protocol,
-            base_url=target.base_url,
-        )
+        try:
+            client = KeyCall(
+                provider=target.provider,
+                api_key=target.key,
+                protocol=target.protocol,
+                base_url=target.base_url,
+            )
+        except KeyCallError as error:
+            # A target the registry cannot resolve (unknown provider name
+            # with no protocol and base_url) is a configuration fault, not
+            # a provider one. Report it as this target's result: one bad
+            # entry in a key file must not abort verification of the rest.
+            return VerifyResult(
+                label=label,
+                provider=target.provider,
+                listed_ok=False,
+                list_error_code=error.code.value,
+                list_error_message=error.message,
+                generate_requested=generate,
+                outcome="unresolvable_target",
+            )
     try:
         try:
             # Verification must hit the live provider, never cached data.

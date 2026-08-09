@@ -18,6 +18,7 @@ import os
 
 import pytest
 
+from keycall._errors import KeyCallError
 from keycall._sources import load_targets
 from keycall._verify_core import run_verify
 
@@ -44,6 +45,7 @@ def test_live_smoke_every_target_generates():
 
     verified: list[str] = []
     rate_limited: list[str] = []
+    no_models: list[str] = []
     failed: list[str] = []
     for target in targets:
         result = run_verify(target, generate=True)
@@ -63,8 +65,18 @@ def test_live_smoke_every_target_generates():
             verified.append(result.label)
         elif result.outcome == "rate_limited_unverified":
             rate_limited.append(summary)
+        elif result.outcome == "no_text_models" and result.listed_ok:
+            # The credential verified: listing succeeded, the account just
+            # advertises nothing to invoke. Tinker's OpenAI-compatible
+            # endpoint serves your own fine-tuned checkpoints, so an empty
+            # model list is its normal state rather than a fault. Reported,
+            # not counted as an adapter or credential failure.
+            no_models.append(summary)
         else:
             failed.append(summary)
+
+    for summary in no_models:
+        print(f"credential valid, no models advertised: {summary}")
 
     report = []
     if failed:
@@ -87,16 +99,24 @@ def test_live_stream_smoke_every_target():
     targets, _ = load_targets(source)
     failures = []
     for target in targets:
-        client = KeyCall(
-            provider=target.provider,
-            api_key=target.key,
-            protocol=target.protocol,
-            base_url=target.base_url,
-        )
+        try:
+            client = KeyCall(
+                provider=target.provider,
+                api_key=target.key,
+                protocol=target.protocol,
+                base_url=target.base_url,
+            )
+        except KeyCallError as exc:
+            failures.append(f"{target.display_name}: unusable target — {exc}")
+            continue
         try:
             discovery = client.list_models(
                 categories={ModelCategory.TEXT_GENERATION}, refresh=True
             )
+            if not discovery.models:
+                # Credential verified by the listing; nothing to stream.
+                print(f"{target.display_name}: no models advertised, nothing to stream")
+                continue
             attempt_errors = []
             for model in candidates(discovery):
                 try:

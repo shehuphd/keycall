@@ -50,6 +50,19 @@ client = KeyCall(
 )
 ```
 
+One verified example: Thinking Machines' Tinker exposes an
+OpenAI-compatible endpoint at
+`https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1`.
+Text generation, streaming, and tool calling all work through it
+(verified 2026-08-09); image input and schema enforcement do not. Its
+`GET /models` returns an empty list by design, because the models you
+address there are your own fine-tuned sampler checkpoints
+(`tinker://…/sampler_weights/000080`) rather than a shared catalog, so
+model discovery has nothing to return and you pass the checkpoint path
+as the model id. A key that lists successfully is still a validated key:
+`verify` reports `no_text_models` with `listed_ok` true rather than
+calling the credential bad.
+
 Rules for `base_url`: absolute HTTPS, no query string, fragment, or
 userinfo. Plain HTTP is allowed only for localhost with
 `allow_insecure_localhost=True`. Literal private/internal IP addresses

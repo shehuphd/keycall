@@ -243,3 +243,18 @@ def test_verify_walk_tries_maintained_aliases_first():
     assert len(result.attempts) == 1
     # Promotion must not lose where the model really sat in the raw list.
     assert result.attempts[0].raw_position == 2
+
+
+def test_unresolvable_target_is_reported_not_raised():
+    """One bad entry in a key file must not abort verification of the rest:
+    run_verify promises it never raises for a target it cannot use."""
+    from keycall._sources import Target
+    from keycall._verify_core import run_verify
+
+    result = run_verify(
+        Target(provider="not-a-provider", key=CANARY, name="typo"), generate=True
+    )
+    assert result.outcome == "unresolvable_target"
+    assert not result.listed_ok
+    assert result.list_error_code == "unsupported_provider"
+    assert "base_url" in (result.list_error_message or ""), "say how to fix it"
