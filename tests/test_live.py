@@ -415,3 +415,110 @@ def test_live_image_input_every_supporting_target():
         finally:
             client.close()
     assert not failures, "\n".join(failures)
+
+
+def test_live_async_client_parity():
+    """The async client shares the adapters but has its own transport,
+    context managers, and stream iteration. Everything shipped since 0.5.0
+    was verified on the sync path only, so one target exercises the async
+    one against a live provider each release."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import asyncio
+
+    from keycall import AsyncKeyCall, Message, ModelCategory, TextInput, Tool, ToolResult
+    from keycall._capabilities import TOOL_CALLING_PROVIDERS
+
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider in TOOL_CALLING_PROVIDERS), None)
+    if target is None:
+        pytest.skip("no tool-calling target in the live source")
+
+    weather = Tool(
+        name="get_weather",
+        description="Get current weather for a city",
+        input_schema={
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    )
+
+    async def exercise() -> list[str]:
+        notes: list[str] = []
+        async with AsyncKeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        ) as client:
+            discovery = await client.list_models(
+                categories={ModelCategory.TEXT_GENERATION}, refresh=True
+            )
+            models = candidates(discovery, 6)
+            assert models, "no text models advertised"
+
+            errors = []
+            for model in models:
+                ask = [Message(role="user", content=[TextInput(text="Reply with: ok")])]
+                try:
+                    plain = await client.generate_text(
+                        model=model.id, messages=ask, max_output_tokens=200
+                    )
+                    notes.append(f"generate {model.id}: {(plain.text or '')[:20]!r}")
+
+                    async with client.stream_text(
+                        model=model.id, messages=ask, max_output_tokens=200
+                    ) as stream:
+                        deltas = 0
+                        async for event in stream:
+                            if event.kind == "text_delta":
+                                deltas += 1
+                        streamed = stream.result()
+                    notes.append(f"stream {model.id}: {deltas} delta(s), {streamed.finish_reason}")
+
+                    tool_ask = [
+                        Message(
+                            role="user",
+                            content=[TextInput(text="Weather in London? Use the tool.")],
+                        )
+                    ]
+                    first = await client.generate_text(
+                        model=model.id, messages=tool_ask, tools=[weather], max_output_tokens=300
+                    )
+                    if first.tool_calls:
+                        call = first.tool_calls[0]
+                        final = await client.generate_text(
+                            model=model.id,
+                            messages=[
+                                *tool_ask,
+                                first.to_assistant_message(),
+                                Message(
+                                    role="user",
+                                    content=[
+                                        ToolResult(
+                                            tool_call_id=call.id,
+                                            name=call.name,
+                                            content='{"temp_c": 14}',
+                                        )
+                                    ],
+                                ),
+                            ],
+                            tools=[weather],
+                            max_output_tokens=300,
+                        )
+                        notes.append(
+                            f"tool round {model.id}: args {dict(call.arguments)}, "
+                            f"final text {'yes' if final.text else 'NO'}"
+                        )
+                    return notes
+                except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                    errors.append(f"    {model.id}: {exc}")
+            raise AssertionError(
+                f"{target.display_name}: no model completed the async round\n"
+                + "\n".join(errors)
+            )
+
+    for note in asyncio.run(exercise()):
+        print(f"{target.display_name} async: {note}")

@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`AsyncKeyCall` is now covered, not assumed.** It is half the public API
+  and had two unit tests and no live coverage, so tool calling, streamed
+  tool events, and image input had all shipped verified on the sync path
+  only. There is now an async suite exercising each of them plus the
+  pre-network gates, stream truncation, and round-trip timing, a signature
+  check that fails if a parameter is added to one client and not the other,
+  and a live async test in the release gate. No defects turned up: the
+  async path was correct, it was untested.
 - **The viewer is written for someone who has never seen it.** Each tab now
   opens with a heading and a plain-language explanation of what the screen
   does and what it costs. Controls are labelled by what they do rather than
