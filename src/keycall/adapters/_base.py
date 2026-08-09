@@ -340,8 +340,11 @@ class ProviderAdapter(ABC):
                         )
                     continue
                 raise KeyCallError(
-                    f"text generation supports text and tool parts only, "
-                    f"got {type(part).__name__}",
+                    f"{type(part).__name__} is not implemented for text "
+                    "generation yet; keycall accepts TextInput, ToolCall, and "
+                    "ToolResult parts. The type exists because the content "
+                    "taxonomy is directional and complete, not because a "
+                    "provider mapping has been built and verified for it",
                     code=ErrorCode.UNSUPPORTED_OPERATION,
                     operation=Operation.TEXT_GENERATION.value,
                 )

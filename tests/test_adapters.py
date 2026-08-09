@@ -270,6 +270,13 @@ def test_non_text_input_parts_raise_typed_error():
             ],
         )
     assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+    # An integrator reasonably read the exported ImageInput type as a
+    # promise of support. The refusal has to say it is unimplemented rather
+    # than sounding like the caller built the message wrong, and it has to
+    # name what does work.
+    message = str(excinfo.value)
+    assert "not implemented" in message
+    assert "TextInput" in message
 
 
 def test_gemini_non_text_families_stay_out_of_the_text_picker():

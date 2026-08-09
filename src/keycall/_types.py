@@ -66,6 +66,14 @@ class TextInput:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ImageInput:
+    """Not yet accepted by text generation. The type is part of the
+    directional content taxonomy and is validated here, but every adapter
+    rejects it with UNSUPPORTED_OPERATION before any network call: no
+    provider mapping has been built or verified. Present so the taxonomy is
+    complete and so a caller can model content it will send later, not as a
+    signal that image input works today.
+    """
+
     url: str | None = None
     data: bytes | None = None
     media_type: str | None = None
@@ -78,6 +86,14 @@ class ImageInput:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AudioInput:
+    """Not yet accepted by text generation. The type is part of the
+    directional content taxonomy and is validated here, but every adapter
+    rejects it with UNSUPPORTED_OPERATION before any network call: no
+    provider mapping has been built or verified. Present so the taxonomy is
+    complete and so a caller can model content it will send later, not as a
+    signal that audio input works today.
+    """
+
     url: str | None = None
     data: bytes | None = None
     media_type: str | None = None
@@ -90,6 +106,14 @@ class AudioInput:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class FileInput:
+    """Not yet accepted by text generation. The type is part of the
+    directional content taxonomy and is validated here, but every adapter
+    rejects it with UNSUPPORTED_OPERATION before any network call: no
+    provider mapping has been built or verified. Present so the taxonomy is
+    complete and so a caller can model content it will send later, not as a
+    signal that file input works today.
+    """
+
     url: str | None = None
     data: bytes | None = None
     media_type: str | None = None

@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ImageInput`, `AudioInput`, and `FileInput` now say plainly that text
+  generation does not accept them yet, in the error and on the types
+  themselves. They are exported and validated, which reasonably reads as a
+  promise of support; the refusal previously sounded like a malformed
+  message rather than an unimplemented feature. It still raises
+  `UNSUPPORTED_OPERATION` before any network call.
 - **Citations were deduplicated inconsistently**, so the same request could
   return different citation lists depending on how it was called: the
   compat family collapsed by URL, Gemini collapsed while streaming but not
