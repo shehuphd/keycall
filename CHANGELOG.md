@@ -119,6 +119,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unknown provider name with no protocol and base URL). It reports that
   target as `unresolvable_target` and carries on, so one malformed entry
   in a key file stops aborting verification of every other target.
+- A feature the provider has but the chosen model lacks now raises
+  `MODEL_NOT_SUITABLE` instead of `INVALID_PROVIDER_RESPONSE`. OpenAI
+  supports web search, but `gpt-3.5-turbo` refuses the tool, and calling
+  that a malformed response pointed the caller at their own request rather
+  than at the model. The error repeats the provider's wording and adds
+  that another model will do it.
+- The viewer's model browser could hang on "Asking the provider…" forever
+  if the page threw while loading. Any failure now lands in a visible
+  panel with a way forward, and empty states are left-aligned with the
+  rest of the page instead of centred.
 - HTTP 402 is reported as `PERMISSION_DENIED` rather than falling through
   to `INVALID_PROVIDER_RESPONSE`. A 402 means the key is valid and the
   account is unfunded or on a billing hold, so calling it a malformed

@@ -435,6 +435,16 @@ class ProviderAdapter(ABC):
             return ErrorCode.MODEL_NOT_AVAILABLE, False, message or "not found"
         if status_code == 429:
             return ErrorCode.RATE_LIMITED, True, message or "rate limited"
+        if status_code == 400 and "is not supported with" in message:
+            # A capability the provider has but this model does not, e.g.
+            # OpenAI's web_search tool on gpt-3.5-turbo. The request is
+            # well formed, so calling it a malformed response points the
+            # caller at their own JSON instead of at the model choice.
+            guidance = (
+                f"{message} Choose a model that supports it, or turn the "
+                "feature off for this one."
+            )
+            return ErrorCode.MODEL_NOT_SUITABLE, False, guidance
         if status_code >= 500:
             return ErrorCode.PROVIDER_UNAVAILABLE, True, message or "provider server error"
         return (

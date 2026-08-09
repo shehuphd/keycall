@@ -508,3 +508,28 @@ def test_payment_required_is_not_reported_as_a_malformed_response():
     assert excinfo.value.code is ErrorCode.PERMISSION_DENIED
     # The provider's message carries the only actionable part: where to pay.
     assert "billing" in str(excinfo.value)
+
+
+def test_model_level_feature_refusal_is_not_a_malformed_response():
+    """OpenAI supports web search, but gpt-3.5-turbo does not, so the
+    refusal is about the model rather than the request. Reporting it as
+    invalid_provider_response sent the caller looking at their own JSON."""
+    detail = "Tool 'web_search_preview' is not supported with gpt-3.5-turbo."
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"message": detail}})
+
+    client = KeyCall(
+        provider="openai", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(
+            model="gpt-3.5-turbo",
+            messages=[Message(role="user", content=[TextInput(text="hi")])],
+            web_search=True,
+        )
+    client.close()
+    assert excinfo.value.code is ErrorCode.MODEL_NOT_SUITABLE
+    message = str(excinfo.value)
+    assert "gpt-3.5-turbo" in message
+    assert "Choose a model that supports it" in message

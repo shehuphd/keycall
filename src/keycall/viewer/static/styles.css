@@ -168,8 +168,10 @@ a { color: var(--accent); }
 .empty {
   border: 1px dashed var(--border);
   border-radius: 8px;
-  padding: 1.5rem;
-  text-align: center;
+  padding: 1.25rem 1.5rem;
+  /* Left-aligned like every other block of text on the page: centring it
+     made it read as a separate object rather than part of the panel. */
+  text-align: left;
   color: var(--muted);
 }
 .empty strong { display: block; color: var(--fg); margin-bottom: 0.35rem; font-size: 0.95rem; }

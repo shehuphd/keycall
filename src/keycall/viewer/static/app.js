@@ -282,6 +282,22 @@ function fillTargetSelects() {
 // --- models browser ---------------------------------------------------------
 
 async function loadModels(refresh = false) {
+  try {
+    await loadModelsInner(refresh);
+  } catch (err) {
+    // A throw here used to leave "Asking the provider…" on screen with no
+    // way forward. Any failure has to land somewhere the user can see.
+    el("models-status").textContent = "";
+    emptyState(
+      el("models-empty"),
+      "Could not load models",
+      `Something went wrong in the page: ${err}. Press Refresh to try again, ` +
+      "or reopen the link KeyCall printed in your terminal."
+    );
+  }
+}
+
+async function loadModelsInner(refresh) {
   const id = el("models-target").value;
   const category = el("models-category").value;
   if (id === "") return;
