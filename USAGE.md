@@ -154,10 +154,21 @@ request = TextGenerationRequest(model="...", messages=[...], max_output_tokens=6
 result = client.invoke(request)
 ```
 
-Some models reject sampling parameters outright (OpenAI o-series and gpt-5;
-Anthropic Opus 4.7+, Opus 5+, Sonnet 5+). Passing `temperature` or `top_p`
-for those raises `MODEL_NOT_SUITABLE` before any network call, omit the
-parameters for those models.
+Some models constrain sampling parameters, and KeyCall raises
+`MODEL_NOT_SUITABLE` before any network call rather than letting the
+provider 400. Two shapes:
+
+- **No explicit value accepted**: OpenAI o-series and gpt-5, Anthropic
+  Opus 4.7+, Opus 5+, and Sonnet 5+. Omit `temperature` and `top_p`.
+- **One value accepted**: every Moonshot kimi model takes
+  `temperature=1.0` and `top_p=0.95` and rejects anything else. Those
+  values pass through; the error names the permitted one.
+
+The evidence lives in the bundled catalog per provider, with the date each
+claim was last checked against the live API. A provider that merely
+announces a deprecation is not gated: Gemini announced `temperature` and
+`top_p` as deprecated in July 2026 and still accepts both, so KeyCall
+passes them through.
 
 ## Streaming
 

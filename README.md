@@ -41,7 +41,9 @@ print(result.round_trip_duration_ms)
 
 ## Provider support
 
-Live-verified 2026-08-05 (one model-list call plus one bounded generation per provider):
+Live-verified 2026-08-09. Every release re-runs a model list, a bounded generation,
+a stream, a full tool round (streamed and not), and an image read against each
+provider that supports them, and blocks publishing if any of it fails:
 
 | Provider | Protocol | Listing | Generation |
 |---|---|---|---|
