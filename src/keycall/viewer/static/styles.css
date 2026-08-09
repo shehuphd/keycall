@@ -210,7 +210,10 @@ a { color: var(--accent); }
   display: grid;
   grid-template-columns: 22rem minmax(0, 1fr);
   gap: 1.5rem;
-  align-items: start;
+  /* Both columns share a height so the composer can sit on the same
+     baseline as the bottom of the settings, instead of floating wherever
+     the transcript happens to end. */
+  align-items: stretch;
 }
 @media (max-width: 900px) {
   .pg-layout { grid-template-columns: 1fr; }
@@ -282,7 +285,7 @@ a { color: var(--accent); }
 .pg-toggle input:checked + .switch::after { transform: translateX(1rem); }
 .pg-toggle input:focus-visible + .switch { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.pg-main { display: flex; flex-direction: column; min-height: 26rem; }
+.pg-main { display: flex; flex-direction: column; min-height: 26rem; height: 100%; }
 .pg-transcript {
   flex: 1;
   display: flex;

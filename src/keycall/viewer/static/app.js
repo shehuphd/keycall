@@ -238,11 +238,8 @@ async function boot() {
 
   attachSort(el("dashboard-table"));
   attachSort(el("models-table"));
-  el("dash-text-header").title =
-    "Models this key can use to write text, which is what the Playground calls.";
-  el("dash-embed-header").title =
-    "Models this key can use to turn text into vectors, via embed(). Zero means "
-    + "the provider has no embeddings API, not that the key is limited.";
+  el("dash-models-header").title =
+    "Every model this key can reach, of every kind. The Models tab breaks them down.";
   transcriptEmpty();
   // The Verify tab opens with no results, which is a state, not a blank.
   emptyState(
@@ -267,7 +264,6 @@ function renderDashboard() {
     statusCell.appendChild(pill("not checked", "pending"));
     row.appendChild(statusCell);
     row.appendChild(td("—", "num"));
-    row.appendChild(td("—", "num"));
     row.addEventListener("click", () => checkTarget(t.id, row));
     tbody.appendChild(row);
   });
@@ -277,22 +273,16 @@ async function checkTarget(id, row) {
   const statusCell = row.children[2];
   clear(statusCell);
   statusCell.appendChild(pill("checking…", "pending"));
-  // Count both operations KeyCall can perform with a key, not just one:
-  // a key with no text models but working embeddings is still useful, and
-  // reporting only text made it look dead.
+  // Every category, not just text: the count is what the key can reach.
   const data = await api(`/api/models?target=${id}`);
   clear(statusCell);
   if (data.error) {
     statusCell.appendChild(pill(data.error.code, "err"));
     row.children[3].textContent = data.error.message;
-    row.children[4].textContent = "";
     return;
   }
   statusCell.appendChild(pill("key valid", "ok"));
-  const count = (category) =>
-    data.models.filter((m) => m.categories.includes(category)).length;
-  row.children[3].textContent = String(count("text_generation"));
-  row.children[4].textContent = String(count("embedding"));
+  row.children[3].textContent = String(data.models.length);
 }
 
 // --- shared target selects --------------------------------------------------
