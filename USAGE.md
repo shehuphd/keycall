@@ -278,6 +278,50 @@ with client.stream_text(model="...", messages=messages, tools=[weather]) as stre
 - Malformed argument JSON raises `INVALID_PROVIDER_RESPONSE` from the
   iterator rather than yielding a call with silently dropped arguments.
 
+## Image input
+
+Pass an `ImageInput` alongside your text in a user message. Bytes are read
+directly; no file is uploaded and KeyCall never fetches anything on your
+behalf:
+
+```python
+from keycall import ImageInput, Message, TextInput
+
+result = client.generate_text(
+    model="gpt-5.3-chat-latest",
+    messages=[Message(role="user", content=[
+        TextInput(text="What is in this photo?"),
+        ImageInput(data=photo_bytes),          # or ImageInput(url="https://…")
+    ])],
+)
+```
+
+Support splits by *form*, not only by provider, and the gate fires before
+any network call:
+
+| Provider | Image bytes | Image URL |
+|---|---|---|
+| OpenAI | yes | yes |
+| Anthropic | yes | yes |
+| Gemini | yes | no |
+| Perplexity | yes | yes |
+| Moonshot | yes | no |
+| DeepSeek | no | no (API is text only) |
+
+- **Bytes are the portable form.** Every image-capable provider accepts
+  them, so `ImageInput(data=...)` works everywhere images work.
+- **A URL is only sent, never fetched.** Providers that refuse remote URLs
+  raise `UNSUPPORTED_OPERATION` telling you to pass bytes. KeyCall will not
+  download it for you: an adapter making its own request could be pointed
+  at anything by caller-supplied data.
+- **The media type is detected from the content** (PNG, JPEG, GIF, WebP).
+  A `media_type` you supply is used only for formats KeyCall doesn't
+  recognize, because Anthropic and Gemini both reject a mismatched type and
+  the bytes are the better evidence. An image KeyCall can't identify raises
+  rather than being sent with a guess.
+- Images belong in user messages. `AudioInput` and `FileInput` are still
+  unimplemented and refuse before the network, as before.
+
 ## Web search
 
 Providers with a native server-side search tool can ground a generation in

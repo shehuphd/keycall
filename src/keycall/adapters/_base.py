@@ -14,7 +14,7 @@ from typing import Any
 
 from .._enums import Operation
 from .._errors import ErrorCode, KeyCallError
-from .._registry import ResolvedProvider
+from .._registry import ResolvedProvider, providers_with
 from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
@@ -51,6 +51,41 @@ def parse_tool_arguments(raw: Any, *, provider: str) -> Mapping[str, Any]:
             operation=Operation.TEXT_GENERATION.value,
         )
     return parsed
+
+
+# Magic bytes for the formats every image-capable provider in the v1 set
+# accepts. Sniffing beats trusting a caller-supplied media_type: Anthropic
+# and Gemini both require an accurate one and reject a mismatch, and a
+# caller passing bytes usually has no reason to know the format.
+_IMAGE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def image_media_type(part: Any, *, provider: str) -> str:
+    """The media type for an image sent as bytes: sniffed from the content,
+    falling back to a declared media_type only for formats we don't
+    recognize. An unidentifiable image is a typed error, not a guess that
+    the provider will reject with something less clear."""
+    data = part.data or b""
+    for signature, media_type in _IMAGE_SIGNATURES:
+        if data.startswith(signature):
+            return media_type
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if part.media_type:
+        return str(part.media_type)
+    raise KeyCallError(
+        "could not identify the image format from its content; pass "
+        "media_type on ImageInput (png, jpeg, gif, and webp are detected "
+        "automatically)",
+        code=ErrorCode.UNSUPPORTED_OPERATION,
+        provider=provider,
+        operation=Operation.TEXT_GENERATION.value,
+    )
 
 
 def dedupe_citations(citations: Sequence[Citation]) -> tuple[Citation, ...]:
@@ -315,7 +350,7 @@ class ProviderAdapter(ABC):
         part types and placement, capability gates, and sampling params
         against models with maintained evidence that they reject them."""
         from .._capabilities import TOOL_CALLING_PROVIDERS, sampling_violation
-        from .._types import TextInput, ToolCall, ToolResult
+        from .._types import ImageInput, TextInput, ToolCall, ToolResult
 
         for message in request.messages:
             for part in message.content:
@@ -339,12 +374,16 @@ class ProviderAdapter(ABC):
                             operation=Operation.TEXT_GENERATION.value,
                         )
                     continue
+                if isinstance(part, ImageInput):
+                    self._check_image_part(part, role=message.role)
+                    continue
                 raise KeyCallError(
                     f"{type(part).__name__} is not implemented for text "
-                    "generation yet; keycall accepts TextInput, ToolCall, and "
-                    "ToolResult parts. The type exists because the content "
-                    "taxonomy is directional and complete, not because a "
-                    "provider mapping has been built and verified for it",
+                    "generation yet; keycall accepts TextInput, ImageInput, "
+                    "ToolCall, and ToolResult parts. The type exists because "
+                    "the content taxonomy is directional and complete, not "
+                    "because a provider mapping has been built and verified "
+                    "for it",
                     code=ErrorCode.UNSUPPORTED_OPERATION,
                     operation=Operation.TEXT_GENERATION.value,
                 )
@@ -414,6 +453,50 @@ class ProviderAdapter(ABC):
                 provider=self.resolved.provider,
                 operation=Operation.TEXT_GENERATION.value,
             )
+
+    def _check_image_part(self, part: Any, *, role: str) -> None:
+        """Image support splits by form, not just by provider: several
+        providers read raw bytes and refuse to fetch a URL. Each refusal
+        names the form that does work rather than saying images are
+        unsupported."""
+        capabilities = self.resolved.capabilities
+        provider = self.resolved.provider
+        if role != "user":
+            raise KeyCallError(
+                f"ImageInput belongs in user messages, not role {role!r}",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=provider,
+                operation=Operation.TEXT_GENERATION.value,
+            )
+        if not capabilities.image_input_bytes and not capabilities.image_input_url:
+            raise KeyCallError(
+                f"provider {provider!r} has no image input; its API is text "
+                "only. Images are supported on: "
+                + ", ".join(sorted(providers_with("image_input"))),
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=provider,
+                operation=Operation.TEXT_GENERATION.value,
+            )
+        if part.url is not None and not capabilities.image_input_url:
+            raise KeyCallError(
+                f"provider {provider!r} does not fetch image URLs; read the "
+                "image and pass ImageInput(data=...) instead. KeyCall will "
+                "not fetch it for you: an adapter that made its own network "
+                "request could be pointed anywhere by caller data",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=provider,
+                operation=Operation.TEXT_GENERATION.value,
+            )
+        if part.data is not None and not capabilities.image_input_bytes:
+            raise KeyCallError(
+                f"provider {provider!r} does not accept image bytes; pass "
+                "ImageInput(url=...) instead",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=provider,
+                operation=Operation.TEXT_GENERATION.value,
+            )
+        if part.data is not None:
+            image_media_type(part, provider=provider)
 
     def parse_tool_arguments(self, raw: Any) -> Mapping[str, Any]:
         return parse_tool_arguments(raw, provider=self.resolved.provider)

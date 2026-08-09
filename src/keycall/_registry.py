@@ -59,6 +59,10 @@ class ProviderCapabilities:
     sampling_constraints: tuple[SamplingConstraint, ...] = ()
     # Families that advertise a text method and then refuse a text call.
     non_text_model_families: tuple[str, ...] = ()
+    # Image input differs by *form*: several providers read raw bytes but
+    # refuse to fetch a URL, so one boolean would be wrong either way.
+    image_input_bytes: bool = False
+    image_input_url: bool = False
     verified: str = ""
 
 
@@ -131,19 +135,26 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
             for entry in raw.get("sampling_constraints", ())
         ),
         non_text_model_families=tuple(raw.get("non_text_model_families", ())),
+        image_input_bytes=bool((raw.get("image_input") or {}).get("bytes", False)),
+        image_input_url=bool((raw.get("image_input") or {}).get("url", False)),
         verified=str(raw.get("verified", "")),
     )
 
 
 def providers_with(capability: str) -> frozenset[str]:
-    """Every catalog provider whose named capability is true. Error
-    messages list what does work by reading the same data the gates do,
-    so the two can never drift apart."""
-    return frozenset(
-        name
-        for name, profile in _load_catalog()["providers"].items()
-        if (profile.get("capabilities") or {}).get(capability)
-    )
+    """Every catalog provider whose named capability is on. Error messages
+    list what does work by reading the same data the gates do, so the two
+    can never drift apart. A capability whose value is a mapping of forms
+    (image_input) counts when any form is supported."""
+    found = set()
+    for name, profile in _load_catalog()["providers"].items():
+        value = (profile.get("capabilities") or {}).get(capability)
+        if isinstance(value, dict):
+            if any(value.values()):
+                found.add(name)
+        elif value:
+            found.add(name)
+    return frozenset(found)
 
 
 def schema_mechanism(provider: str) -> str | None:
@@ -324,5 +335,7 @@ def resolve_provider(
             "text_generation": {"method": "POST", "path": "/chat/completions"},
         },
         is_custom=True,
-        capabilities=ProviderCapabilities(tool_calling=True),
+        capabilities=ProviderCapabilities(
+            tool_calling=True, image_input_bytes=True, image_input_url=True
+        ),
     )

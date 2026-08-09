@@ -18,6 +18,7 @@ from .._errors import KeyCallError
 from .._sources import SourceError, load_targets
 from .._types import (
     Message,
+    MessageRole,
     TextGenerationRequest,
     TextInput,
     Tool,
@@ -123,6 +124,9 @@ def browse_models(
     return body
 
 
+_ROLES: tuple[MessageRole, ...] = ("system", "user", "assistant")
+
+
 class _BadRequest(Exception):
     """A malformed browser payload. Carries the message the user sees, so
     a typo in a tool schema reads as a fixable mistake rather than a
@@ -193,8 +197,12 @@ def _parse_history(raw: Any) -> list[Message]:
                 )
             else:
                 raise _BadRequest(f"history[{index}] has an unsupported part kind {kind!r}")
+        requested = str(entry.get("role", ""))
+        role = next((valid for valid in _ROLES if valid == requested), None)
+        if role is None:
+            raise _BadRequest(f"history[{index}] has an unsupported role {requested!r}")
         try:
-            messages.append(Message(role=str(entry.get("role", "")), content=parts))
+            messages.append(Message(role=role, content=parts))
         except (TypeError, ValueError) as error:
             raise _BadRequest(f"history[{index}]: {error}") from None
     return messages

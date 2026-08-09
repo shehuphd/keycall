@@ -315,3 +315,83 @@ def test_live_perplexity_tools_gate_still_correct():
         "TOOL_CALLING_PROVIDERS and this test"
     )
     print("perplexity: tools still rejected (gate evidence current)")
+
+
+# Solid blue 8x8 PNG, built inline so the suite carries no binary fixture.
+def _blue_png() -> bytes:
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    size = 8
+    raw = b"".join(b"\x00" + bytes((0, 102, 204)) * size for _ in range(size))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+def test_live_image_input_every_supporting_target():
+    """Image wire shapes differ per provider and are easy to get subtly
+    wrong (a mislabelled media type is a 400 on two of them), so each
+    release re-checks that a real image round-trips."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import ImageInput, KeyCall, Message, ModelCategory, TextInput
+    from keycall._registry import providers_with
+
+    supporting = providers_with("image_input")
+    ask = [
+        Message(
+            role="user",
+            content=[
+                TextInput(text="What colour is this image? Answer with one word."),
+                ImageInput(data=_blue_png()),
+            ],
+        )
+    ]
+
+    targets, _ = load_targets(source)
+    failures = []
+    for target in targets:
+        if target.provider not in supporting:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            discovery = client.list_models(
+                categories={ModelCategory.TEXT_GENERATION}, refresh=True
+            )
+            attempt_errors = []
+            for model in candidates(discovery, 6):
+                try:
+                    result = client.generate_text(
+                        model=model.id, messages=ask, max_output_tokens=200
+                    )
+                    answer = (result.text or "").strip().lower()
+                    assert "blue" in answer, (
+                        f"{model.id} read the image as {answer[:40]!r}; the bytes may "
+                        "be reaching the provider in the wrong shape"
+                    )
+                    print(f"{target.display_name}: image read by {model.id} -> {answer[:20]!r}")
+                    break
+                except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                    attempt_errors.append(f"    {model.id}: {exc}")
+            else:
+                failures.append(
+                    f"{target.display_name}: no model read the image\n"
+                    + "\n".join(attempt_errors)
+                )
+        finally:
+            client.close()
+    assert not failures, "\n".join(failures)

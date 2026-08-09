@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.08.09.1",
+  "catalog_version": "2026.08.09.2",
   "verified_at": "2026-08-09T00:00:00Z",
   "providers": {
     "openai": {
@@ -38,7 +38,11 @@
             "note": "gpt-5 family on the Responses API accepts only the default"
           }
         ],
-        "verified": "2026-08-09"
+        "verified": "2026-08-09",
+        "image_input": {
+          "bytes": true,
+          "url": true
+        }
       }
     },
     "anthropic": {
@@ -87,7 +91,11 @@
             "note": "deprecated for newer reasoning and Opus models: sending them returns 400"
           }
         ],
-        "verified": "2026-08-09"
+        "verified": "2026-08-09",
+        "image_input": {
+          "bytes": true,
+          "url": true
+        }
       }
     },
     "gemini": {
@@ -124,7 +132,11 @@
           "lyria",
           "omni"
         ],
-        "verified": "2026-08-09"
+        "verified": "2026-08-09",
+        "image_input": {
+          "bytes": true,
+          "url": false
+        }
       }
     },
     "deepseek": {
@@ -151,7 +163,11 @@
         "web_search": false,
         "schema_enforcement": null,
         "sampling_constraints": [],
-        "verified": "2026-08-09"
+        "verified": "2026-08-09",
+        "image_input": {
+          "bytes": false,
+          "url": false
+        }
       }
     },
     "perplexity": {
@@ -203,7 +219,11 @@
         "web_search": true,
         "schema_enforcement": "json_schema",
         "sampling_constraints": [],
-        "verified": "2026-08-09"
+        "verified": "2026-08-09",
+        "image_input": {
+          "bytes": true,
+          "url": true
+        }
       }
     },
     "moonshot": {
@@ -241,7 +261,11 @@
             "note": "every kimi model pins both values: any other returns 400 'only 1 is allowed for this model'"
           }
         ],
-        "verified": "2026-08-09"
+        "verified": "2026-08-09",
+        "image_input": {
+          "bytes": true,
+          "url": false
+        }
       }
     }
   }

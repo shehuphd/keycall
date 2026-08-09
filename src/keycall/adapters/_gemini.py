@@ -8,6 +8,7 @@ metadata and takes precedence over identifier rules.
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -21,6 +22,7 @@ from .._transport import RequestSpec
 from .._types import (
     Citation,
     CitationFound,
+    ImageInput,
     InvocationResult,
     Model,
     OutputPart,
@@ -41,6 +43,7 @@ from ._base import (
     ProviderAdapter,
     StreamAssembler,
     dedupe_citations,
+    image_media_type,
     parse_tool_arguments,
 )
 
@@ -287,6 +290,18 @@ class GeminiAdapter(ProviderAdapter):
             for part in message.content:
                 if isinstance(part, TextInput):
                     parts.append({"text": part.text})
+                elif isinstance(part, ImageInput):
+                    # Bytes only: Gemini's fileData URI is for its own Files
+                    # API, not an arbitrary web URL, and the validation gate
+                    # already refused a URL for this provider.
+                    parts.append(
+                        {
+                            "inlineData": {
+                                "mimeType": image_media_type(part, provider="gemini"),
+                                "data": base64.b64encode(part.data or b"").decode(),
+                            }
+                        }
+                    )
                 elif isinstance(part, ToolCall):
                     call: dict[str, Any] = {"name": part.name, "args": dict(part.arguments)}
                     wire: dict[str, Any] = {"functionCall": call}

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Image input** on `generate_text()` and `stream_text()`: pass an
+  `ImageInput` beside your text in a user message. Live-verified on OpenAI,
+  Anthropic, Gemini, Perplexity, and Moonshot. Support splits by form
+  rather than by provider alone, and the gate names the form that works:
+  Gemini and Moonshot read bytes but refuse a remote URL, and DeepSeek's
+  API is text only. KeyCall never fetches a URL itself. The media type is
+  detected from the content (PNG, JPEG, GIF, WebP), because Anthropic and
+  Gemini both reject a mismatched type and the bytes are better evidence
+  than a caller's label; an unidentifiable image raises rather than being
+  sent with a guess.
+
 - **Moonshot's pinned sampling values are gated before the network.** Every
   kimi model accepts only `temperature=1.0` and `top_p=0.95` and returns a
   400 for anything else (verified 2026-08-09; reported for kimi-k3, and the
@@ -20,9 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so callers reading it always saw "fresh" no matter how old the bundled
   data was. It turns true when the catalog's verification stamp is more
   than 90 days old.
-
-### Added
-
 - The viewer Playground drives tool calling end to end: define tools as
   JSON, pick a `tool_choice`, and when the model asks for a tool the calls
   render with their arguments and a box for each result. Sending the

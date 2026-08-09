@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import json
 from collections.abc import Mapping
@@ -15,6 +16,7 @@ from .._transport import RequestSpec
 from .._types import (
     Citation,
     CitationFound,
+    ImageInput,
     InvocationResult,
     Model,
     OutputPart,
@@ -36,6 +38,7 @@ from ._base import (
     ProviderAdapter,
     StreamAssembler,
     dedupe_citations,
+    image_media_type,
 )
 
 # Anthropic requires max_tokens on every messages call; used when the
@@ -221,6 +224,18 @@ class AnthropicAdapter(ProviderAdapter):
             for part in message.content:
                 if isinstance(part, TextInput):
                     blocks.append({"type": "text", "text": part.text})
+                elif isinstance(part, ImageInput):
+                    # Both source forms verified 2026-08-09.
+                    source = (
+                        {"type": "url", "url": part.url}
+                        if part.url is not None
+                        else {
+                            "type": "base64",
+                            "media_type": image_media_type(part, provider="anthropic"),
+                            "data": base64.b64encode(part.data or b"").decode(),
+                        }
+                    )
+                    blocks.append({"type": "image", "source": source})
                 elif isinstance(part, ToolCall):
                     blocks.append(
                         {

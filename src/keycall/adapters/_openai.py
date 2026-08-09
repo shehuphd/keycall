@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import json
 from collections.abc import Mapping
@@ -15,6 +16,7 @@ from .._transport import RequestSpec
 from .._types import (
     Citation,
     CitationFound,
+    ImageInput,
     InvocationResult,
     Model,
     OutputPart,
@@ -36,6 +38,7 @@ from ._base import (
     ProviderAdapter,
     StreamAssembler,
     dedupe_citations,
+    image_media_type,
 )
 
 # Stream plumbing events that carry no content of their own; the terminal
@@ -50,6 +53,15 @@ _STREAM_PLUMBING = frozenset(
         "response.output_text.done",
     }
 )
+
+
+def _image_url(part: ImageInput, *, provider: str = "openai") -> str:
+    """OpenAI takes both an https URL and an inline data URL in the same
+    field (both verified 2026-08-09)."""
+    if part.url is not None:
+        return part.url
+    encoded = base64.b64encode(part.data or b"").decode()
+    return f"data:{image_media_type(part, provider=provider)};base64,{encoded}"
 
 
 def _call_echo(item: dict[str, Any], reasoning: dict[str, Any] | None) -> str | None:
@@ -199,13 +211,14 @@ class OpenAIAdapter(ProviderAdapter):
             # tool calls/results are top-level input items, not message
             # content (live-verified 2026-08-08).
             part_type = "output_text" if message.role == "assistant" else "input_text"
-            texts = [
-                {"type": part_type, "text": part.text}
-                for part in message.content
-                if isinstance(part, TextInput)
-            ]
-            if texts:
-                input_items.append({"role": message.role, "content": texts})
+            content: list[dict[str, Any]] = []
+            for part in message.content:
+                if isinstance(part, TextInput):
+                    content.append({"type": part_type, "text": part.text})
+                elif isinstance(part, ImageInput):
+                    content.append({"type": "input_image", "image_url": _image_url(part)})
+            if content:
+                input_items.append({"role": message.role, "content": content})
             for part in message.content:
                 if isinstance(part, ToolCall):
                     echo = json.loads(part.opaque) if part.opaque else {}

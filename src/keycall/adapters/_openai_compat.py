@@ -7,6 +7,7 @@ extensions are not (registry research section 9).
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -17,6 +18,7 @@ from .._errors import ErrorCode, KeyCallError
 from .._transport import RequestSpec
 from .._types import (
     Citation,
+    ImageInput,
     InvocationResult,
     Model,
     OutputPart,
@@ -31,7 +33,22 @@ from .._types import (
     ToolResult,
     Usage,
 )
-from ._base import ProviderAdapter, StreamAssembler, dedupe_citations
+from ._base import (
+    ProviderAdapter,
+    StreamAssembler,
+    dedupe_citations,
+    image_media_type,
+)
+
+
+def _image_url(part: ImageInput) -> str:
+    """The compat family takes a URL or an inline data URL in one field.
+    Moonshot rejects remote URLs, which the validation gate refuses before
+    the request is built, so only data URLs reach it here."""
+    if part.url is not None:
+        return part.url
+    encoded = base64.b64encode(part.data or b"").decode()
+    return f"data:{image_media_type(part, provider='compat')};base64,{encoded}"
 
 # Providers confirmed to honor stream_options include_usage (live-verified
 # 2026-08-08). Unverified custom targets don't get the extra field: an
@@ -217,7 +234,19 @@ class OpenAICompatibleAdapter(ProviderAdapter):
                         "content": self.tool_result_text(result.content),
                     }
                 )
-            if text or not results:
+            images = [part for part in message.content if isinstance(part, ImageInput)]
+            if images:
+                # Multimodal turns take the array content form; text-only
+                # turns keep the plain string every compat endpoint accepts.
+                content: list[dict[str, Any]] = []
+                if text:
+                    content.append({"type": "text", "text": text})
+                for image in images:
+                    content.append(
+                        {"type": "image_url", "image_url": {"url": _image_url(image)}}
+                    )
+                messages.append({"role": message.role, "content": content})
+            elif text or not results:
                 messages.append({"role": message.role, "content": text})
         body: dict[str, Any] = {"model": request.model, "messages": messages}
         if request.max_output_tokens is not None:

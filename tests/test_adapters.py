@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -251,7 +253,7 @@ def test_anthropic_paginated_list():
 
 
 def test_non_text_input_parts_raise_typed_error():
-    from keycall import ImageInput
+    from keycall import AudioInput
 
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("must fail before any network call")
@@ -265,7 +267,7 @@ def test_non_text_input_parts_raise_typed_error():
             messages=[
                 Message(
                     role="user",
-                    content=[TextInput(text="what is this"), ImageInput(url="https://x.example/i.png")],
+                    content=[TextInput(text="listen"), AudioInput(url="https://x.example/a.mp3")],
                 )
             ],
         )
@@ -367,3 +369,167 @@ def test_gemini_ordinary_not_found_keeps_the_provider_message_alone():
         )
     client.close()
     assert "gemini-flash-latest" not in str(excinfo.value)
+
+
+# A 1x1 PNG: the signature is what the media-type sniffer reads.
+PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDAT\x08\xd7c\xf8\xcf"
+    b"\xc0\x00\x00\x03\x01\x01\x00\x18\xdd\x8d\xb0\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def _image_body(provider, part, **kwargs):
+    from keycall import ImageInput  # noqa: F401
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_ok_payload(provider))
+
+    client = KeyCall(
+        provider=provider, api_key=CANARY, httpx_transport=httpx.MockTransport(handler), **kwargs
+    )
+    try:
+        client.generate_text(
+            model="m",
+            messages=[Message(role="user", content=[TextInput(text="what colour?"), part])],
+        )
+    finally:
+        client.close()
+    return seen["body"]
+
+
+def _ok_payload(provider):
+    if provider == "anthropic":
+        return {
+            "model": "m",
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "blue"}],
+            "usage": {"input_tokens": 5, "output_tokens": 1},
+        }
+    if provider == "gemini":
+        return {
+            "modelVersion": "m",
+            "candidates": [{"content": {"parts": [{"text": "blue"}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 1},
+        }
+    if provider == "openai":
+        return {
+            "model": "m",
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "blue"}]}],
+            "usage": {"input_tokens": 5, "output_tokens": 1, "total_tokens": 6},
+        }
+    return {
+        "model": "m",
+        "choices": [{"message": {"content": "blue"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+    }
+
+
+def test_image_bytes_map_to_each_provider_wire_shape():
+    """Shapes verified live 2026-08-09, one solid-colour PNG per provider."""
+    from keycall import ImageInput
+
+    part = ImageInput(data=PNG_BYTES)
+
+    openai = _image_body("openai", part)["input"][0]["content"]
+    image = next(c for c in openai if c["type"] == "input_image")
+    assert image["image_url"].startswith("data:image/png;base64,")
+
+    anthropic = _image_body("anthropic", part)["messages"][0]["content"]
+    block = next(b for b in anthropic if b["type"] == "image")
+    assert block["source"]["type"] == "base64"
+    assert block["source"]["media_type"] == "image/png"
+
+    gemini = _image_body("gemini", part)["contents"][0]["parts"]
+    inline = next(p for p in gemini if "inlineData" in p)["inlineData"]
+    assert inline["mimeType"] == "image/png"
+    assert inline["data"]
+
+    compat = _image_body("moonshot", part)["messages"][0]["content"]
+    entry = next(c for c in compat if c["type"] == "image_url")
+    assert entry["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_image_media_type_is_sniffed_not_trusted():
+    """Anthropic and Gemini reject a mismatched media_type, and a caller
+    passing bytes often doesn't know the format."""
+    from keycall import ImageInput
+
+    mislabelled = ImageInput(data=PNG_BYTES, media_type="image/jpeg")
+    block = next(
+        b
+        for b in _image_body("anthropic", mislabelled)["messages"][0]["content"]
+        if b["type"] == "image"
+    )
+    assert block["source"]["media_type"] == "image/png"
+
+
+def test_unidentifiable_image_bytes_are_a_typed_error():
+    from keycall import ImageInput
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must fail before any network call")
+
+    client = KeyCall(
+        provider="openai", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(
+            model="m",
+            messages=[Message(role="user", content=[ImageInput(data=b"not an image")])],
+        )
+    client.close()
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+    assert "media_type" in str(excinfo.value)
+
+
+def test_image_gates_name_the_form_that_works():
+    """Support splits by form: Gemini and Moonshot read bytes but refuse a
+    URL, and DeepSeek's API is text only (all verified 2026-08-09)."""
+    from keycall import ImageInput
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must fail before any network call")
+
+    def refuse(provider, part):
+        client = KeyCall(
+            provider=provider, api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+        )
+        with pytest.raises(KeyCallError) as excinfo:
+            client.generate_text(
+                model="m", messages=[Message(role="user", content=[part])]
+            )
+        client.close()
+        assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+        return str(excinfo.value)
+
+    remote = ImageInput(url="https://x.example/i.png")
+    for provider in ("gemini", "moonshot"):
+        message = refuse(provider, remote)
+        assert "does not fetch image URLs" in message
+        assert "data=" in message, "the error should name the form that works"
+
+    text_only = refuse("deepseek", ImageInput(data=PNG_BYTES))
+    assert "text only" in text_only
+    assert "openai" in text_only, "list the providers that do support images"
+
+
+def test_images_belong_in_user_messages():
+    from keycall import ImageInput
+
+    client = KeyCall(
+        provider="openai",
+        api_key=CANARY,
+        httpx_transport=httpx.MockTransport(lambda r: httpx.Response(500)),
+    )
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(
+            model="m",
+            messages=[Message(role="assistant", content=[ImageInput(data=PNG_BYTES)])],
+        )
+    client.close()
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
