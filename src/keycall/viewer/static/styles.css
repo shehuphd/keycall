@@ -146,6 +146,11 @@ th.sort-desc::after { content: " ↓"; }
 /* Source column hides when every row carries the same value. */
 #models-table.hide-source th:nth-child(3),
 #models-table.hide-source td:nth-child(3) { display: none; }
+/* Only Gemini's list endpoint reports a context window, so on every other
+   provider the column is a dash on every row. A column that says nothing
+   is worse than no column. */
+#models-table.hide-context th:nth-child(4),
+#models-table.hide-context td:nth-child(4) { display: none; }
 
 .hidden { display: none !important; }
 #source-panel { padding: 3rem 1.5rem; max-width: 640px; }

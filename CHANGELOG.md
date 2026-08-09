@@ -125,6 +125,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that a malformed response pointed the caller at their own request rather
   than at the model. The error repeats the provider's wording and adds
   that another model will do it.
+- The model browser's Context column was blank on every row for five of
+  six providers, because only Gemini's list endpoint reports a token
+  limit. It now appears only when a provider fills it, explains itself on
+  hover, and formats the number with separators. Category cells read
+  "Writes text" rather than `text_generation`, matching the filter
+  dropdown.
 - The viewer's model browser could hang on "Asking the provider…" forever
   if the page threw while loading. Any failure now lands in a visible
   panel with a way forward, and empty states are left-aligned with the

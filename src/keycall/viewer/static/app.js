@@ -65,6 +65,23 @@ function td(text, className) {
   return cell;
 }
 
+// Category names as a person would say them. The API values
+// (text_generation, image_generation) are for code, not for a reader.
+const CATEGORY_LABELS = {
+  text_generation: "Writes text",
+  image_generation: "Makes images",
+  embedding: "Embeddings",
+  transcription: "Transcribes audio",
+  speech_generation: "Speaks text aloud",
+  video_generation: "Makes video",
+  realtime: "Realtime voice",
+  unknown: "Unrecognised",
+};
+
+function categoryLabel(value) {
+  return CATEGORY_LABELS[value] || value;
+}
+
 function emptyState(node, title, hint) {
   // An empty panel is a question the user has to answer by guessing. Say
   // what happened and what to do about it, every time.
@@ -340,12 +357,21 @@ async function loadModelsInner(refresh) {
   // provider_metadata with keycall_rule); a constant column is noise.
   const sources = new Set(data.models.map((m) => m.classification_source));
   el("models-table").classList.toggle("hide-source", sources.size <= 1);
+  // Most providers report no context window at all; a column of dashes
+  // tells the reader nothing, so it only appears when someone filled it.
+  const anyContext = data.models.some((m) => m.context_limit);
+  el("models-table").classList.toggle("hide-context", !anyContext);
+  el("models-context-header").title = anyContext
+    ? "How much text the model can consider at once, in tokens, as reported by the provider."
+    : "";
   data.models.forEach((m) => {
     const row = document.createElement("tr");
     row.appendChild(td(m.id));
-    row.appendChild(td(m.categories.join(", ")));
+    row.appendChild(td(m.categories.map(categoryLabel).join(", ")));
     row.appendChild(td(m.classification_source));
-    row.appendChild(td(m.context_limit ? String(m.context_limit) : "—", "num"));
+    row.appendChild(
+      td(m.context_limit ? Number(m.context_limit).toLocaleString() : "—", "num")
+    );
     tbody.appendChild(row);
   });
 }
@@ -357,21 +383,11 @@ function populateCategoryOptions() {
     "text_generation", "image_generation", "embedding", "transcription",
     "speech_generation", "video_generation", "realtime", "unknown",
   ];
-  const labels = {
-    text_generation: "Writes text",
-    image_generation: "Makes images",
-    embedding: "Embeddings",
-    transcription: "Transcribes audio",
-    speech_generation: "Speaks text aloud",
-    video_generation: "Makes video",
-    realtime: "Realtime voice",
-    unknown: "Unrecognised",
-  };
   const sel = el("models-category");
   cats.forEach((c) => {
     const opt = document.createElement("option");
     opt.value = c;
-    opt.textContent = labels[c] || c;
+    opt.textContent = categoryLabel(c);
     sel.appendChild(opt);
   });
   categoryOptionsFilled = true;
