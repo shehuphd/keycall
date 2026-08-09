@@ -289,7 +289,7 @@ class ProviderAdapter(ABC):
         """Pre-flight checks that mirror what the provider would reject:
         part types and placement, capability gates, and sampling params
         against models with maintained evidence that they reject them."""
-        from .._capabilities import TOOL_CALLING_PROVIDERS, rejects_sampling_params
+        from .._capabilities import TOOL_CALLING_PROVIDERS, sampling_violation
         from .._types import TextInput, ToolCall, ToolResult
 
         for message in request.messages:
@@ -321,10 +321,7 @@ class ProviderAdapter(ABC):
                     operation=Operation.TEXT_GENERATION.value,
                 )
         if request.tools:
-            if (
-                not self.resolved.is_custom
-                and self.resolved.provider not in TOOL_CALLING_PROVIDERS
-            ):
+            if not self.resolved.capabilities.tool_calling:
                 raise KeyCallError(
                     f"provider {self.resolved.provider!r} does not support tool "
                     "calling; tools are supported on: "
@@ -345,12 +342,15 @@ class ProviderAdapter(ABC):
                     provider=self.resolved.provider,
                     operation=Operation.TEXT_GENERATION.value,
                 )
-        if (request.temperature is not None or request.top_p is not None) and (
-            rejects_sampling_params(request.model)
-        ):
+        violation = sampling_violation(
+            self.resolved,
+            request.model,
+            temperature=request.temperature,
+            top_p=request.top_p,
+        )
+        if violation is not None:
             raise KeyCallError(
-                f"model {request.model!r} rejects temperature/top_p; remove the "
-                "sampling parameters for this model",
+                violation,
                 code=ErrorCode.MODEL_NOT_SUITABLE,
                 provider=self.resolved.provider,
                 operation=Operation.TEXT_GENERATION.value,
@@ -358,7 +358,7 @@ class ProviderAdapter(ABC):
         if request.web_search:
             from .._capabilities import WEB_SEARCH_PROVIDERS
 
-            if self.resolved.provider not in WEB_SEARCH_PROVIDERS:
+            if not self.resolved.capabilities.web_search:
                 raise KeyCallError(
                     f"provider {self.resolved.provider!r} has no native web search "
                     "tool; web_search is supported on: "

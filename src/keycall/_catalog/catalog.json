@@ -1,82 +1,248 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.08.05.1",
-  "verified_at": "2026-08-03T00:00:00Z",
+  "catalog_version": "2026.08.09.1",
+  "verified_at": "2026-08-09T00:00:00Z",
   "providers": {
     "openai": {
       "aliases": [],
       "protocol": "openai",
       "base_url": "https://api.openai.com/v1",
-      "auth": { "scheme": "bearer", "header": "Authorization" },
-      "operations": {
-        "list_models": { "method": "GET", "path": "/models" },
-        "text_generation": { "method": "POST", "path": "/responses" }
+      "auth": {
+        "scheme": "bearer",
+        "header": "Authorization"
       },
-      "provider_request_id_header": "x-request-id"
+      "operations": {
+        "list_models": {
+          "method": "GET",
+          "path": "/models"
+        },
+        "text_generation": {
+          "method": "POST",
+          "path": "/responses"
+        }
+      },
+      "provider_request_id_header": "x-request-id",
+      "capabilities": {
+        "tool_calling": true,
+        "web_search": true,
+        "schema_enforcement": "native",
+        "sampling_constraints": [
+          {
+            "pattern": "^o\\d",
+            "allowed": {},
+            "note": "reasoning family: an explicit temperature/top_p is rejected"
+          },
+          {
+            "pattern": "^gpt-5",
+            "allowed": {},
+            "note": "gpt-5 family on the Responses API accepts only the default"
+          }
+        ],
+        "verified": "2026-08-09"
+      }
     },
     "anthropic": {
-      "aliases": ["claude"],
+      "aliases": [
+        "claude"
+      ],
       "protocol": "anthropic",
       "base_url": "https://api.anthropic.com",
-      "auth": { "scheme": "api_key", "header": "x-api-key" },
-      "api_version_header": { "name": "anthropic-version", "value": "2023-06-01" },
-      "operations": {
-        "list_models": { "method": "GET", "path": "/v1/models" },
-        "text_generation": { "method": "POST", "path": "/v1/messages" }
+      "auth": {
+        "scheme": "api_key",
+        "header": "x-api-key"
       },
-      "provider_request_id_header": "request-id"
+      "api_version_header": {
+        "name": "anthropic-version",
+        "value": "2023-06-01"
+      },
+      "operations": {
+        "list_models": {
+          "method": "GET",
+          "path": "/v1/models"
+        },
+        "text_generation": {
+          "method": "POST",
+          "path": "/v1/messages"
+        }
+      },
+      "provider_request_id_header": "request-id",
+      "capabilities": {
+        "tool_calling": true,
+        "web_search": true,
+        "schema_enforcement": "native",
+        "sampling_constraints": [
+          {
+            "pattern": "^claude-opus-4-[7-9]",
+            "allowed": {},
+            "note": "deprecated for newer reasoning and Opus models: sending them returns 400"
+          },
+          {
+            "pattern": "^claude-opus-[5-9]",
+            "allowed": {},
+            "note": "deprecated for newer reasoning and Opus models: sending them returns 400"
+          },
+          {
+            "pattern": "^claude-sonnet-[5-9]",
+            "allowed": {},
+            "note": "deprecated for newer reasoning and Opus models: sending them returns 400"
+          }
+        ],
+        "verified": "2026-08-09"
+      }
     },
     "gemini": {
-      "aliases": ["google", "google-gemini"],
+      "aliases": [
+        "google",
+        "google-gemini"
+      ],
       "protocol": "gemini",
       "base_url": "https://generativelanguage.googleapis.com/v1beta",
-      "auth": { "scheme": "api_key", "header": "x-goog-api-key" },
-      "operations": {
-        "list_models": { "method": "GET", "path": "/models" },
-        "text_generation": { "method": "POST", "path": "/models/{model}:generateContent" }
+      "auth": {
+        "scheme": "api_key",
+        "header": "x-goog-api-key"
       },
-      "provider_request_id_header": null
+      "operations": {
+        "list_models": {
+          "method": "GET",
+          "path": "/models"
+        },
+        "text_generation": {
+          "method": "POST",
+          "path": "/models/{model}:generateContent"
+        }
+      },
+      "provider_request_id_header": null,
+      "capabilities": {
+        "tool_calling": true,
+        "web_search": true,
+        "schema_enforcement": "native",
+        "sampling_constraints": [],
+        "non_text_model_families": [
+          "antigravity",
+          "computer-use",
+          "deep-research",
+          "lyria",
+          "omni"
+        ],
+        "verified": "2026-08-09"
+      }
     },
     "deepseek": {
       "aliases": [],
       "protocol": "openai-compatible",
       "base_url": "https://api.deepseek.com",
-      "auth": { "scheme": "bearer", "header": "Authorization" },
-      "operations": {
-        "list_models": { "method": "GET", "path": "/models" },
-        "text_generation": { "method": "POST", "path": "/chat/completions" }
+      "auth": {
+        "scheme": "bearer",
+        "header": "Authorization"
       },
-      "provider_request_id_header": null
+      "operations": {
+        "list_models": {
+          "method": "GET",
+          "path": "/models"
+        },
+        "text_generation": {
+          "method": "POST",
+          "path": "/chat/completions"
+        }
+      },
+      "provider_request_id_header": null,
+      "capabilities": {
+        "tool_calling": true,
+        "web_search": false,
+        "schema_enforcement": null,
+        "sampling_constraints": [],
+        "verified": "2026-08-09"
+      }
     },
     "perplexity": {
-      "aliases": ["pplx"],
+      "aliases": [
+        "pplx"
+      ],
       "protocol": "openai-compatible",
       "base_url": "https://api.perplexity.ai",
-      "auth": { "scheme": "bearer", "header": "Authorization" },
+      "auth": {
+        "scheme": "bearer",
+        "header": "Authorization"
+      },
       "operations": {
-        "list_models": { "method": "GET", "path": "/v1/models" },
-        "text_generation": { "method": "POST", "path": "/v1/sonar" }
+        "list_models": {
+          "method": "GET",
+          "path": "/v1/models"
+        },
+        "text_generation": {
+          "method": "POST",
+          "path": "/v1/sonar"
+        }
       },
       "provider_request_id_header": null,
       "model_discovery": "catalog",
       "model_discovery_note": "GET /v1/models is scoped to the Agent API: it returns vendor-prefixed router models (anthropic/..., perplexity/sonar) that POST /v1/sonar rejects. Sonar models are not API-discoverable, so they are maintained here. The list call still runs to validate the credential. Verified live 2026-08-05.",
       "models": [
-        { "id": "sonar", "categories": ["text_generation"] },
-        { "id": "sonar-pro", "categories": ["text_generation"] },
-        { "id": "sonar-reasoning-pro", "categories": ["text_generation"] }
+        {
+          "id": "sonar",
+          "categories": [
+            "text_generation"
+          ]
+        },
+        {
+          "id": "sonar-pro",
+          "categories": [
+            "text_generation"
+          ]
+        },
+        {
+          "id": "sonar-reasoning-pro",
+          "categories": [
+            "text_generation"
+          ]
+        }
       ],
-      "min_max_output_tokens": 16
+      "min_max_output_tokens": 16,
+      "capabilities": {
+        "tool_calling": false,
+        "web_search": true,
+        "schema_enforcement": "json_schema",
+        "sampling_constraints": [],
+        "verified": "2026-08-09"
+      }
     },
     "moonshot": {
-      "aliases": ["kimi"],
+      "aliases": [
+        "kimi"
+      ],
       "protocol": "openai-compatible",
       "base_url": "https://api.moonshot.ai/v1",
-      "auth": { "scheme": "bearer", "header": "Authorization" },
-      "operations": {
-        "list_models": { "method": "GET", "path": "/models" },
-        "text_generation": { "method": "POST", "path": "/chat/completions" }
+      "auth": {
+        "scheme": "bearer",
+        "header": "Authorization"
       },
-      "provider_request_id_header": null
+      "operations": {
+        "list_models": {
+          "method": "GET",
+          "path": "/models"
+        },
+        "text_generation": {
+          "method": "POST",
+          "path": "/chat/completions"
+        }
+      },
+      "provider_request_id_header": null,
+      "capabilities": {
+        "tool_calling": true,
+        "web_search": false,
+        "schema_enforcement": "json_schema",
+        "sampling_constraints": [
+          {
+            "pattern": "^kimi-",
+            "allowed": {
+              "temperature": 1.0,
+              "top_p": 0.95
+            },
+            "note": "every kimi model pins both values: any other returns 400 'only 1 is allowed for this model'"
+          }
+        ],
+        "verified": "2026-08-09"
+      }
     }
   }
 }

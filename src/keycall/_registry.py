@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from functools import lru_cache
 from importlib import resources
 from typing import Any
@@ -19,7 +20,46 @@ from urllib.parse import urlsplit
 from ._enums import ProviderProtocol
 from ._errors import ErrorCode, KeyCallError
 
-__all__ = ["ResolvedProvider", "resolve_provider"]
+__all__ = [
+    "ProviderCapabilities",
+    "ResolvedProvider",
+    "SamplingConstraint",
+    "resolve_provider",
+]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SamplingConstraint:
+    """A model family that restricts temperature/top_p. ``allowed`` maps a
+    parameter to the single value the provider accepts; a parameter absent
+    from it is not accepted at all, so an empty mapping means the family
+    takes no explicit sampling parameters."""
+
+    pattern: str
+    allowed: dict[str, float]
+    note: str = ""
+
+    def permitted(self, name: str) -> float | None:
+        return self.allowed.get(name)
+
+    def accepts(self, name: str, value: float) -> bool:
+        return name in self.allowed and self.allowed[name] == value
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProviderCapabilities:
+    """What a provider can do, as maintained catalog data rather than a
+    constant in code. Capability claims are evidence-backed: each entry
+    carries the date its behavior was last verified against the live API."""
+
+    tool_calling: bool = False
+    web_search: bool = False
+    # None: no provider-side enforcement, KeyCall falls back to JSON mode.
+    schema_enforcement: str | None = None
+    sampling_constraints: tuple[SamplingConstraint, ...] = ()
+    # Families that advertise a text method and then refuse a text call.
+    non_text_model_families: tuple[str, ...] = ()
+    verified: str = ""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -36,6 +76,7 @@ class ResolvedProvider:
     # Providers whose model list is not API-discoverable supply it here.
     catalog_models: tuple[dict[str, Any], ...] = ()
     min_max_output_tokens: int | None = None
+    capabilities: ProviderCapabilities = ProviderCapabilities()
 
 
 @lru_cache(maxsize=1)
@@ -47,6 +88,79 @@ def _load_catalog() -> dict[str, Any]:
 
 def catalog_version() -> str:
     return str(_load_catalog()["catalog_version"])
+
+
+# The catalog ships inside the package, so it only moves when KeyCall is
+# released. Provider facts drift continuously (Gemini withdrew six listed
+# models from new keys inside a week), so an old catalog is a real signal
+# worth surfacing rather than a number nobody reads. Ninety days is the
+# point where "recently verified" stops being a fair claim.
+CATALOG_STALE_AFTER_DAYS = 90
+
+
+def catalog_age_days(*, now: date | None = None) -> int | None:
+    """Days since the catalog's contents were last verified, or None if the
+    stamp is missing or unparseable — never a guess."""
+    stamp = str(_load_catalog().get("verified_at", ""))
+    try:
+        # Date-only comparison: the stamp is a calendar day, so a timezone
+        # would imply a precision the value doesn't have.
+        verified = date.fromisoformat(stamp[:10])
+    except ValueError:
+        return None
+    return ((now or datetime.now(timezone.utc).date()) - verified).days
+
+
+def catalog_is_stale(*, now: date | None = None) -> bool:
+    age = catalog_age_days(now=now)
+    return age is not None and age > CATALOG_STALE_AFTER_DAYS
+
+
+def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
+    raw = profile.get("capabilities") or {}
+    return ProviderCapabilities(
+        tool_calling=bool(raw.get("tool_calling", False)),
+        web_search=bool(raw.get("web_search", False)),
+        schema_enforcement=raw.get("schema_enforcement"),
+        sampling_constraints=tuple(
+            SamplingConstraint(
+                pattern=str(entry["pattern"]),
+                allowed={str(k): float(v) for k, v in (entry.get("allowed") or {}).items()},
+                note=str(entry.get("note", "")),
+            )
+            for entry in raw.get("sampling_constraints", ())
+        ),
+        non_text_model_families=tuple(raw.get("non_text_model_families", ())),
+        verified=str(raw.get("verified", "")),
+    )
+
+
+def providers_with(capability: str) -> frozenset[str]:
+    """Every catalog provider whose named capability is true. Error
+    messages list what does work by reading the same data the gates do,
+    so the two can never drift apart."""
+    return frozenset(
+        name
+        for name, profile in _load_catalog()["providers"].items()
+        if (profile.get("capabilities") or {}).get(capability)
+    )
+
+
+def schema_mechanism(provider: str) -> str | None:
+    """How a provider enforces response_schema: "native" for a dedicated
+    adapter mechanism, "json_schema" for the compat-family response_format,
+    None when it cannot enforce and KeyCall falls back to JSON mode."""
+    profile = _load_catalog()["providers"].get(provider) or {}
+    mechanism = (profile.get("capabilities") or {}).get("schema_enforcement")
+    return str(mechanism) if mechanism else None
+
+
+def providers_enforcing_schema() -> frozenset[str]:
+    return frozenset(
+        name
+        for name, profile in _load_catalog()["providers"].items()
+        if (profile.get("capabilities") or {}).get("schema_enforcement")
+    )
 
 
 def _canonical_name(name: str) -> str | None:
@@ -178,9 +292,14 @@ def resolve_provider(
             provider_request_id_header=profile.get("provider_request_id_header"),
             catalog_models=tuple(profile.get("models", ())),
             min_max_output_tokens=profile.get("min_max_output_tokens"),
+            capabilities=_parse_capabilities(profile),
         )
 
     # Unknown name: only valid as an explicit custom openai-compatible target.
+    # An unverified endpoint gets the permissive-but-warned posture: tools
+    # pass through (the caller is told support is unverified), while
+    # web search and schema enforcement are never assumed from a protocol
+    # label alone.
     if requested_protocol is not ProviderProtocol.OPENAI_COMPATIBLE or base_url is None:
         raise KeyCallError(
             f"unknown provider {provider!r}. For a custom endpoint, pass "
@@ -205,4 +324,5 @@ def resolve_provider(
             "text_generation": {"method": "POST", "path": "/chat/completions"},
         },
         is_custom=True,
+        capabilities=ProviderCapabilities(tool_calling=True),
     )

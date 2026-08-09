@@ -25,7 +25,13 @@ from ._cache import CachedModels
 from ._credential import Credential
 from ._enums import ModelCategory, ProviderProtocol
 from ._errors import ErrorCode, KeyCallError
-from ._registry import ResolvedProvider, catalog_version, resolve_provider
+from ._registry import (
+    ResolvedProvider,
+    catalog_age_days,
+    catalog_is_stale,
+    catalog_version,
+    resolve_provider,
+)
 from ._transport import AsyncTransport, Transport
 from ._types import (
     InvocationResult,
@@ -126,6 +132,19 @@ def _build_discovery(
     categories: frozenset[ModelCategory],
     from_cache: bool,
 ) -> ModelDiscovery:
+    warnings = list(cached.warnings)
+    stale = catalog_is_stale()
+    if stale:
+        # The bundled catalog carries endpoints, auth schemes, and
+        # capability evidence. When it is this old the evidence predates
+        # provider changes KeyCall has not seen, so say so instead of
+        # presenting it as current.
+        warnings.append(
+            f"keycall's bundled provider catalog was last verified "
+            f"{catalog_age_days()} days ago (version {catalog_version()}); "
+            "provider endpoints and capabilities may have changed since — "
+            "upgrade keycall for the current catalog"
+        )
     return ModelDiscovery(
         provider=provider,
         models=_filter_models(cached.models, categories),
@@ -133,7 +152,8 @@ def _build_discovery(
         fetched_at=cached.fetched_at,
         from_cache=from_cache,
         catalog_version=catalog_version(),
-        warnings=cached.warnings,
+        catalog_stale=stale,
+        warnings=tuple(warnings),
     )
 
 

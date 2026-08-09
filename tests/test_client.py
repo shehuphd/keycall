@@ -1,3 +1,4 @@
+import json
 import pickle
 
 import httpx
@@ -205,3 +206,91 @@ def test_custom_target_client_hits_custom_base_url():
     discovery = client.list_models(refresh=True)
     assert seen_urls == ["https://llm.example.edu/v1/models"]
     assert [m.id for m in discovery.models] == ["lab-llama-3"]
+
+
+def test_moonshot_pinned_sampling_values_are_gated_before_the_network():
+    """Reported by an integrator for kimi-k3; the live probe found every
+    kimi model pins temperature=1.0 and top_p=0.95 and 400s on anything
+    else (verified 2026-08-09)."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(500)
+
+    client = KeyCall(
+        provider="moonshot", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    ask = [Message(role="user", content=[TextInput(text="hi")])]
+
+    for model in ("kimi-k3", "kimi-k2.6", "kimi-k2.7-code"):
+        with pytest.raises(KeyCallError) as excinfo:
+            client.generate_text(model=model, messages=ask, temperature=0.2)
+        assert excinfo.value.code is ErrorCode.MODEL_NOT_SUITABLE
+        # The message must name the value that works, not just refuse.
+        assert "only temperature=1" in str(excinfo.value)
+
+        with pytest.raises(KeyCallError) as excinfo:
+            client.generate_text(model=model, messages=ask, top_p=0.5)
+        assert "only top_p=0.95" in str(excinfo.value)
+
+    assert not calls, "the gate must fire before any request goes out"
+    client.close()
+
+
+def test_moonshot_permitted_sampling_values_pass_the_gate():
+    """The pinned values are accepted, so the gate must not reject them —
+    a blanket 'no sampling params' rule would break working calls."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "model": "kimi-k3",
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    client = KeyCall(
+        provider="moonshot", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    result = client.generate_text(
+        model="kimi-k3",
+        messages=[Message(role="user", content=[TextInput(text="hi")])],
+        temperature=1.0,
+        top_p=0.95,
+    )
+    client.close()
+    assert result.text == "ok"
+    assert seen["body"]["temperature"] == 1.0
+    assert seen["body"]["top_p"] == 0.95
+
+
+def test_stale_catalog_sets_the_flag_and_says_so():
+    """catalog_stale was a declared field nothing ever set; a caller
+    reading it always saw 'fresh' however old the bundled data was."""
+    import keycall._client as client_module
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+
+    client = KeyCall(
+        provider="openai", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    fresh = client.list_models(refresh=True)
+    assert fresh.catalog_stale is False
+    assert not any("catalog" in w for w in fresh.warnings)
+
+    original = client_module.catalog_is_stale
+    client_module.catalog_is_stale = lambda: True
+    try:
+        stale = client.list_models(refresh=True)
+    finally:
+        client_module.catalog_is_stale = original
+    client.close()
+
+    assert stale.catalog_stale is True
+    assert any("catalog was last verified" in w for w in stale.warnings)

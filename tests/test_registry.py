@@ -78,3 +78,54 @@ def test_localhost_http_requires_explicit_opt_in():
         allow_insecure_localhost=True,
     )
     assert resolved.base_url == "http://localhost:8000"
+
+
+def test_capability_facts_come_from_the_catalog():
+    """The gates and the error messages that list alternatives read the
+    same registry data, so they cannot drift apart."""
+    from keycall._capabilities import (
+        SCHEMA_ENFORCING_PROVIDERS,
+        TOOL_CALLING_PROVIDERS,
+        WEB_SEARCH_PROVIDERS,
+    )
+    from keycall._registry import resolve_provider
+
+    assert sorted(TOOL_CALLING_PROVIDERS) == [
+        "anthropic", "deepseek", "gemini", "moonshot", "openai"
+    ]
+    assert sorted(WEB_SEARCH_PROVIDERS) == ["anthropic", "gemini", "openai", "perplexity"]
+    assert "deepseek" not in SCHEMA_ENFORCING_PROVIDERS
+
+    for name in TOOL_CALLING_PROVIDERS:
+        assert resolve_provider(name).capabilities.tool_calling
+    assert not resolve_provider("perplexity").capabilities.tool_calling
+    # Every claim carries the date it was last checked against the live API.
+    assert resolve_provider("moonshot").capabilities.verified
+
+
+def test_custom_targets_get_the_permissive_but_warned_posture():
+    from keycall._registry import resolve_provider
+
+    resolved = resolve_provider(
+        "mine", protocol="openai-compatible", base_url="https://example.com/v1"
+    )
+    assert resolved.capabilities.tool_calling, "tools pass through, with a result warning"
+    assert not resolved.capabilities.web_search, "never assumed from a protocol label"
+    assert resolved.capabilities.schema_enforcement is None
+
+
+def test_catalog_staleness_is_computed_from_the_verified_stamp():
+    from datetime import date
+
+    from keycall._registry import (
+        CATALOG_STALE_AFTER_DAYS,
+        catalog_age_days,
+        catalog_is_stale,
+    )
+
+    assert catalog_age_days(now=date(2026, 8, 9)) is not None
+    fresh = date(2026, 8, 9)
+    assert not catalog_is_stale(now=fresh)
+    stale_day = date.fromordinal(fresh.toordinal() + CATALOG_STALE_AFTER_DAYS + 400)
+    assert catalog_is_stale(now=stale_day)
+    assert catalog_age_days(now=stale_day) > CATALOG_STALE_AFTER_DAYS

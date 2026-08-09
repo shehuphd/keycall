@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Moonshot's pinned sampling values are gated before the network.** Every
+  kimi model accepts only `temperature=1.0` and `top_p=0.95` and returns a
+  400 for anything else (verified 2026-08-09; reported for kimi-k3, and the
+  probe found it applies to the whole family). The error names the value
+  that works rather than only refusing, and the permitted values still pass
+  through, so this does not become a blanket ban on sampling parameters.
+- `ModelDiscovery.catalog_stale` is now set, and carries a matching
+  warning. The field has existed since 0.2.0 and nothing ever assigned it,
+  so callers reading it always saw "fresh" no matter how old the bundled
+  data was. It turns true when the catalog's verification stamp is more
+  than 90 days old.
+
 ### Changed
+
+- **Provider capability evidence moved into the registry.** Which providers
+  support tool calling, web search, and schema enforcement, which model
+  families restrict sampling, and which Gemini families only pretend to do
+  text now live in the bundled catalog under each provider's
+  `capabilities` block, each stamped with the date it was last verified
+  against the live API. Gates and the error messages that list the working
+  alternatives read the same data, so they cannot drift apart, and adding a
+  capability is a catalog edit rather than a code change.
 
 - **Verification tries a provider's maintained `-latest` aliases before its
   dated model ids** (selection rule version 3). Gemini withdraws models per

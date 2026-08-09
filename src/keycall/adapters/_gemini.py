@@ -53,22 +53,15 @@ _DISTINCTIVE_MODALITIES = frozenset(
     }
 )
 
-# Families that advertise generateContent but refuse a normal text call,
-# each verified 2026-08-09 by calling it: the Interactions-only models
-# answer "This model only supports Interactions API", the computer-use
-# preview demands its own tool, and Lyria is music generation that returns
-# a 500 here. Provider metadata is wrong for these, so the identifier is
-# the better evidence and they classify UNKNOWN — never silently in a
-# caller's default text picker. Keep this list tight: a Gemini text model
-# with an unfamiliar name must stay usable, so only add a family after a
-# live call proves it rejects text generation.
-_NON_TEXT_GEMINI_FAMILIES: tuple[str, ...] = (
-    "antigravity",
-    "computer-use",
-    "deep-research",
-    "lyria",
-    "omni",
-)
+# Families that advertise generateContent and then refuse a text call are
+# maintained in the catalog under gemini.capabilities.non_text_model_families,
+# each verified 2026-08-09 by calling it: the Interactions-only models answer
+# "This model only supports Interactions API", the computer-use preview
+# demands its own tool, and Lyria is music generation that returns a 500
+# here. Provider metadata is wrong for these, so the identifier is the
+# better evidence and they classify UNKNOWN, never silently entering a
+# caller's default text picker.
+
 
 _METHOD_CATEGORIES = {
     "generateContent": ModelCategory.TEXT_GENERATION,
@@ -241,7 +234,10 @@ class GeminiAdapter(ProviderAdapter):
                 categories.discard(ModelCategory.TEXT_GENERATION)
                 categories.add(rule_category)
                 source = "provider_metadata+keycall_rule"
-            elif any(family in model_id.lower() for family in _NON_TEXT_GEMINI_FAMILIES):
+            elif any(
+                family in model_id.lower()
+                for family in self.resolved.capabilities.non_text_model_families
+            ):
                 categories.discard(ModelCategory.TEXT_GENERATION)
                 categories.add(ModelCategory.UNKNOWN)
                 source = "provider_metadata+keycall_rule"
