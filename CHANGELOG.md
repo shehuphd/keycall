@@ -30,7 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Playground makes pictures.** A "Task" selector switches between
   writing text and making a picture; picture mode offers only that key's
   image models, hides the controls that do not apply, and shows the result
-  inline with a link to save it. The viewer's content-security policy now
+  inline, capped so it cannot push the page around, with a click to see it
+  full size and a link to save it. The full-size view carries a close
+  button rather than relying on Escape or a backdrop click, neither of
+  which a first-time user can see. The composer clears once a turn is on
+  screen, so a prompt cannot be sent twice by accident. The viewer's content-security policy now
   allows `data:` images so the picture can render from bytes the page
   already holds, without writing it to disk or fetching anything remote.
 - **The Playground is a two-column workspace.** Settings live in a left

@@ -350,3 +350,46 @@ a { color: var(--accent); }
    `display: none`, so a hidden row kept showing. Restore the attribute's
    meaning for every element that sets its own display. */
 [hidden] { display: none !important; }
+
+/* A generated picture is capped so it cannot push the rest of the page off
+   screen; the full size is one click away instead. */
+.pg-picture {
+  max-height: 20rem;
+  width: auto;
+  object-fit: contain;
+  cursor: zoom-in;
+}
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  cursor: zoom-out;
+}
+.lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 8px;
+}
+
+.lightbox-close {
+  position: absolute;
+  top: 1rem;
+  right: 1.25rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.lightbox-close:hover { background: var(--code); }
+.lightbox img { cursor: default; }

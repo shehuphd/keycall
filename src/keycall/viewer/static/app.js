@@ -463,6 +463,44 @@ function applyMode() {
 
 el("pg-mode").addEventListener("change", applyMode);
 
+function openLightbox(source) {
+  const overlay = document.createElement("div");
+  overlay.className = "lightbox";
+  overlay.tabIndex = -1;
+
+  const close = () => {
+    overlay.remove();
+    document.removeEventListener("keydown", onKey);
+  };
+  const onKey = (event) => {
+    if (event.key === "Escape") close();
+  };
+
+  // A visible control, because clicking the backdrop and pressing Escape
+  // both work but neither is discoverable by looking at the screen.
+  const dismiss = document.createElement("button");
+  dismiss.className = "lightbox-close";
+  dismiss.type = "button";
+  dismiss.textContent = "\u00d7";
+  dismiss.title = "Close (Esc)";
+  dismiss.setAttribute("aria-label", "Close the picture");
+  dismiss.addEventListener("click", close);
+  overlay.appendChild(dismiss);
+
+  const full = document.createElement("img");
+  full.src = source;
+  full.alt = "The generated picture, full size";
+  // Clicking the picture itself should not dismiss it; the backdrop and
+  // the close button are the ways out.
+  full.addEventListener("click", (event) => event.stopPropagation());
+  overlay.appendChild(full);
+
+  overlay.addEventListener("click", close);
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(overlay);
+  dismiss.focus();
+}
+
 function addImageBubble(result) {
   const bubble = addBubble("model");
   (result.images || []).forEach((image) => {
@@ -470,6 +508,8 @@ function addImageBubble(result) {
     picture.className = "pg-picture";
     picture.alt = "The generated picture";
     picture.src = `data:${image.media_type};base64,${image.base64_data}`;
+    picture.title = "Click to see it full size";
+    picture.addEventListener("click", () => openLightbox(picture.src));
     bubble.appendChild(picture);
     const save = document.createElement("a");
     save.href = picture.src;
@@ -715,7 +755,12 @@ async function runGeneration({ continuation }) {
     return;
   }
   working(btn, currentMode() === "image" ? "Drawing…" : "Generating…");
-  if (!continuation) addUserTurn(prompt, Boolean(images));
+  if (!continuation) {
+    addUserTurn(prompt, Boolean(images));
+    // The turn is on screen now, so leaving the text in the box invites
+    // sending it twice.
+    el("pg-prompt").value = "";
+  }
   if (currentMode() === "image") {
     const placeholder = addBubble("model");
     placeholder.textContent = "Drawing. This usually takes longer than text…";
