@@ -96,6 +96,50 @@ def _with_schema_warning(
     return dataclasses.replace(invocation, warnings=tuple(warnings))
 
 
+# Every provider says "I ran out of output budget" in its own words:
+# OpenAI Responses reports incomplete_details.reason, which the adapter
+# renders as "incomplete:max_output_tokens"; Anthropic says "max_tokens";
+# Gemini "MAX_TOKENS"; the Chat Completions family "length". A caller
+# should not have to learn four spellings to notice its answer was cut off.
+_TRUNCATION_REASONS = frozenset(
+    {"incomplete:max_output_tokens", "max_tokens", "length"}
+)
+
+
+def was_truncated(finish_reason: str | None) -> bool:
+    """Whether the provider stopped because the output budget ran out,
+    normalized across the four wire protocols. Case-insensitive because
+    Gemini shouts its finish reasons and the rest do not."""
+    if not finish_reason:
+        return False
+    return finish_reason.lower() in _TRUNCATION_REASONS
+
+
+def _with_truncation_warning(invocation: InvocationResult) -> InvocationResult:
+    """Say plainly that the answer is incomplete and what to change.
+
+    The finish reason already carries this, but only to a reader who knows
+    that provider's vocabulary, and it sits beside timing and token counts
+    where it reads as one more statistic. Reasoning models make it easy to
+    hit: their hidden reasoning is billed against the same output budget,
+    so a small max_output_tokens can be spent before any answer is emitted.
+    """
+    if not was_truncated(invocation.finish_reason):
+        return invocation
+    return dataclasses.replace(
+        invocation,
+        warnings=(
+            *invocation.warnings,
+            (
+                "the reply stopped because max_output_tokens ran out, so it is "
+                "cut off mid-answer — raise max_output_tokens and send again. "
+                "On a reasoning model the hidden reasoning is charged to the "
+                "same budget, so it can be used up before any text appears"
+            ),
+        ),
+    )
+
+
 def _with_custom_tool_warning(
     invocation: InvocationResult,
     request: TextGenerationRequest,
@@ -360,6 +404,7 @@ class _BaseClient:
             model=request.model,
         )
         invocation = _with_schema_warning(invocation, request, self.provider)
+        invocation = _with_truncation_warning(invocation)
         invocation = _with_custom_tool_warning(
             invocation, request, self.provider, is_custom=self._resolved.is_custom
         )
@@ -434,6 +479,7 @@ class _StreamCore:
             )
             invocation = self._assembler.finalize(round_trip_duration_ms=duration)
             invocation = _with_schema_warning(invocation, self._request, self._client.provider)
+            invocation = _with_truncation_warning(invocation)
             self._result = _with_custom_tool_warning(
                 invocation,
                 self._request,

@@ -725,3 +725,81 @@ def test_providers_without_non_token_billing_report_none():
     )
     client.close()
     assert result.usage.provider_units is None
+
+
+def test_truncation_is_reported_in_one_vocabulary_across_providers():
+    """Each provider names a spent output budget differently. A caller
+    shouldn't have to learn four spellings to notice its answer was cut
+    off, so the condition is normalized into one warning."""
+    from keycall._client import was_truncated
+
+    # The four wire protocols, as their adapters render them.
+    assert was_truncated("incomplete:max_output_tokens")  # OpenAI Responses
+    assert was_truncated("max_tokens")                    # Anthropic
+    assert was_truncated("MAX_TOKENS")                    # Gemini shouts
+    assert was_truncated("length")                        # Chat Completions
+    # A complete answer, in each provider's own word for it.
+    assert not was_truncated("completed")
+    assert not was_truncated("end_turn")
+    assert not was_truncated("STOP")
+    assert not was_truncated("stop")
+    assert not was_truncated("tool_calls")
+    assert not was_truncated(None)
+    assert not was_truncated("")
+
+
+def test_truncated_reply_carries_a_warning_saying_what_to_change():
+    """The finish reason already says it, but only to someone who knows
+    that provider's vocabulary, and it sits among timing and token counts."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "claude-opus-5",
+                "content": [{"type": "text", "text": "The answer begins and then"}],
+                "stop_reason": "max_tokens",
+                "usage": {"input_tokens": 9, "output_tokens": 8},
+            },
+        )
+
+    client = KeyCall(
+        provider="anthropic", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    result = client.generate_text(
+        model="claude-opus-5",
+        messages=[Message(role="user", content=[TextInput(text="hi")])],
+        max_output_tokens=8,
+    )
+    client.close()
+
+    assert result.finish_reason == "max_tokens"
+    warning = next((w for w in result.warnings if "max_output_tokens ran out" in w), None)
+    assert warning is not None, f"no truncation warning in {result.warnings}"
+    # It has to say what to do, not only what happened.
+    assert "raise max_output_tokens" in warning
+    # And explain the reasoning-model trap, which is how people hit this.
+    assert "reasoning" in warning
+
+
+def test_complete_reply_carries_no_truncation_warning():
+    """A warning on every reply would train people to ignore it."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "claude-opus-5",
+                "content": [{"type": "text", "text": "Done."}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 9, "output_tokens": 2},
+            },
+        )
+
+    client = KeyCall(
+        provider="anthropic", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    result = client.generate_text(
+        model="claude-opus-5",
+        messages=[Message(role="user", content=[TextInput(text="hi")])],
+    )
+    client.close()
+    assert not any("max_output_tokens ran out" in w for w in result.warnings)

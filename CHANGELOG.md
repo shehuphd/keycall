@@ -128,6 +128,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   type wasn't accepted yet and that every adapter refused it before any
   network call. That stopped being true when the media paths shipped. Each
   now states which providers take it and in which form.
+- **A truncated reply now says so, in one vocabulary.** Each provider names
+  a spent output budget differently — `incomplete:max_output_tokens` on
+  OpenAI, `max_tokens` on Anthropic, `MAX_TOKENS` on Gemini, `length` on
+  the Chat Completions family — so noticing that an answer was cut off
+  meant knowing all four. Results now carry a warning saying what happened
+  and what to change, and it explains the trap people hit: on a reasoning
+  model the hidden reasoning is charged to the same budget, so a small
+  `max_output_tokens` can be spent before any text appears.
+- **The viewer renders markdown in replies.** Models answer in markdown
+  whether or not you ask them to, so headings, bold, lists, links, and
+  fenced code arrived as punctuation. Parsed into DOM nodes with no
+  `innerHTML` anywhere, because model output is untrusted: `javascript:`
+  and `data:` links are shown as plain text rather than made clickable,
+  and any HTML in a reply stays literal text. The viewer also shows result
+  warnings on the non-streaming path, where they had never been rendered.
+- **The viewer's reply budget defaults to 2048, not 256**, and is labelled
+  "Reply budget" rather than "Longest reply". The old default truncated
+  most reasoning-model answers before the first word.
 - **The DNS-rebinding guard could raise instead of deciding.** It passed
   the first element of every resolved `sockaddr` to the private-address
   check, which parses it as an IP. That element is only a string for
