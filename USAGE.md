@@ -533,14 +533,14 @@ except KeyCallError as error:
 | Code | Meaning | Retryable |
 |---|---|---|
 | `INVALID_API_KEY` | Provider rejected the credential | no |
-| `PERMISSION_DENIED` | Key valid but not allowed (includes billing) | no |
+| `PERMISSION_DENIED` | Key valid but not entitled: permissions, or an unfunded account (HTTP 402) | no |
 | `RATE_LIMITED` | Rate or quota limit; `retry_after` set when provided | yes |
 | `PROVIDER_UNAVAILABLE` | 5xx or overload | yes |
 | `NETWORK_ERROR` | Could not reach the provider | yes |
 | `TIMEOUT` | No response within the timeout | yes |
 | `INVALID_PROVIDER_RESPONSE` | Malformed body, redirect, or oversized response | no |
 | `MODEL_NOT_AVAILABLE` | Model missing, retired, or rejected by name | no |
-| `MODEL_NOT_SUITABLE` | Model can't serve this request (e.g. sampling params) | no |
+| `MODEL_NOT_SUITABLE` | Model can't serve this request: sampling parameters it pins or refuses, or a feature the provider has that this model lacks (web search on an older model) | no |
 | `UNSUPPORTED_PROVIDER` | Unknown name or invalid custom target | no |
 | `UNSUPPORTED_OPERATION` | Request shape not supported in this version | no |
 | `CATALOG_UPDATE_REQUIRED` | Bundled catalog too old for this client | no |

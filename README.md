@@ -118,8 +118,9 @@ keycall view --source ./keys.toml
 
 Opens a token-protected local web app over your loaded targets: a dashboard
 with live key checks, a sortable model browser with category filters, a
-playground for real generation calls (web search included), and a verify
-report. Keys never leave the server process and never appear in the browser.
+playground for real generation calls (web search, pictures, and tool calling
+included), and a verify report that walks every key. Keys never leave the
+server process and never appear in the browser.
 
 Or double-click / run a launcher from a fresh clone — it creates the venv,
 installs KeyCall, finds your key file, and starts the viewer:
