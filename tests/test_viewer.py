@@ -917,3 +917,234 @@ def test_generate_image_reports_a_provider_that_cannot():
     # and the mock refuses it; the shape is what matters here.
     assert "error" in body or "images" in body
     assert missing["error"]["code"] == "bad_request"
+
+
+WAV_BYTES = b"RIFF$\x00\x00\x00WAVEfmt " + b"\x00" * 24
+PDF_BYTES = b"%PDF-1.4\n1 0 obj\nendobj\ntrailer\n%%EOF\n"
+
+
+def test_playground_sound_file_reaches_the_provider_as_bytes():
+    """Audio takes the same route images do: base64 over the wire, decoded
+    into the AudioInput a library caller would build. Gemini is the only
+    provider that accepts one, so the test targets Gemini."""
+    import base64
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"models": [{"name": "models/gemini-2.5-flash"}]})
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {"content": {"parts": [{"text": "a chime"}], "role": "model"}},
+                ],
+                "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 2},
+            },
+        )
+
+    reg = Registry(
+        [Target(provider="gemini", key=CANARY, name="my-gemini")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        body = generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "gemini-2.5-flash",
+                "prompt": "what do you hear?",
+                "audio": [{"data_base64": base64.b64encode(WAV_BYTES).decode()}],
+            },
+        )
+    finally:
+        reg.close()
+
+    assert body["text"] == "a chime"
+    parts = seen["body"]["contents"][0]["parts"]
+    audio = next(p for p in parts if "inlineData" in p)
+    # Sniffed from the bytes, not taken from whatever the browser labelled it.
+    assert audio["inlineData"]["mimeType"] == "audio/wav"
+
+
+def test_playground_document_keeps_the_filename_the_user_picked():
+    """Providers show a document's name to the model, so a picked PDF has
+    to arrive under its own name rather than an invented one."""
+    import base64
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-4o-mini",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "read it"}]}
+                ],
+                "usage": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+            },
+        )
+
+    reg = Registry(
+        [Target(provider="openai", key=CANARY, name="my-openai")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        body = generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "gpt-4o-mini",
+                "prompt": "summarise this",
+                "files": [
+                    {
+                        "data_base64": base64.b64encode(PDF_BYTES).decode(),
+                        "filename": "quarterly report.pdf",
+                    }
+                ],
+            },
+        )
+    finally:
+        reg.close()
+
+    assert body["text"] == "read it"
+    content = seen["body"]["input"][0]["content"]
+    document = next(c for c in content if c["type"] == "input_file")
+    assert document["filename"] == "quarterly report.pdf"
+
+
+def test_a_sound_file_can_carry_a_turn_without_a_prompt():
+    """The prompt is only required when nothing else carries the turn, and
+    an attachment of any kind counts, not images alone."""
+    import base64
+
+    reg = make_registry()
+    try:
+        body = generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "gpt-4o-mini",
+                "prompt": "",
+                "files": [{"data_base64": base64.b64encode(PDF_BYTES).decode()}],
+            },
+        )
+    finally:
+        reg.close()
+    assert "error" not in body or body["error"]["code"] != "bad_request"
+
+
+def test_malformed_sound_and_document_payloads_are_named_bad_requests():
+    """The error says which attachment and which index, so a person can
+    tell a broken PDF from a broken recording."""
+    reg = make_registry()
+    try:
+        both = generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "gpt-4o-mini",
+                "prompt": "hi",
+                "audio": [{"url": "https://x/a.wav", "data_base64": "AAAA"}],
+            },
+        )
+        junk = generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "gpt-4o-mini",
+                "prompt": "hi",
+                "files": [{"data_base64": "not base64 at all!!"}],
+            },
+        )
+    finally:
+        reg.close()
+    assert both["error"]["code"] == "bad_request"
+    assert "audio 0" in both["error"]["message"]
+    assert junk["error"]["code"] == "bad_request"
+    assert "file 0" in junk["error"]["message"]
+
+
+def test_browsed_models_lead_with_the_one_the_walk_would_try_first():
+    """The Playground picks whichever model the browser lists first, so
+    listing them in raw provider order meant defaulting to Gemini's first
+    advertised model — one the walk already skips. A first generation then
+    failed on a key that works. Ordering here is the same rule verify uses,
+    imported rather than repeated."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "name": f"models/{name}",
+                        "supportedGenerationMethods": ["generateContent"],
+                    }
+                    # Provider order: the withdrawn one first, the maintained
+                    # alias buried, exactly as Gemini serves it.
+                    for name in ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest")
+                ]
+            },
+        )
+
+    reg = Registry(
+        [Target(provider="gemini", key=CANARY, name="my-gemini")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        body = browse_models(reg, 0, category="text_generation", refresh=True)
+    finally:
+        reg.close()
+
+    listed = [m["id"] for m in body["models"]]
+    assert listed[0] == "gemini-flash-latest", (
+        "the picker defaults to the first entry, so it must be the candidate "
+        f"the walk would try first; got {listed}"
+    )
+    # Nothing is dropped: a model the walk deprioritises is still selectable.
+    assert set(listed) == {"gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"}
+
+
+def test_targets_tell_the_browser_what_each_key_can_accept():
+    """The Playground disables an attachment the selected key can never
+    satisfy. That gate is only honest if it reads the same catalog the
+    adapters gate on, so the shape is asserted per provider."""
+    reg = Registry(
+        [
+            Target(provider="openai", key=CANARY, name="my-openai"),
+            Target(provider="gemini", key=CANARY + "-2", name="my-gemini"),
+            Target(provider="deepseek", key=CANARY + "-3", name="my-deepseek"),
+        ],
+        httpx_transport=httpx.MockTransport(openai_handler),
+    )
+    try:
+        body = list_targets(reg)
+    finally:
+        reg.close()
+
+    accepts = {t["provider"]: t["accepts"] for t in body["targets"]}
+    # OpenAI reads pictures and documents but not sound.
+    assert accepts["openai"]["image"] == {"bytes": True, "url": True}
+    assert accepts["openai"]["file"] == {"bytes": True, "url": False}
+    assert accepts["openai"]["audio"] == {"bytes": False, "url": False}
+    # Gemini is the only one that listens, and only to bytes.
+    assert accepts["gemini"]["audio"] == {"bytes": True, "url": False}
+    # DeepSeek takes no attachment of any kind.
+    assert all(form == {"bytes": False, "url": False} for form in accepts["deepseek"].values())
+    # And the suggestion of where to turn instead names real providers.
+    assert body["providers_accepting"]["audio"] == ["gemini"]
+    assert "deepseek" not in body["providers_accepting"]["image"]
+    assert CANARY not in json.dumps(body)

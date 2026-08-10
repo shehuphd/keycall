@@ -1,3 +1,5 @@
+import json
+
 import httpx
 
 from keycall._cli import main
@@ -243,6 +245,89 @@ def test_verify_walk_tries_maintained_aliases_first():
     assert len(result.attempts) == 1
     # Promotion must not lose where the model really sat in the raw list.
     assert result.attempts[0].raw_position == 2
+
+
+def test_verify_walk_prefers_the_newest_model_a_provider_dates():
+    """OpenAI dates every model it lists, and on 2026-08-10 all four of its
+    `-chat-latest` aliases were dead (two unknown, two newly deprecated)
+    while the numbered models worked. Alias-first burned half the budget
+    before reaching anything that could answer, so a provider that reports
+    its own dates is walked newest-first instead."""
+    from keycall import KeyCall
+    from keycall._sources import Target
+    from keycall._verify_core import run_verify
+
+    calls: list[str] = []
+    # Deliberately listed oldest-first with the dead aliases last, so
+    # neither list order nor alias-first would reach the working model.
+    listing = [
+        {"id": "gpt-3.5-turbo", "created": 1_600_000_000},
+        {"id": "gpt-4", "created": 1_650_000_000},
+        {"id": "gpt-5.9", "created": 1_780_000_000},
+        {"id": "gpt-5-chat-latest", "created": 1_700_000_000},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": listing})
+        model = json.loads(request.content)["model"]
+        calls.append(model)
+        return httpx.Response(
+            200,
+            json={
+                "model": model,
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "ok"}]}
+                ],
+                "usage": {"input_tokens": 4, "output_tokens": 1, "total_tokens": 5},
+            },
+        )
+
+    client = KeyCall(
+        provider="openai", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    result = run_verify(Target(provider="openai", key=CANARY), generate=True, client=client)
+    client.close()
+
+    assert calls[0] == "gpt-5.9", "the newest dated model must be tried first"
+    assert result.generate_ok
+    # The alias is newer than two real models, so recency must not be
+    # quietly re-sorting on the name.
+    assert calls == ["gpt-5.9"]
+    assert result.attempts[0].raw_position == 2
+
+
+def test_candidate_order_falls_back_when_only_some_models_are_dated():
+    """A half-dated list says nothing about where the undated models
+    belong, so mixing the two rules would order on invented evidence."""
+    from datetime import datetime, timezone
+
+    from keycall._types import Model
+    from keycall._verify_core import order_candidates
+
+    def model(name, when=None):
+        return Model(
+            id=name,
+            provider="x",
+            categories=frozenset(),
+            released_at=when,
+        )
+
+    when = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    partly = [model("old-one"), model("new-one", when), model("thing-latest")]
+    assert [m.id for m in order_candidates(partly)] == [
+        "thing-latest",
+        "old-one",
+        "new-one",
+    ], "a partly dated list must fall back to alias-first"
+
+    fully = [model("older", when), model("newer", datetime(2026, 6, 1, tzinfo=timezone.utc))]
+    assert [m.id for m in order_candidates(fully)] == ["newer", "older"]
+
+    # Undated everywhere and no alias: the provider's own order stands.
+    plain = [model("a"), model("b"), model("c")]
+    assert [m.id for m in order_candidates(plain)] == ["a", "b", "c"]
 
 
 def test_unresolvable_target_is_reported_not_raised():

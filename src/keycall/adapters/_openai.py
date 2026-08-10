@@ -41,6 +41,7 @@ from ._base import (
     dedupe_citations,
     image_media_type,
     media_type_for,
+    released_at,
 )
 
 # Stream plumbing events that carry no content of their own; the terminal
@@ -198,6 +199,7 @@ class OpenAIAdapter(ProviderAdapter):
                     id=model_id,
                     provider=self.resolved.provider,
                     categories=frozenset({classify_model_id(model_id)}),
+                    released_at=released_at(entry),
                     classification_source="keycall_rule",
                 )
             )

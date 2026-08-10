@@ -174,6 +174,77 @@ def test_gemini_list_uses_provider_metadata_over_rules():
     assert model.context_limit == 1000000
 
 
+def test_context_limit_reads_every_spelling_and_stays_none_otherwise():
+    """Three providers report the input ceiling under three different
+    names, and three report nothing. The normalizing layer's job is to read
+    each spelling into one field rather than make callers learn all three,
+    and to leave the field None where a provider is silent rather than
+    invent a number a caller would budget against."""
+    from keycall.adapters._base import context_limit
+
+    assert context_limit({"inputTokenLimit": 1_048_576}) == 1_048_576  # Gemini
+    assert context_limit({"max_input_tokens": 200_000}) == 200_000  # Anthropic
+    assert context_limit({"context_length": 262_144}) == 262_144  # Moonshot
+    # OpenAI and DeepSeek entries carry no ceiling at all.
+    assert context_limit({"id": "gpt-5.6-luna", "created": 1_780_000_000}) is None
+    assert context_limit({"id": "deepseek-v4-flash"}) is None
+    # Strings are accepted because a JSON API may quote a number; anything
+    # that isn't a usable count is refused rather than coerced.
+    assert context_limit({"context_length": "128000"}) == 128_000
+    assert context_limit({"context_length": 0}) is None
+    assert context_limit({"context_length": -1}) is None
+    assert context_limit({"context_length": "unlimited"}) is None
+    assert context_limit({"context_length": True}) is None
+    assert context_limit({"context_length": None}) is None
+
+
+def test_anthropic_and_moonshot_populate_the_context_limit():
+    """Both report a ceiling the caller can use, under names neither shares
+    with the other or with Gemini."""
+    def anthropic_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "claude-opus-5",
+                        "display_name": "Claude Opus 5",
+                        "created_at": "2026-02-01T00:00:00Z",
+                        "max_input_tokens": 200000,
+                    }
+                ],
+                "has_more": False,
+            },
+        )
+
+    client = KeyCall(
+        provider="anthropic", api_key=CANARY, httpx_transport=httpx.MockTransport(anthropic_handler)
+    )
+    model = client.list_models(refresh=True).models[0]
+    client.close()
+    assert model.context_limit == 200000
+
+    def moonshot_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "kimi-k2.6", "created": 1_770_000_000, "context_length": 262144},
+                    {"id": "kimi-plain"},
+                ]
+            },
+        )
+
+    client = KeyCall(
+        provider="moonshot", api_key=CANARY, httpx_transport=httpx.MockTransport(moonshot_handler)
+    )
+    models = {m.id: m for m in client.list_models(refresh=True).models}
+    client.close()
+    assert models["kimi-k2.6"].context_limit == 262144
+    # Same adapter, same code path, silent entry: None rather than a guess.
+    assert models["kimi-plain"].context_limit is None
+
+
 def test_gemini_invalid_key_400_maps_to_invalid_api_key():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

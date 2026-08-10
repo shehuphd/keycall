@@ -11,6 +11,39 @@ pip install keycall
 
 Python 3.10+. Optional extras: `pip install "keycall[traceact]"` for tracing.
 
+## Two minutes to something real
+
+Before reading any of the API below, prove the thing works against a key you
+already have. No config file needed: point KeyCall at an environment variable.
+
+```bash
+export OPENAI_API_KEY=...
+```
+
+```bash
+keycall verify --provider openai --source env:OPENAI_API_KEY --generate
+```
+
+```
+✓ OPENAI_API_KEY (openai): key accepted, 79 text model(s), list digest 6d356bc3f4c24389, selection rule v4
+✓ OPENAI_API_KEY: generated with gpt-5.6-luna (filtered position 0, provider-list position 123, 830 ms, total tokens: 18)
+```
+
+Then open the same key in the local viewer and click around: a live dashboard,
+a browsable model list, and a Playground for chatting, showing a model a
+picture, recording a voice message in the page, attaching a PDF, offering a
+tool, or generating an image.
+
+```bash
+keycall view --provider openai --source env:OPENAI_API_KEY
+```
+
+Swap `openai` for `anthropic`, `gemini`, `deepseek`, `perplexity`, or
+`moonshot`. To load several keys at once, put them in a file and use
+`--source ./keys.toml` instead; see
+[`keycall-test-keys.example.toml`](keycall-test-keys.example.toml) for the
+format. The rest of this document is the full reference.
+
 ## Clients
 
 Construct one client per provider and credential. Identity is fixed at
@@ -105,8 +138,14 @@ you request that category explicitly, never in the default text picker.
 
 `ModelDiscovery` fields: `models`, `provider`, `categories`, `fetched_at`,
 `from_cache`, `catalog_version`, `warnings`. Each `Model` carries `id`,
-`provider`, `categories`, `display_name`, `context_limit`,
+`provider`, `categories`, `display_name`, `released_at`,
 `classification_source`, and `warnings`.
+
+`released_at` is when the provider says the model appeared, and is `None`
+where the provider doesn't say. OpenAI and Moonshot report a unix
+timestamp, Anthropic an ISO date; Gemini and DeepSeek report nothing, and
+Perplexity has no list endpoint. It exists because `verify` orders its
+candidates by it, newest first, on the providers that publish it.
 
 Results are cached in-process for 5 minutes, keyed by an HMAC fingerprint of
 the credential. Force a live call with `client.list_models(refresh=True)`,
@@ -419,12 +458,15 @@ What the citation list does and doesn't guarantee:
   OpenAI, Anthropic, Gemini, DeepSeek, and Moonshot report no cost fields
   today, so their search or per-call pricing has to come from their own
   billing pages.
-- **`context_limit` is populated only where the provider's list endpoint
-  reports it**, which today means Gemini alone. OpenAI, Anthropic,
-  DeepSeek, Perplexity, and Moonshot all return model lists with no token
-  limit, so `Model.context_limit` is `None` there. It is left `None` rather
-  than filled from a bundled table, because a wrong window is worse than a
-  missing one: KeyCall never guesses a number a caller may budget against.
+- **`Model.context_limit` is best-effort, and honest about it.** Three
+  providers report the input ceiling under three different names, and
+  KeyCall reads all three into one field: Gemini's `inputTokenLimit`,
+  Anthropic's `max_input_tokens`, and Moonshot's `context_length`. OpenAI
+  and DeepSeek report nothing and Perplexity has no list endpoint, so it
+  is `None` there. `None` means "this provider doesn't say", never zero
+  and never "lookup failed". It is deliberately never inferred from a
+  bundled table or a sibling model: a caller budgets against this number,
+  and an invented ceiling is worse than an absent one they can branch on.
 
 ## Structured output
 
@@ -684,11 +726,18 @@ in your browser. Four tabs:
 - **Dashboard** — every loaded target; click one for a live key check and its
   text-model count.
 - **Models** — browse a target's full model list, filtered by category
-  (text, image, embedding, and so on), with classification source and context
-  limits. `Refresh` bypasses the cache.
+  (text, image, embedding, and so on), with the classification source.
+  `Refresh` bypasses the cache.
 - **Playground** — pick a target and model, write a prompt (optional system
-  prompt), toggle web search, and run a real generation. Results show text,
-  timing, token usage, finish reason, and rendered citation links.
+  prompt), toggle web search or tool calling, attach a picture, a recording
+  (from a file, or the microphone button in the message box, which encodes
+  to 16 kHz mono WAV in the browser), or a document, and run a real
+  generation. Results show text,
+  timing, token usage, finish reason, and rendered citation links. An
+  attachment kind the selected key cannot send is disabled with a line
+  naming which of your keys to use instead, read from the same catalog the
+  adapters gate on. Switch the task to **Make a picture** to call an image
+  model instead.
 - **Verify** — run the same walk as `keycall verify` (optionally with
   generation) across every target and read the per-model attempt report.
 

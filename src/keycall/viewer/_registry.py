@@ -11,6 +11,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from .._cache import DEFAULT_TTL_SECONDS
 from .._client import KeyCall
@@ -30,6 +31,21 @@ class TargetView:
     provider: str
     protocol: str | None
     base_url: str | None
+    # Which attachment kinds this provider takes, as {"image": {"bytes":
+    # true, "url": true}, ...}. The Playground uses it to disable a control
+    # the selected key can never satisfy, rather than letting the user pick
+    # a file and discover the refusal after a round trip.
+    accepts: dict[str, dict[str, bool]]
+
+
+def _accepts(capabilities: Any) -> dict[str, dict[str, bool]]:
+    return {
+        kind: {
+            "bytes": getattr(capabilities, f"{kind}_input_bytes"),
+            "url": getattr(capabilities, f"{kind}_input_url"),
+        }
+        for kind in ("image", "audio", "file")
+    }
 
 
 @dataclass(slots=True, kw_only=True)
@@ -94,6 +110,11 @@ class Registry:
                 provider=entry.client.provider,
                 protocol=entry.client.protocol.value,
                 base_url=entry.target.base_url,
+                # Reaching past the client's public surface on purpose: the
+                # viewer ships with the library and these are the same
+                # frozen catalog facts the adapters gate on, so reading
+                # them here cannot drift from what a call would enforce.
+                accepts=_accepts(entry.client._resolved.capabilities),
             )
             for entry_id, entry in entries
         ]

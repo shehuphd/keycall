@@ -38,9 +38,11 @@ from ._base import (
     InbandStreamError,
     ProviderAdapter,
     StreamAssembler,
+    context_limit,
     dedupe_citations,
     image_media_type,
     media_type_for,
+    released_at,
 )
 
 # Anthropic requires max_tokens on every messages call; used when the
@@ -197,6 +199,8 @@ class AnthropicAdapter(ProviderAdapter):
                     provider=self.resolved.provider,
                     categories=frozenset({classify_model_id(model_id)}),
                     display_name=entry.get("display_name"),
+                    released_at=released_at(entry),
+                    context_limit=context_limit(entry),
                     classification_source="keycall_rule",
                 )
             )

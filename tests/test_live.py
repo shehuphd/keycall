@@ -26,15 +26,13 @@ pytestmark = pytest.mark.live
 
 
 def candidates(discovery, limit: int = 8):
-    """Walk the provider's maintained aliases first, then its list order —
-    the same rule run_verify uses. Without it a Gemini run spends most of
-    its budget on models Google has already withdrawn (six of the first
-    eight advertised, 2026-08-09), which is what made this suite flaky
-    against Gemini rather than any adapter fault."""
-    from keycall._verify_core import _is_maintained_alias
+    """The production candidate order, imported rather than reimplemented so
+    this suite exercises the rule users get. Without an order the walk
+    spends its budget on withdrawn models, which is what made this suite
+    look flaky against Gemini rather than any adapter fault."""
+    from keycall._verify_core import order_candidates
 
-    ordered = sorted(discovery.models, key=lambda m: not _is_maintained_alias(m.id))
-    return ordered[:limit]
+    return order_candidates(discovery.models)[:limit]
 
 
 def test_live_smoke_every_target_generates():
@@ -720,3 +718,91 @@ def test_live_async_client_parity():
 
     for note in asyncio.run(exercise()):
         print(f"{target.display_name} async: {note}")
+
+
+def test_live_candidate_order_has_headroom_before_the_budget():
+    """The walk tries DEFAULT_ATTEMPTS models before giving up, and every
+    release has assumed a working model appears well inside that budget.
+    Nothing tested the assumption, so it could only fail on a user's key.
+
+    It has already drifted twice: Gemini withdrew six of the first eight
+    models it advertised (2026-08-09), and OpenAI killed all four of its
+    `-chat-latest` aliases (2026-08-10). Both were found by accident.
+
+    Asserting only that some model works would report the problem after
+    users hit it. Requiring a margin reports it while there is still room
+    to spare, which is what makes this a warning rather than a post-mortem.
+
+    Cost is one generation per provider: a retired model refuses without
+    charging, so only the success spends tokens.
+    """
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import KeyCall, Message, ModelCategory, TextInput
+    from keycall._verify_core import DEFAULT_ATTEMPTS, order_candidates
+
+    # Three spare attempts: enough that a provider can retire its top two
+    # candidates between releases without a user ever seeing a failure.
+    margin = 3
+    ceiling = DEFAULT_ATTEMPTS - margin
+    ask = [Message(role="user", content=[TextInput(text="Reply with the single word: ok")])]
+
+    targets, _ = load_targets(source)
+    failures = []
+    for target in targets:
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            try:
+                discovery = client.list_models(
+                    categories={ModelCategory.TEXT_GENERATION}, refresh=True
+                )
+            except KeyCallError as exc:
+                # A provider with no list endpoint (Perplexity) has no walk
+                # to measure; that is a different, already-reported fact.
+                print(f"{target.display_name}: no model list to measure ({exc.code.value})")
+                continue
+            ordered = order_candidates(discovery.models)[:DEFAULT_ATTEMPTS]
+            if not ordered:
+                # Tinker serves your own fine-tuned checkpoints, so an empty
+                # list is its normal state. No walk, no headroom to measure.
+                print(f"{target.display_name}: no models advertised, no walk to measure")
+                continue
+            dead = []
+            position = None
+            for index, model in enumerate(ordered, start=1):
+                try:
+                    client.generate_text(
+                        model=model.id, messages=ask, max_output_tokens=200
+                    )
+                    position = index
+                    break
+                except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                    dead.append(f"    {index}. {model.id}: {str(exc)[:90]}")
+            if position is None:
+                failures.append(
+                    f"{target.display_name}: no model answered within "
+                    f"{DEFAULT_ATTEMPTS} attempts — this key now fails verification\n"
+                    + "\n".join(dead)
+                )
+            elif position > ceiling:
+                failures.append(
+                    f"{target.display_name}: first working model at position "
+                    f"{position}, leaving {DEFAULT_ATTEMPTS - position} of "
+                    f"{DEFAULT_ATTEMPTS} attempts spare (want {position} <= {ceiling}). "
+                    "Candidate ordering needs revisiting for this provider "
+                    "before the remaining margin runs out.\n" + "\n".join(dead)
+                )
+            else:
+                print(
+                    f"{target.display_name}: working model at position {position} "
+                    f"of {DEFAULT_ATTEMPTS} ({ordered[position - 1].id})"
+                )
+        finally:
+            client.close()
+    assert not failures, "\n".join(failures)

@@ -9,16 +9,25 @@ terminal, the viewer renders it to JSON/SSE. One walk, two presentations.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
 
 from ._client import KeyCall
 from ._enums import ModelCategory
 from ._errors import ErrorCode, KeyCallError
 from ._sanitize import safe_display_name
 from ._sources import Target
-from ._types import Message, TextInput
+from ._types import Message, Model, TextInput
 
-__all__ = ["ModelAttempt", "VerifyResult", "run_verify"]
+__all__ = [
+    "ModelAttempt",
+    "VerifyResult",
+    "candidate_rank",
+    "order_candidates",
+    "run_verify",
+]
 
 DEFAULT_GENERATION_PROMPT = "Reply with the single word: ok"
 DEFAULT_GENERATION_MAX_TOKENS = 16
@@ -28,16 +37,57 @@ DEFAULT_ATTEMPTS = 8
 # report can be read against the rule that produced it. "1" selected the
 # first filtered candidate and made exactly one attempt; "2" is the
 # bounded, fully-reported walk; "3" adds maintained-alias-first ordering
-# within that walk.
-SELECTION_RULE_VERSION = "3"
+# within that walk; "4" prefers the provider's own recency where it
+# reports one and keeps "3" only where it does not.
+SELECTION_RULE_VERSION = "4"
 
 
 def _is_maintained_alias(model_id: str) -> bool:
     """A provider-maintained pointer to a current model rather than a dated
-    snapshot — `gemini-flash-latest`, `chatgpt-4o-latest`. Deliberately
-    narrow: only the explicit suffix counts, because a false positive here
-    promotes a model that may not exist and wastes an attempt."""
+    snapshot — `gemini-flash-latest`. Deliberately narrow: only the explicit
+    suffix counts, because a false positive here promotes a model that may
+    not exist and wastes an attempt."""
     return model_id.lower().endswith("-latest")
+
+
+def order_candidates(models: Sequence[Model]) -> list[Model]:
+    """Put the models most likely to answer first.
+
+    Newest-first when the provider dates its own models, because a model it
+    published recently is one it has not yet retired. OpenAI, Anthropic, and
+    Moonshot report a date; Gemini and DeepSeek report none, and there
+    recency is unavailable so maintained aliases lead instead — Gemini keeps
+    `-latest` aimed at a live model, and on 2026-08-09 the first six text
+    models it advertised to a new key were all withdrawn.
+
+    Alias-first was the rule everywhere until it was measured against
+    OpenAI, where the opposite holds: `*-chat-latest` is a legacy family
+    being retired wholesale, and on 2026-08-10 all four such aliases were
+    dead (two unknown, two newly deprecated) while the numbered models
+    worked. That ordering spent four of eight attempts before reaching a
+    model that could answer, and image input failed outright because the
+    first survivor was too old to have vision. Recency puts a current model
+    first on both kinds of provider without KeyCall keeping a list of what
+    has been retired, which would be per-account and stale within the week.
+
+    Ties and undated models hold the provider's own order, so the result is
+    deterministic for a given list.
+    """
+    return sorted(models, key=candidate_rank(models))
+
+
+def candidate_rank(models: Sequence[Model]) -> Callable[[Model], tuple[Any, ...]]:
+    """The sort key `order_candidates` applies, exposed so a caller holding
+    models alongside other data (verify carries each model's raw list
+    position) can sort its own pairs by the same rule."""
+    # A provider that dates only some of its models says nothing useful
+    # about where the undated ones belong, so recency has to cover the list
+    # before it is trusted; otherwise fall back rather than mix two rules.
+    dated = sum(1 for m in models if m.released_at is not None)
+    if dated and dated == len(models):
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        return lambda m: (-(m.released_at or epoch).timestamp(),)
+    return lambda m: (not _is_maintained_alias(m.id),)
 
 
 def _model_list_digest(model_ids: list[str]) -> str:
@@ -150,16 +200,12 @@ def run_verify(
             for raw_position, model in enumerate(discovery.models)
             if ModelCategory.TEXT_GENERATION in model.categories
         ]
-        # Try the provider's own maintained aliases first. A provider that
-        # publishes a "-latest" pointer keeps it aimed at a model that
-        # currently works, which is exactly what verification needs; the
-        # dated ids around it are the ones that get retired. This is not
-        # cosmetic: on 2026-08-09 the first six text models Gemini
-        # advertised to a new key were all withdrawn, so a walk in list
-        # order spent most of its budget on models Google had already shut
-        # down. Order is otherwise the provider's own, and every attempt
-        # still reports both its filtered and raw position.
-        text_models.sort(key=lambda entry: not _is_maintained_alias(entry[1].id))
+        # Reorder so the budget is spent on models likely to answer; see
+        # order_candidates for why the rule differs by provider. Every
+        # attempt still reports both its filtered and raw position, so the
+        # provider's original order stays reconstructable from the report.
+        rank = candidate_rank([model for _, model in text_models])
+        text_models.sort(key=lambda entry: rank(entry[1]))
         if not generate:
             return VerifyResult(
                 label=label,

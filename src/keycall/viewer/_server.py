@@ -45,8 +45,9 @@ _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 _CONTENT_TYPES = {".html": "text/html", ".css": "text/css", ".js": "text/javascript"}
 # Scripts, styles, and fetches stay same-origin. Images additionally allow
 # data: URIs so a generated picture can be shown from the bytes the page
-# already holds, without writing it to disk or fetching anything remote.
-_CSP = "default-src 'self'; img-src 'self' data:"
+# already holds, and media allows blob: so a recording can be played back
+# from memory before it is sent. Neither reaches the network.
+_CSP = "default-src 'self'; img-src 'self' data:; media-src 'self' blob:"
 
 # Large enough for a base64-encoded photo from the Playground's image
 # picker (encoding costs about a third on top of the file size), small

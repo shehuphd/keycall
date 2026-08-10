@@ -5,6 +5,130 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-08-10
+
+### Added
+
+- **The Playground sends recordings and documents.** Both already worked
+  from the library and neither had a control, so a caller could send a WAV
+  or a PDF that a viewer user could not. Tick **Play it a sound** or
+  **Attach a document** and it goes out as a real `AudioInput` or
+  `FileInput` on the user turn. The browser posts base64 and the server
+  decodes it, the same route pictures take, so the Playground exercises the
+  path a library caller uses rather than a viewer-only shortcut. A document
+  keeps the filename it had on disk, because providers show that name to
+  the model. Either attachment can carry a turn with no prompt.
+- **You can record straight into the Playground** instead of finding a
+  sound file first. The microphone sits in the message box, where the chat
+  apps people already use put it, rather than buried under a settings
+  toggle. Pressing it swaps the composer for a recording bar: a live
+  waveform, a running clock, and two choices, keep or discard. Enter or the
+  tick keeps it, Escape or the cross bins it, and a kept recording appears
+  above the box with a player so a silent take is caught here rather than
+  blamed on the model. With a recording attached and nothing typed, Enter
+  sends, because there is no line to break and reaching for a modifier to
+  send a voice message is a step nobody expects.
+
+  The microphone is disabled on a key that cannot send audio, naming a key
+  that can, and hidden entirely in picture mode, on the same catalog
+  reading the attachment toggles use. Blocked or missing microphones say
+  which it was instead of failing quietly. A turn carrying only a recording
+  draws that recording's own shape in the transcript rather than reading
+  "(no message)", which said the opposite of what happened, and carries a
+  play button: every recording in a session stays playable, because each
+  turn holds its own copy rather than sharing the composer's. Sending
+  detaches whatever went with the turn, so a recording or a picture cannot
+  ride along silently on the next one.
+
+  Audio is captured as raw samples and encoded to WAV in the browser rather
+  than handed to `MediaRecorder`, which looks like the obvious tool and is
+  wrong twice over: Chrome produces `audio/webm;codecs=opus`, which Gemini
+  does not accept and KeyCall's byte sniffer does not recognise, so the
+  attachment would be refused before leaving the machine, and the container
+  differs per browser anyway (mp4 on Safari, ogg on Firefox). WAV is one
+  format every browser can produce, Gemini accepts, and the sniffer already
+  identifies. It is downsampled to 16 kHz mono, which is what Gemini
+  resamples to regardless, and which keeps a minute of speech near 2 MB
+  instead of the ~11 MB that 48 kHz stereo would cost against an 8 MB body
+  cap.
+- **An attachment the selected key cannot send is turned off, and says
+  why.** Recordings reach only Gemini, and documents only OpenAI,
+  Anthropic, and Gemini, so the control is dimmed with a line naming which
+  of your loaded keys to pick instead. The list is read from the same
+  catalog the adapters gate on, so a suggestion can never point at a
+  provider that would refuse. Previously the only way to learn this was to
+  attach a file and spend a round trip on the refusal.
+- **A release probe measures how much of the attempt budget each provider
+  actually needs**, failing if a working model isn't reached at least
+  three attempts inside `DEFAULT_ATTEMPTS`. The walk has always assumed a
+  healthy model appears early, nothing tested it, and it has now drifted
+  twice (Gemini withdrawing six of its first eight advertised models,
+  OpenAI killing all four aliases) with both found by accident. Asserting
+  only that some model works would report the problem after users hit it;
+  requiring a margin reports it while there's still room. A retired model
+  refuses without charging, so the probe costs one generation per
+  provider.
+- `Model.released_at` carries the provider's own date for a model where it
+  reports one, which is what the ordering rule reads.
+
+### Changed
+
+- **The Playground's two columns scroll independently.** They shared a
+  height, so a long reply grew the page and pushed the settings out of
+  reach, and a tall settings panel stretched the conversation to match.
+  Each column is now bounded by the window and scrolls its own content;
+  below 900px they stack and the page scrolls as before. The available
+  height is measured rather than assumed, since a hardcoded header offset
+  leaves either a dead gap or a second scrollbar.
+- **The composer's button says Send, not Generate**, which was wrong the
+  moment a turn could be a recording with nothing generated about it.
+- **The Playground's model picker leads with the model the walk would try
+  first, and drops one the provider has refused.** It listed models in raw
+  provider order, so on Gemini it defaulted to `gemini-2.5-flash` — the
+  model the walk already skips, withdrawn from new accounts — and a first
+  generation could fail on a key that works perfectly. The picker now
+  applies the same ordering rule `verify` uses, so a maintained alias leads
+  on Gemini and the newest model leads on OpenAI. When a provider does
+  refuse a model with `model_not_available` or `model_not_suitable`, that
+  model drops to the bottom of the list for the session, is labelled
+  "refused earlier", and cannot be picked again; the selection falls back
+  to one that has not been turned down. This is learned from what the
+  provider answered rather than shipped as a list of retired models, which
+  would be wrong for somebody the day it shipped.
+
+- **Candidate order follows the provider's own dates where it publishes
+  them** (`SELECTION_RULE_VERSION` is now `4`). OpenAI, Anthropic, and
+  Moonshot date every model they list, and a recently published model is
+  one the provider has not yet retired, so the walk tries the newest
+  first. Gemini and DeepSeek publish no dates, and maintained `-latest`
+  aliases still lead there.
+
+  Sorting aliases first everywhere was right for Gemini and wrong for
+  OpenAI, which is retiring its `*-chat-latest` family wholesale: on
+  2026-08-10 all four were dead, two unknown and two newly deprecated
+  hours after they had worked, while the numbered models stayed healthy.
+  That rule spent four of eight attempts before reaching a model that
+  could answer, and image input failed outright because the first survivor
+  was too old to have vision. Under the new rule every provider reaches a
+  working model at position 1 of 8.
+
+### Fixed
+
+- **`Model.context_limit` now reads every provider's spelling.** It had
+  been populated on Gemini alone, from `inputTokenLimit`. Probing the
+  endpoints directly showed three of the six report an input ceiling under
+  three different names, so Anthropic's `max_input_tokens` and Moonshot's
+  `context_length` are read into the same field. OpenAI and DeepSeek report
+  nothing and Perplexity has no list endpoint, so it stays `None` there,
+  meaning "this provider doesn't say" rather than zero. It is still never
+  inferred from a bundled table: a caller budgets against this number, and
+  an invented ceiling is worse than an absent one. The viewer's "Context
+  window" column appears for the providers that fill it.
+- `ImageInput`, `AudioInput`, and `FileInput` carried docstrings saying the
+  type was not accepted yet and that every adapter refused it before any
+  network call. That stopped being true when the media paths shipped. Each
+  now states which providers take it and in which form.
+
 ## [0.9.0] — 2026-08-10
 
 ### Added
@@ -599,7 +723,8 @@ generation, live-verified against every supported provider.
   bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
-[Unreleased]: https://github.com/shehuphd/keycall/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/shehuphd/keycall/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/shehuphd/keycall/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/shehuphd/keycall/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/shehuphd/keycall/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/shehuphd/keycall/compare/v0.6.0...v0.7.0

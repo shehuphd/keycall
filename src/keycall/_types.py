@@ -68,12 +68,13 @@ class TextInput:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ImageInput:
-    """Not yet accepted by text generation. The type is part of the
-    directional content taxonomy and is validated here, but every adapter
-    rejects it with UNSUPPORTED_OPERATION before any network call: no
-    provider mapping has been built or verified. Present so the taxonomy is
-    complete and so a caller can model content it will send later, not as a
-    signal that image input works today.
+    """A picture for the model to look at, as bytes or a URL. Support is
+    per-provider and per-form: OpenAI, Anthropic, and Perplexity take
+    either, Gemini and Moonshot take bytes only, and DeepSeek takes
+    neither. A form the provider cannot accept is refused with
+    UNSUPPORTED_OPERATION before any network call, so an unsupported
+    attachment costs nothing. `media_type` is a hint; KeyCall sniffs the
+    bytes and trusts what it finds over what the caller claimed.
     """
 
     url: str | None = None
@@ -88,12 +89,11 @@ class ImageInput:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AudioInput:
-    """Not yet accepted by text generation. The type is part of the
-    directional content taxonomy and is validated here, but every adapter
-    rejects it with UNSUPPORTED_OPERATION before any network call: no
-    provider mapping has been built or verified. Present so the taxonomy is
-    complete and so a caller can model content it will send later, not as a
-    signal that audio input works today.
+    """A sound file for the model to listen to. Gemini is the only provider
+    that accepts one today, and only as bytes; every other provider refuses
+    it with UNSUPPORTED_OPERATION before any network call. Sending audio to
+    a text model is a different thing from transcription, which is its own
+    model category KeyCall does not call.
     """
 
     url: str | None = None
@@ -108,12 +108,12 @@ class AudioInput:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class FileInput:
-    """Not yet accepted by text generation. The type is part of the
-    directional content taxonomy and is validated here, but every adapter
-    rejects it with UNSUPPORTED_OPERATION before any network call: no
-    provider mapping has been built or verified. Present so the taxonomy is
-    complete and so a caller can model content it will send later, not as a
-    signal that file input works today.
+    """A document for the model to read, typically a PDF. OpenAI,
+    Anthropic, and Gemini accept one as bytes; no provider accepts a URL,
+    and DeepSeek, Perplexity, and Moonshot accept neither, so those are
+    refused with UNSUPPORTED_OPERATION before any network call. `filename`
+    is passed through where the provider shows it to the model, which is
+    why a document keeps the name it had on disk.
     """
 
     url: str | None = None
@@ -499,6 +499,20 @@ class Model:
     categories: frozenset[ModelCategory]
     display_name: str | None = None
     lifecycle: str | None = None
+    # When the provider says this model appeared. Populated only where the
+    # list endpoint reports it: OpenAI and Moonshot as a unix `created`,
+    # Anthropic as an ISO `created_at`; Gemini and DeepSeek report nothing
+    # and Perplexity has no list endpoint at all. Unlike a context window,
+    # a missing value here costs a caller nothing, because the one consumer
+    # (candidate ordering in verify) falls back to a different rule rather
+    # than needing a number it cannot get.
+    released_at: datetime | None = None
+    # Largest input the model accepts, in tokens, where the provider says.
+    # Gemini, Anthropic, and Moonshot report it under three different
+    # names; OpenAI and DeepSeek report nothing and Perplexity has no list
+    # endpoint, so it is None there. Never inferred from a bundled table:
+    # a caller budgets against this, and a wrong ceiling is worse than an
+    # absent one it can branch on.
     context_limit: int | None = None
     capabilities: frozenset[str] = frozenset()
     classification_source: str = "unknown"

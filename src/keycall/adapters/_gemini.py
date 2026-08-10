@@ -44,6 +44,7 @@ from .._types import (
 from ._base import (
     ProviderAdapter,
     StreamAssembler,
+    context_limit,
     dedupe_citations,
     media_type_for,
     parse_tool_arguments,
@@ -262,7 +263,7 @@ class GeminiAdapter(ProviderAdapter):
                     provider=self.resolved.provider,
                     categories=frozenset(categories),
                     display_name=entry.get("displayName"),
-                    context_limit=entry.get("inputTokenLimit"),
+                    context_limit=context_limit(entry),
                     classification_source=source,
                 )
             )

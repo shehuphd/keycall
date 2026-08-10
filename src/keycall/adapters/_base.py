@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from typing import Any
 
 from .._enums import Operation
@@ -115,6 +116,65 @@ def image_media_type(part: Any, *, provider: str) -> str:
     recognize. An unidentifiable image is a typed error, not a guess that
     the provider will reject with something less clear."""
     return media_type_for(part, kind="image", provider=provider)
+
+
+def released_at(entry: Mapping[str, Any]) -> datetime | None:
+    """When a list entry says the model appeared, from whichever field the
+    provider uses: a unix `created` (OpenAI, Moonshot) or an ISO
+    `created_at` (Anthropic). Returns None when the provider reports
+    nothing or reports something unparseable, because a bad timestamp
+    would reorder the walk on invented evidence, and no timestamp at all
+    is handled by the caller.
+
+    Always tz-aware and in UTC, so values from the two formats sort against
+    each other rather than raising on a naive/aware comparison."""
+    raw = entry.get("created")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        try:
+            return datetime.fromtimestamp(raw, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    iso = entry.get("created_at")
+    if isinstance(iso, str) and iso:
+        try:
+            parsed = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+# What each provider calls the input-token ceiling in a model-list entry.
+# Three of the six report one and they agree on the meaning while disagreeing
+# on the name, which is the ordinary case for a normalizing layer: read every
+# spelling, expose one field, leave it None where a provider says nothing.
+_CONTEXT_LIMIT_FIELDS = (
+    "inputTokenLimit",  # Gemini
+    "max_input_tokens",  # Anthropic
+    "context_length",  # Moonshot
+)
+
+
+def context_limit(entry: Mapping[str, Any]) -> int | None:
+    """The largest input the model accepts, in tokens, as the provider
+    reports it. None where the provider reports nothing (OpenAI, DeepSeek)
+    or reports something unusable.
+
+    Deliberately never inferred from a bundled table or a sibling model:
+    a caller budgets against this number, and an invented one is worse than
+    an absent one it can see and handle."""
+    for field in _CONTEXT_LIMIT_FIELDS:
+        raw = entry.get(field)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        # A zero or negative ceiling is a provider bug, not a real limit.
+        if value > 0:
+            return value
+    return None
 
 
 def dedupe_citations(citations: Sequence[Citation]) -> tuple[Citation, ...]:

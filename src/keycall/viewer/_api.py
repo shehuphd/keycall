@@ -17,8 +17,11 @@ from typing import Any
 
 from .._enums import ModelCategory
 from .._errors import KeyCallError
+from .._registry import providers_with
 from .._sources import SourceError, load_targets
 from .._types import (
+    AudioInput,
+    FileInput,
     ImageInput,
     ImageOutput,
     Message,
@@ -29,7 +32,7 @@ from .._types import (
     ToolCall,
     ToolResult,
 )
-from .._verify_core import DEFAULT_ATTEMPTS, run_verify
+from .._verify_core import DEFAULT_ATTEMPTS, order_candidates, run_verify
 from ._registry import Registry
 
 __all__ = [
@@ -57,7 +60,17 @@ def error_body(error: KeyCallError) -> dict[str, Any]:
 
 
 def list_targets(registry: Registry) -> dict[str, Any]:
-    return {"targets": [dataclasses.asdict(view) for view in registry.views()]}
+    return {
+        "targets": [dataclasses.asdict(view) for view in registry.views()],
+        # Which providers take each attachment kind at all, loaded or not,
+        # so the Playground can name a provider that would work when none
+        # of the loaded keys can. Read from the catalog the gates read, so
+        # the suggestion cannot drift from what the adapters enforce.
+        "providers_accepting": {
+            kind: sorted(providers_with(f"{kind}_input"))
+            for kind in ("image", "audio", "file")
+        },
+    }
 
 
 def _model_dict(model: Any) -> dict[str, Any]:
@@ -122,7 +135,13 @@ def browse_models(
         wanted = ModelCategory(category)
     except ValueError:
         return {"error": {"code": "bad_request", "message": f"unknown category {category!r}"}}
-    filtered = [m for m in discovery.models if wanted in m.categories]
+    # Same order the verify walk uses: newest first where the provider dates
+    # its models, maintained aliases first where it does not. Without this
+    # the Playground's model picker defaulted to whatever the provider
+    # happened to list first, which on Gemini is a model the walk already
+    # knows to skip — so the first generation a person tried could fail on a
+    # key that works perfectly.
+    filtered = order_candidates([m for m in discovery.models if wanted in m.categories])
     body = _discovery_dict(discovery)
     body["models"] = [_model_dict(m) for m in filtered]
     body["categories"] = [wanted.value]
@@ -162,34 +181,59 @@ def _parse_tools(raw: Any) -> list[Tool]:
     return tools
 
 
-def _parse_images(raw: Any) -> list[ImageInput]:
-    """Images the browser attached: base64 for a picked file, or a URL.
-    The browser sends base64 because it holds the bytes; KeyCall decodes
-    here so the adapters see the same ImageInput any caller would build."""
+# The three attachment kinds the Playground can send, keyed by the field
+# name the browser posts. Audio and documents follow exactly the path
+# images already took: the browser holds the bytes and sends base64,
+# KeyCall decodes here, and the adapters see the same input any library
+# caller would construct. Nothing about the refusal rules is re-implemented
+# for the viewer, so a provider that rejects a sound file rejects it here
+# for the same reason and with the same message.
+_MEDIA_KINDS: dict[str, tuple[str, type[AudioInput | FileInput | ImageInput]]] = {
+    "images": ("image", ImageInput),
+    "audio": ("audio", AudioInput),
+    "files": ("file", FileInput),
+}
+
+
+def _parse_media(
+    raw: Any, field: str
+) -> list[AudioInput | FileInput | ImageInput]:
+    """Attachments the browser sent: base64 for a picked file, or a URL."""
+    noun, part_type = _MEDIA_KINDS[field]
     if raw in (None, []):
         return []
     if not isinstance(raw, list):
-        raise _BadRequest("images must be a JSON array")
-    images: list[ImageInput] = []
+        raise _BadRequest(f"{field} must be a JSON array")
+    parts: list[AudioInput | FileInput | ImageInput] = []
     for index, entry in enumerate(raw):
         if not isinstance(entry, dict):
-            raise _BadRequest(f"image {index} must be an object")
+            raise _BadRequest(f"{noun} {index} must be an object")
         url = entry.get("url")
         encoded = entry.get("data_base64")
         if bool(url) == bool(encoded):
-            raise _BadRequest(f"image {index} needs exactly one of url or data_base64")
+            raise _BadRequest(f"{noun} {index} needs exactly one of url or data_base64")
         try:
-            images.append(
-                ImageInput(url=str(url))
-                if url
-                else ImageInput(
-                    data=base64.b64decode(str(encoded), validate=True),
-                    media_type=entry.get("media_type"),
+            if url:
+                parts.append(part_type(url=str(url)))
+            else:
+                decoded = base64.b64decode(str(encoded), validate=True)
+                # Only a document carries a filename; providers show it to
+                # the model, so a picked file keeps the name it had on disk.
+                extra = (
+                    {"filename": entry["filename"]}
+                    if part_type is FileInput and entry.get("filename")
+                    else {}
                 )
-            )
+                parts.append(
+                    part_type(
+                        data=decoded,
+                        media_type=entry.get("media_type"),
+                        **extra,
+                    )
+                )
         except (binascii.Error, TypeError, ValueError) as error:
-            raise _BadRequest(f"image {index}: {error}") from None
-    return images
+            raise _BadRequest(f"{noun} {index}: {error}") from None
+    return parts
 
 
 def _parse_history(raw: Any) -> list[Message]:
@@ -251,11 +295,13 @@ def _generation_fields(body: dict[str, Any]) -> dict[str, Any] | None:
     if not model or not isinstance(model, str):
         return None
     history = _parse_history(body.get("history"))
-    images = _parse_images(body.get("images"))
-    # A continuation replays the whole conversation and an image can carry
-    # a turn on its own, so the prompt is required only when neither is
-    # present.
-    if not history and not images and (not prompt or not isinstance(prompt, str)):
+    attachments: list[Any] = []
+    for field in _MEDIA_KINDS:
+        attachments.extend(_parse_media(body.get(field), field))
+    # A continuation replays the whole conversation and an attachment can
+    # carry a turn on its own, so the prompt is required only when neither
+    # is present.
+    if not history and not attachments and (not prompt or not isinstance(prompt, str)):
         return None
     messages = []
     system = body.get("system")
@@ -264,7 +310,7 @@ def _generation_fields(body: dict[str, Any]) -> dict[str, Any] | None:
     user_parts: list[Any] = []
     if prompt and isinstance(prompt, str):
         user_parts.append(TextInput(text=prompt))
-    user_parts.extend(images)
+    user_parts.extend(attachments)
     if user_parts:
         messages.append(Message(role="user", content=user_parts))
     messages.extend(history)

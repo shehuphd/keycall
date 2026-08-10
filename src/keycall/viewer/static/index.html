@@ -124,11 +124,12 @@
               <input id="pg-search" type="checkbox">
               <span class="switch" aria-hidden="true"></span>
             </label>
-            <label class="pg-toggle">
+            <label class="pg-toggle" id="pg-image-toggle">
               <span>Show a picture</span>
               <input id="pg-image-on" type="checkbox">
               <span class="switch" aria-hidden="true"></span>
             </label>
+            <p class="hint pg-unavailable" id="pg-image-unavailable" hidden></p>
             <div id="pg-image-panel" hidden>
               <p class="hint">
                 The model looks at a picture and answers about it. It does not
@@ -141,6 +142,42 @@
                 <button id="pg-image-clear" class="secondary">Remove</button>
               </div>
               <div id="pg-image-status" class="meta"></div>
+            </div>
+            <label class="pg-toggle" id="pg-audio-toggle">
+              <span>Play it a sound</span>
+              <input id="pg-audio-on" type="checkbox">
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <p class="hint pg-unavailable" id="pg-audio-unavailable" hidden></p>
+            <div id="pg-audio-panel" hidden>
+              <p class="hint">
+                Pick a sound file to send. To record instead, use the
+                microphone button next to the message box. Either way the
+                model listens and answers in writing.
+              </p>
+              <input id="pg-audio-file" type="file"
+                     accept="audio/wav,audio/mpeg,audio/mp4,audio/ogg,audio/flac,audio/aac">
+              <div class="pg-row-end">
+                <button id="pg-audio-clear" class="secondary danger">Remove</button>
+              </div>
+              <div id="pg-audio-status" class="meta"></div>
+            </div>
+            <label class="pg-toggle" id="pg-file-toggle">
+              <span>Attach a document</span>
+              <input id="pg-file-on" type="checkbox">
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <p class="hint pg-unavailable" id="pg-file-unavailable" hidden></p>
+            <div id="pg-file-panel" hidden>
+              <p class="hint">
+                The model reads a PDF and answers about it. Ask it to
+                summarise the document, or to find something in it.
+              </p>
+              <input id="pg-file-file" type="file" accept="application/pdf,.pdf">
+              <div class="pg-row-end">
+                <button id="pg-file-clear" class="secondary">Remove</button>
+              </div>
+              <div id="pg-file-status" class="meta"></div>
             </div>
             <label class="pg-toggle">
               <span>Offer a tool</span>
@@ -172,10 +209,46 @@
         <div class="pg-main">
           <div id="pg-transcript" class="pg-transcript"></div>
           <div id="pg-tool-calls"></div>
-          <div class="pg-composer">
+          <!-- Attached before the composer so what is about to be sent sits
+               next to the thing that sends it. -->
+          <div id="pg-attached" class="pg-attached" hidden>
+            <span class="pg-attached-label">Recording attached</span>
+            <audio id="pg-audio-preview" controls></audio>
+            <button id="pg-attached-remove" class="secondary danger" type="button"
+                    aria-label="Remove the recording">Remove</button>
+          </div>
+          <div class="pg-composer" id="pg-composer">
             <textarea id="pg-prompt" rows="3"
-                      placeholder="Ask anything. Press Generate, or Ctrl+Enter."></textarea>
-            <button id="pg-run">Generate</button>
+                      placeholder="Ask anything. Press Send, or Ctrl+Enter."></textarea>
+            <button id="pg-mic" type="button" class="icon-btn"
+                    title="Record from your microphone" aria-label="Record from your microphone">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z"/>
+                <path fill="currentColor" d="M18 11a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.91V19H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.09A6 6 0 0 0 18 11Z"/>
+              </svg>
+            </button>
+            <button id="pg-run">Send</button>
+          </div>
+          <!-- Replaces the composer while recording, so there is one place to
+               look and one obvious way to finish. -->
+          <div class="pg-recorder" id="pg-recorder" hidden>
+            <span class="rec-dot" aria-hidden="true"></span>
+            <span id="pg-rec-time" class="pg-rec-time">0:00</span>
+            <canvas id="pg-wave" class="pg-wave" height="36"></canvas>
+            <button id="pg-rec-cancel" class="icon-btn" type="button"
+                    title="Discard (Esc)" aria-label="Discard the recording">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                      d="M6 6l12 12M18 6L6 18"/>
+              </svg>
+            </button>
+            <button id="pg-rec-accept" class="icon-btn accept" type="button"
+                    title="Keep it (Enter)" aria-label="Keep the recording">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                      stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+              </svg>
+            </button>
           </div>
         </div>
       </div>

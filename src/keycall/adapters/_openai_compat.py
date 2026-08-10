@@ -36,8 +36,10 @@ from .._types import (
 from ._base import (
     ProviderAdapter,
     StreamAssembler,
+    context_limit,
     dedupe_citations,
     image_media_type,
+    released_at,
 )
 
 
@@ -206,6 +208,13 @@ class OpenAICompatibleAdapter(ProviderAdapter):
                     id=model_id,
                     provider=self.resolved.provider,
                     categories=frozenset({classify_model_id(model_id)}),
+                    # Moonshot reports a unix `created` and a
+                    # `context_length`; DeepSeek and other compat providers
+                    # report neither, and get None for both. One code path
+                    # covers the family because the readers key off the
+                    # field being present, not off which provider it is.
+                    released_at=released_at(entry),
+                    context_limit=context_limit(entry),
                     classification_source="keycall_rule",
                 )
             )
