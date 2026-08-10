@@ -59,6 +59,11 @@ _MAX_VERIFY_ATTEMPTS = 32
 
 class _Handler(BaseHTTPRequestHandler):
     server_version = "keycall-viewer"
+    # The base class types this as BaseServer, which carries no registry or
+    # token. This handler is only ever constructed by _Server, so naming
+    # that type states the truth and lets the accessors below be checked
+    # instead of silenced.
+    server: _Server
 
     # Quieten the default per-request stderr logging.
     def log_message(self, *args: Any) -> None:
@@ -66,11 +71,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     @property
     def _registry(self) -> Registry:
-        return self.server.registry  # type: ignore[attr-defined]
+        return self.server.registry
 
     @property
     def _token(self) -> Token:
-        return self.server.token  # type: ignore[attr-defined]
+        return self.server.token
 
     def _authorised(self, parsed: Any) -> bool:
         header = self.headers.get("X-KeyCall-Token")

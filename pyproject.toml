@@ -40,7 +40,11 @@ dependencies = [
 
 [project.optional-dependencies]
 traceact = ["traceact>=0.13"]
-dev = ["pytest>=8", "mypy>=1.10", "ruff>=0.5", "traceact>=0.13"]
+# tomli is unconditional here, unlike in the runtime dependencies where it
+# is gated to Python < 3.11: mypy targets 3.10, so it type-checks the
+# backport branch of the TOML import regardless of the interpreter running
+# it, and cannot resolve a module that was never installed.
+dev = ["pytest>=8", "mypy>=1.10", "ruff>=0.5", "traceact>=0.13", "tomli>=2.0"]
 
 [project.urls]
 Homepage = "https://github.com/shehuphd/keycall"
@@ -71,3 +75,12 @@ target-version = "py310"
 [tool.mypy]
 strict = true
 python_version = "3.10"
+
+# traceact 0.14.0 ships no py.typed marker, so mypy refuses to read its
+# annotations. That is an upstream packaging gap, not a typing problem in
+# KeyCall: the fix is a py.typed file in traceact, after which this block
+# should be deleted. Scoped to the one module so nothing else loses
+# checking, and KeyCall's own optional import of it stays type-checked.
+[[tool.mypy.overrides]]
+module = "traceact.*"
+ignore_missing_imports = true

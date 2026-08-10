@@ -15,6 +15,7 @@ from typing import Any
 from .._classify import classify_model_id
 from .._enums import Operation
 from .._errors import ErrorCode, KeyCallError
+from .._registry import ResolvedProvider
 from .._transport import RequestSpec
 from .._types import (
     Citation,
@@ -80,12 +81,12 @@ class CompatStreamAssembler(StreamAssembler):
     """Chat Completions chunk stream: choices[0].delta.content fragments,
     usage on the chunk that carries it, `data: [DONE]` terminal."""
 
-    def __init__(self, resolved, request) -> None:
+    def __init__(self, resolved: ResolvedProvider, request: TextGenerationRequest) -> None:
         super().__init__(resolved, request)
         self._started = False
         self._saw_reasoning = False
 
-    def _chunk_events(self, payload: dict) -> list[StreamEvent]:
+    def _chunk_events(self, payload: dict[str, Any]) -> list[StreamEvent]:
         events: list[StreamEvent] = []
         if payload.get("model"):
             self.model = str(payload["model"])

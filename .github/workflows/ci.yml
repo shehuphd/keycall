@@ -29,6 +29,12 @@ jobs:
       - name: Lint
         run: ruff check src tests
 
+      - name: Type check
+        # The package ships py.typed, so its annotations are a promise to
+        # callers' type checkers. Left ungated, the error count drifted to
+        # 27 unnoticed across several releases.
+        run: mypy src
+
       - name: Test
         # No provider secrets: the suite runs against recorded fixtures
         # only; live tests are deselected by the default -m filter.

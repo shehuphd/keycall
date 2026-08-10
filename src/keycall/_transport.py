@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -394,7 +394,7 @@ class Transport(_TransportCore):
         *,
         operation: str,
         translate_error: ErrorTranslator | None = None,
-    ):
+    ) -> Iterator[tuple[httpx.Headers, Iterator[tuple[str | None, str]]]]:
         """Open a streaming request. Yields (headers, event_iterator) where
         the iterator produces (event_name, data) SSE pairs. Never retries:
         streaming is generation, and generation is never retried. Pre-stream
@@ -547,7 +547,7 @@ class AsyncTransport(_TransportCore):
         *,
         operation: str,
         translate_error: ErrorTranslator | None = None,
-    ):
+    ) -> AsyncIterator[tuple[httpx.Headers, AsyncIterator[tuple[str | None, str]]]]:
         try:
             http_request = self._client.build_request(
                 spec.method,
@@ -576,7 +576,9 @@ class AsyncTransport(_TransportCore):
         finally:
             await response.aclose()
 
-    async def _aiter_sse(self, response: httpx.Response, operation: str):
+    async def _aiter_sse(
+        self, response: httpx.Response, operation: str
+    ) -> AsyncIterator[tuple[str | None, str]]:
         decoder = _SSEDecoder()
         total = 0
         try:

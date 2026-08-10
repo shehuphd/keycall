@@ -128,6 +128,18 @@ def browse_models(
                 if "error" in checked:
                     return checked
                 discovery = registry.cached_discovery(target_id)
+                if discovery is None:
+                    # check_target stores the listing, but the entry carries
+                    # the same 5-minute TTL the library cache uses and can
+                    # expire between the write and this read. Rare, and a
+                    # retry fixes it; reading `.models` off None here would
+                    # have been a 500 with no explanation.
+                    return {
+                        "error": {
+                            "code": "cache_expired",
+                            "message": "the model list expired while loading; try again",
+                        }
+                    }
 
     if category is None:
         return _discovery_dict(discovery)

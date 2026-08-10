@@ -17,6 +17,7 @@ from urllib.parse import quote
 from .._classify import classify_model_id
 from .._enums import ModelCategory, Operation
 from .._errors import ErrorCode, KeyCallError
+from .._registry import ResolvedProvider
 from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
@@ -94,7 +95,7 @@ class _GeminiStreamAssembler(StreamAssembler):
     (live-verified 2026-08-08). Completion is therefore the connection
     close after a finishReason was seen, via on_close()."""
 
-    def __init__(self, resolved, request) -> None:
+    def __init__(self, resolved: ResolvedProvider, request: TextGenerationRequest) -> None:
         super().__init__(resolved, request)
         self._started = False
         self._seen_citations: set[tuple[str, str | None, str | None]] = set()

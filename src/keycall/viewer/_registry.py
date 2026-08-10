@@ -13,6 +13,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
+
 from .._cache import DEFAULT_TTL_SECONDS
 from .._client import KeyCall
 from .._sanitize import safe_display_name
@@ -63,7 +65,9 @@ class _Entry:
 class Registry:
     """Owns every loaded credential for the life of the viewer process."""
 
-    def __init__(self, targets: list[Target], *, httpx_transport=None) -> None:
+    def __init__(
+        self, targets: list[Target], *, httpx_transport: httpx.BaseTransport | None = None
+    ) -> None:
         self._lock = threading.Lock()
         self._entries: dict[int, _Entry] = {}
         self._next_id = 0

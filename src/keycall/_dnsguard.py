@@ -67,7 +67,13 @@ def validate_and_pin(url: httpx.URL, *, provider: str) -> tuple[httpx.URL, str] 
             retryable=True,
         ) from exc
 
-    addresses = [info[4][0] for info in infos]
+    # sockaddr's first element is the IP string for AF_INET/AF_INET6, but the
+    # tuple shape varies by address family and can hold a non-string there.
+    # Anything that isn't a string cannot be parsed as an IP, so it is
+    # dropped rather than handed to _blocked, where it would raise instead
+    # of returning a verdict. Dropping every candidate leaves the list empty
+    # and the refusal below fires, which is the safe direction for a guard.
+    addresses = [info[4][0] for info in infos if isinstance(info[4][0], str)]
     if not addresses:
         raise KeyCallError(
             f"{host} resolved to no addresses",

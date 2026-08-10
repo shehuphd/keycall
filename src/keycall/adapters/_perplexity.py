@@ -41,7 +41,7 @@ class _PerplexityStreamAssembler(CompatStreamAssembler):
     chat.completion.done object instead of `data: [DONE]` (live-verified
     2026-08-08). Citations and search_results ride on every chunk."""
 
-    def _collect_citations(self, payload: dict) -> list[StreamEvent]:
+    def _collect_citations(self, payload: dict[str, Any]) -> list[StreamEvent]:
         events: list[StreamEvent] = []
         seen = {c.url for c in self.citations}
         for entry in payload.get("search_results") or []:

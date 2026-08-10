@@ -12,6 +12,7 @@ import json
 import os
 import re
 import stat
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -120,10 +121,14 @@ def _parse_json(text: str) -> list[Target]:
 
 
 def _parse_toml(text: str) -> list[Target]:
-    try:
+    # Version-gated rather than try/except, because a type checker can
+    # evaluate sys.version_info against its configured target and check the
+    # branch that actually applies. The try/except form left both imports
+    # unresolvable and needed an ignore comment to stay quiet.
+    if sys.version_info >= (3, 11):
         import tomllib
-    except ModuleNotFoundError:  # Python 3.10
-        import tomli as tomllib  # type: ignore[no-redef]
+    else:  # Python 3.10 gets the backport, declared as a dependency.
+        import tomli as tomllib
     try:
         payload = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
@@ -141,7 +146,7 @@ def _parse_toml(text: str) -> list[Target]:
 
 
 def _file_warnings(path: Path) -> list[SourceWarning]:
-    warnings = []
+    warnings: list[SourceWarning] = []
     try:
         mode = path.stat().st_mode
     except OSError:

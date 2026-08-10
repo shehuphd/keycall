@@ -156,7 +156,11 @@ def run_verify(
     and closed for the duration of the call."""
     label = safe_display_name(target.display_name)
     owns_client = client is None
-    if owns_client:
+    # Checked as `client is None` rather than `if owns_client` so the type
+    # narrows: every use below is then known to be a live client, and a
+    # future edit that forgets to open one is a type error rather than an
+    # AttributeError at verification time.
+    if client is None:
         try:
             client = KeyCall(
                 provider=target.provider,

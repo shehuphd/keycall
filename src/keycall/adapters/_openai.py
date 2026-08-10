@@ -11,6 +11,7 @@ from typing import Any
 from .._classify import classify_model_id
 from .._enums import Operation
 from .._errors import ErrorCode, KeyCallError
+from .._registry import ResolvedProvider
 from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
@@ -81,7 +82,12 @@ def _call_echo(item: dict[str, Any], reasoning: dict[str, Any] | None) -> str | 
 
 
 class _OpenAIStreamAssembler(StreamAssembler):
-    def __init__(self, resolved, request, adapter: OpenAIAdapter) -> None:
+    def __init__(
+        self,
+        resolved: ResolvedProvider,
+        request: TextGenerationRequest,
+        adapter: OpenAIAdapter,
+    ) -> None:
         super().__init__(resolved, request)
         self._adapter = adapter
         self._final: InvocationResult | None = None

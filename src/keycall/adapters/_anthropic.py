@@ -11,6 +11,7 @@ from typing import Any
 from .._classify import classify_model_id
 from .._enums import Operation
 from .._errors import ErrorCode, KeyCallError
+from .._registry import ResolvedProvider
 from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
@@ -65,7 +66,12 @@ class _AnthropicStreamAssembler(StreamAssembler):
     content_block_start/delta/stop, message_delta (usage + stop_reason),
     message_stop terminal, ping keep-alives, in-band error events."""
 
-    def __init__(self, resolved, request, adapter: AnthropicAdapter) -> None:
+    def __init__(
+        self,
+        resolved: ResolvedProvider,
+        request: TextGenerationRequest,
+        adapter: AnthropicAdapter,
+    ) -> None:
         super().__init__(resolved, request)
         self._adapter = adapter
         # index -> content block type ("text", "tool_use:<name>", ...)
