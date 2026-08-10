@@ -254,7 +254,7 @@ def test_dns_guard_pins_public_address_and_keeps_hostname(monkeypatch):
     assert pinned is not None
     url, original_host = pinned
     assert url.host == "93.184.216.34"          # connects to the checked IP
-    assert original_host == "llm.example.edu"   # TLS/Host keep the real name
+    assert original_host == "llm.example.edu"   # TLS/Host keep the original name
     assert url.path == "/v1/models"
 
 

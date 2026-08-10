@@ -171,7 +171,7 @@ def context_limit(entry: Mapping[str, Any]) -> int | None:
             value = int(raw)
         except (TypeError, ValueError):
             continue
-        # A zero or negative ceiling is a provider bug, not a real limit.
+        # A zero or negative ceiling is a provider bug, not a usable limit.
         if value > 0:
             return value
     return None
@@ -677,7 +677,7 @@ class ProviderAdapter(ABC):
             # only mechanism KeyCall has for schema enforcement here, forces
             # the model to call exactly that tool and nothing else in the
             # same turn — mechanically incompatible with also invoking the
-            # server-side web_search tool. This is a real API constraint,
+            # server-side web_search tool. This is an API constraint,
             # not a live-probed guess.
             raise KeyCallError(
                 "anthropic cannot combine web_search with response_schema: "

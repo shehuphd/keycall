@@ -15,7 +15,7 @@ Routes (all under the base "/"):
 
 Auth: a token is required on every /api/* request (X-KeyCall-Token header or
 ?token= query param). Unlike TraceAct's opt-in token, it is mandatory here:
-this server holds live credentials and can make real provider calls. The
+this server holds live credentials and can make billable provider calls. The
 page shell and static assets are unauthenticated — they're the same bytes
 `pip install keycall` ships, and every credential-touching path is behind
 /api. The token is printed once to the terminal and embedded in the opened

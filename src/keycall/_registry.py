@@ -102,7 +102,7 @@ def catalog_version() -> str:
 
 # The catalog ships inside the package, so it only moves when KeyCall is
 # released. Provider facts drift continuously (Gemini withdrew six listed
-# models from new keys inside a week), so an old catalog is a real signal
+# models from new keys inside a week), so an old catalog is a meaningful signal
 # worth surfacing rather than a number nobody reads. Ninety days is the
 # point where "recently verified" stops being a fair claim.
 CATALOG_STALE_AFTER_DAYS = 90

@@ -35,9 +35,9 @@ keycall verify --provider openai --source env:OPENAI_API_KEY --generate
 ✓ OPENAI_API_KEY: generated with gpt-5.6-luna (filtered position 0, provider-list position 123, 830 ms, total tokens: 18)
 ```
 
-That is one command telling you the key is live, how many text models it can
-actually reach, and that a real generation came back — including which model
-answered and where it sat in the provider's own list. Swap `openai` for
+That is one command telling you the key is valid, how many text models it can
+reach, and that a generation came back — including which model answered and
+where it sat in the provider's own list. Swap `openai` for
 `anthropic`, `gemini`, `deepseek`, `perplexity`, or `moonshot` and it works the
 same way.
 

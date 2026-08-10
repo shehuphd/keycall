@@ -72,7 +72,7 @@ def test_prompt_and_response_content_never_in_traces(trace_file):
     assert PROMPT_CANARY not in content
     assert "response" not in json.dumps(
         [json.loads(line).get("events", []) for line in content.splitlines() if line.strip()]
-    ) or True  # structural check below is the real assertion
+    ) or True  # structural check below is the binding assertion
     # No event carries prompt or generated text fields.
     for line in content.splitlines():
         if not line.strip():

@@ -730,8 +730,8 @@ in your browser. Four tabs:
 - **Playground** — pick a target and model, write a prompt (optional system
   prompt), toggle web search or tool calling, attach a picture, a recording
   (from a file, or the microphone button in the message box, which encodes
-  to 16 kHz mono WAV in the browser), or a document, and run a real
-  generation. Results show text,
+  to 16 kHz mono WAV in the browser), or a document, and send it to the
+  provider. Results show text,
   timing, token usage, finish reason, and rendered citation links. An
   attachment kind the selected key cannot send is disabled with a line
   naming which of your keys to use instead, read from the same catalog the

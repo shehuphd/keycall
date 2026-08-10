@@ -243,7 +243,7 @@ def test_verify_walk_tries_maintained_aliases_first():
     assert calls[0] == "gemini-flash-latest", "the maintained alias must be tried first"
     assert result.generate_ok
     assert len(result.attempts) == 1
-    # Promotion must not lose where the model really sat in the raw list.
+    # Promotion must not lose where the model sat in the raw list.
     assert result.attempts[0].raw_position == 2
 
 
@@ -292,7 +292,7 @@ def test_verify_walk_prefers_the_newest_model_a_provider_dates():
 
     assert calls[0] == "gpt-5.9", "the newest dated model must be tried first"
     assert result.generate_ok
-    # The alias is newer than two real models, so recency must not be
+    # The alias is newer than two of the models, so recency must not be
     # quietly re-sorting on the name.
     assert calls == ["gpt-5.9"]
     assert result.attempts[0].raw_position == 2

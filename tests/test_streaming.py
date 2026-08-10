@@ -89,7 +89,7 @@ def openai_stream_body(include_terminal=True):
 def test_stream_duration_includes_time_to_first_byte():
     """Providers that buffer before the first byte spend most of the round
     trip there; measuring only from the response headers reported ~1% of
-    the real duration on Anthropic."""
+    the elapsed duration on Anthropic."""
     latency_s = 0.05
 
     def handler(request: httpx.Request) -> httpx.Response:

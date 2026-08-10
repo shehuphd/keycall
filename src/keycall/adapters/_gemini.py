@@ -563,7 +563,7 @@ class GeminiAdapter(ProviderAdapter):
                 grounding = candidate.get("groundingMetadata")
                 if isinstance(grounding, dict):
                     # web.uri is a vertexaisearch.cloud.google.com redirect,
-                    # by Google's design; title names the real source.
+                    # by Google's design; title names the original source.
                     for chunk in grounding.get("groundingChunks") or []:
                         web = chunk.get("web") if isinstance(chunk, dict) else None
                         if isinstance(web, dict) and web.get("uri"):

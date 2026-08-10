@@ -1144,7 +1144,7 @@ def test_targets_tell_the_browser_what_each_key_can_accept():
     assert accepts["gemini"]["audio"] == {"bytes": True, "url": False}
     # DeepSeek takes no attachment of any kind.
     assert all(form == {"bytes": False, "url": False} for form in accepts["deepseek"].values())
-    # And the suggestion of where to turn instead names real providers.
+    # And the suggestion of where to turn instead names valid providers.
     assert body["providers_accepting"]["audio"] == ["gemini"]
     assert "deepseek" not in body["providers_accepting"]["image"]
     assert CANARY not in json.dumps(body)

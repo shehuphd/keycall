@@ -3,7 +3,7 @@ verify report over a loaded target source. Runs entirely on the standard
 library — no new dependency on the base package.
 
 A token is always required (unlike TraceAct's viewer, where auth is
-opt-in): this server holds live credentials in memory and can trigger real
+opt-in): this server holds live credentials in memory and can trigger billable
 provider calls, a materially higher-stakes local surface than a read-only
 trace viewer.
 """

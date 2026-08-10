@@ -54,7 +54,7 @@ _PAGE_LIMIT = "1000"
 # implemented by forcing a single synthetic tool whose input_schema is the
 # caller's response_schema, then reading that tool call's input back as
 # the answer (live-verified 2026-08-06). This name only needs to be
-# distinguishable from a real tool the caller might add once general tool
+# distinguishable from a caller-defined tool the caller might add once general tool
 # calling exists — it's never sent to or interpreted by the model as
 # anything but an arbitrary tool name.
 _STRUCTURED_OUTPUT_TOOL_NAME = "keycall_response"

@@ -357,7 +357,7 @@ def _blue_png() -> bytes:
 def test_live_image_input_every_supporting_target():
     """Image wire shapes differ per provider and are easy to get subtly
     wrong (a mislabelled media type is a 400 on two of them), so each
-    release re-checks that a real image round-trips."""
+    release re-checks that an image round-trips."""
     source = os.environ.get("KEYCALL_LIVE_SOURCE")
     if not source:
         pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
@@ -418,7 +418,7 @@ def test_live_image_input_every_supporting_target():
 def test_live_audio_and_file_input():
     """Audio is Gemini-only and documents work on three providers; both
     wire shapes are easy to get subtly wrong, so each release re-reads a
-    real WAV and a real PDF."""
+    valid WAV and a valid PDF."""
     source = os.environ.get("KEYCALL_LIVE_SOURCE")
     if not source:
         pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
@@ -559,7 +559,7 @@ def test_live_embeddings():
 def test_live_image_generation():
     """Both providers answer in different shapes (OpenAI a dedicated images
     endpoint, Gemini an inlineData part on generateContent), and the bytes
-    have to decode to a real image, not just arrive."""
+    have to decode to a valid image, not just arrive."""
     source = os.environ.get("KEYCALL_LIVE_SOURCE")
     if not source:
         pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")

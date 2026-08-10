@@ -286,7 +286,7 @@ class TextGenerationRequest:
     """Enable the provider's native web search/retrieval tool. A bare
     boolean, not a general tool-calling surface — every provider that
     supports this takes it as one on/off switch, and adding configurable
-    tool schemas is a bigger primitive KeyCall doesn't need until a real
+    tool schemas is a bigger primitive KeyCall doesn't need until a
     caller needs more than search. Providers without a native search tool
     (DeepSeek, Moonshot, custom targets) raise UNSUPPORTED_OPERATION rather
     than silently ignoring the request. Perplexity's Sonar always searches

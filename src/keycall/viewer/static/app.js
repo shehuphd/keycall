@@ -778,7 +778,7 @@ function envelopeOf(samples, bars = 28) {
 // Pictures, sound files, and documents all travel the same way: the browser
 // holds the picked bytes as base64, the server decodes them back into the
 // same ImageInput/AudioInput/FileInput a library caller would construct, and
-// the adapters apply their own rules. The Playground exercises the real path
+// the adapters apply their own rules. The Playground exercises the same path
 // rather than a viewer-only shortcut.
 //
 // `field` is the JSON key posted to the server. `noun` is what a person

@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Playground sends recordings and documents.** Both already worked
   from the library and neither had a control, so a caller could send a WAV
   or a PDF that a viewer user could not. Tick **Play it a sound** or
-  **Attach a document** and it goes out as a real `AudioInput` or
+  **Attach a document** and it goes out as an `AudioInput` or
   `FileInput` on the user turn. The browser posts base64 and the server
   decodes it, the same route pictures take, so the Playground exercises the
   path a library caller uses rather than a viewer-only shortcut. A document
@@ -134,7 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The viewer Playground sends images: tick **Image**, pick a file or paste
-  a URL, and it goes out as a real `ImageInput` on the user turn. The
+  a URL, and it goes out as an `ImageInput` on the user turn. The
   browser posts the file as base64 and the server decodes it, so the
   Playground exercises the same path a library caller takes rather than a
   viewer-only shortcut. An image can carry a turn with no prompt. The
@@ -231,7 +231,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   promise `catalog_stale` carried. Providers that report no cost leave it
   `None`, meaning not reported rather than zero.
 - **Audio and document input.** `AudioInput` and `FileInput` join
-  `ImageInput` as real content parts. Documents (PDF) work on OpenAI,
+  `ImageInput` as first-class content parts. Documents (PDF) work on OpenAI,
   Anthropic, and Gemini; audio is Gemini-only, because OpenAI's Responses
   API has no audio content part and Anthropic, Moonshot, and Perplexity
   each reject one (all verified 2026-08-09 by sending a WAV and a PDF).
@@ -402,7 +402,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `round_trip_duration_ms` on a streamed result excluded the request and
   the wait for the first byte, timing only from the response headers to
   the last event. On providers that buffer before responding it reported a
-  small fraction of the real duration — about 1% on Anthropic, which read
+  small fraction of the elapsed duration — about 1% on Anthropic, which read
   like a cache hit. The clock now starts before the request goes out, as
   it always has on the non-streamed path.
 - The viewer reported "unreported tokens" whenever a provider sent no
@@ -493,7 +493,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-component contracts.
 - CI test matrix includes Python 3.14.
 - Live verification modes: a `live`-marked pytest suite (deselected by
-  default) running the verify walk against real providers; a manual-only
+  default) running the verify walk against live providers; a manual-only
   `live-warn` CI job that reports without failing; and a `live-strict`
   release gate that blocks publishing until every target verifies,
   including when the `KEYCALL_LIVE_TARGETS` secret is absent. Credentials
@@ -600,7 +600,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   token renders a clear explanation instead of a broken page.
 - **Local web viewer** (`keycall view --source ./keys.toml`): dashboard of
   loaded targets with live key checks, model catalog browser with category
-  filters, playground for real generation calls (including web search with
+  filters, playground for live generation calls (including web search with
   rendered citations), and a verify report — all in the browser. Standard
   library only; static assets ship in the wheel. A per-run auth token is
   mandatory on every API request (printed once, never persisted), credentials

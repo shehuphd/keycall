@@ -1,7 +1,7 @@
 """Normalized error codes and the single public exception type.
 
 One exception class with a typed ``ErrorCode`` discriminator. Subclasses
-may be added later if real caller behavior demonstrates useful catch
+may be added later if observed caller behavior demonstrates useful catch
 boundaries; starting flat is the reversible choice.
 """
 

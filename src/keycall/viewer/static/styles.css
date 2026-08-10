@@ -232,7 +232,7 @@ a { color: var(--accent); }
      the bottom of the settings; what they no longer share is a dependence
      on each other's content. */
   align-items: stretch;
-  /* Refined at runtime by sizePlayground(), which measures the real
+  /* Refined at runtime by sizePlayground(), which measures the actual
      distance from the top of this grid to the bottom of the window rather
      than assuming a fixed header height. This value is the fallback. */
   height: calc(100vh - 11rem);

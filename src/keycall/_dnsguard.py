@@ -9,7 +9,7 @@ This transport wrapper resolves the hostname once per request, rejects the
 request if any resolved address is private/loopback/link-local/reserved,
 then rewrites the URL to the validated address while preserving the original
 hostname for TLS SNI and the Host header — so certificate verification still
-runs against the real hostname, and the connection cannot be re-pointed
+runs against the original hostname, and the connection cannot be re-pointed
 between check and connect.
 
 Only wraps custom targets. Named providers route to hostnames from the
@@ -94,7 +94,7 @@ def _pin_request(request: httpx.Request, provider: str) -> httpx.Request:
         return request
     url, original_host = pinned
     request.url = url
-    # Preserve the real hostname for TLS verification and routing.
+    # Preserve the original hostname for TLS verification and routing.
     request.headers["Host"] = original_host
     request.extensions = dict(request.extensions)
     request.extensions["sni_hostname"] = original_host

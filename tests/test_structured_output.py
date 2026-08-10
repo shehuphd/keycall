@@ -307,7 +307,7 @@ def test_response_schema_with_type_key_but_wrong_value_type_is_not_rejected_by_k
 
 def test_schema_with_quotes_backslashes_and_unicode_round_trips_safely():
     """Injection-shaped content in a schema value must not corrupt the
-    outgoing JSON body — proves httpx's real JSON encoder is used, not
+    outgoing JSON body — proves httpx's own JSON encoder is used, not
     string concatenation, for every adapter that embeds response_schema."""
     hostile_schema = {
         "type": "object",
@@ -519,7 +519,7 @@ def test_normal_content_present_produces_no_reasoning_truncation_warning():
 
 def test_usage_md_documented_recipe_verbatim():
     """The exact schema and call shape from USAGE.md's 'Structured output'
-    section, including additionalProperties: false — the real OpenAI
+    section, including additionalProperties: false — the OpenAI
     requirement a schema lacking it would 400 on live (confirmed
     2026-08-06). Pins the documented recipe, not a looser stand-in."""
     schema = {
