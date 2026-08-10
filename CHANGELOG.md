@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The Playground sends recordings and documents.** Both already worked
   from the library and neither had a control, so a caller could send a WAV
-  or a PDF that a viewer user could not. Tick **Play it a sound** or
+  or a PDF that a viewer user couldn't. Tick **Play it a sound** or
   **Attach a document** and it goes out as an `AudioInput` or
   `FileInput` on the user turn. The browser posts base64 and the server
   decodes it, the same route pictures take, so the Playground exercises the
@@ -26,10 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tick keeps it, Escape or the cross bins it, and a kept recording appears
   above the box with a player so a silent take is caught here rather than
   blamed on the model. With a recording attached and nothing typed, Enter
-  sends, because there is no line to break and reaching for a modifier to
+  sends, because there's no line to break and reaching for a modifier to
   send a voice message is a step nobody expects.
 
-  The microphone is disabled on a key that cannot send audio, naming a key
+  The microphone is disabled on a key that can't send audio, naming a key
   that can, and hidden entirely in picture mode, on the same catalog
   reading the attachment toggles use. Blocked or missing microphones say
   which it was instead of failing quietly. A turn carrying only a recording
@@ -37,13 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "(no message)", which said the opposite of what happened, and carries a
   play button: every recording in a session stays playable, because each
   turn holds its own copy rather than sharing the composer's. Sending
-  detaches whatever went with the turn, so a recording or a picture cannot
+  detaches whatever went with the turn, so a recording or a picture can't
   ride along silently on the next one.
 
   Audio is captured as raw samples and encoded to WAV in the browser rather
   than handed to `MediaRecorder`, which looks like the obvious tool and is
   wrong twice over: Chrome produces `audio/webm;codecs=opus`, which Gemini
-  does not accept and KeyCall's byte sniffer does not recognise, so the
+  doesn't accept and KeyCall's byte sniffer doesn't recognise, so the
   attachment would be refused before leaving the machine, and the container
   differs per browser anyway (mp4 on Safari, ogg on Firefox). WAV is one
   format every browser can produce, Gemini accepts, and the sniffer already
@@ -51,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resamples to regardless, and which keeps a minute of speech near 2 MB
   instead of the ~11 MB that 48 kHz stereo would cost against an 8 MB body
   cap.
-- **An attachment the selected key cannot send is turned off, and says
+- **An attachment the selected key can't send is turned off, and says
   why.** Recordings reach only Gemini, and documents only OpenAI,
   Anthropic, and Gemini, so the control is dimmed with a line naming which
   of your loaded keys to pick instead. The list is read from the same
@@ -91,15 +91,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on Gemini and the newest model leads on OpenAI. When a provider does
   refuse a model with `model_not_available` or `model_not_suitable`, that
   model drops to the bottom of the list for the session, is labelled
-  "refused earlier", and cannot be picked again; the selection falls back
-  to one that has not been turned down. This is learned from what the
+  "refused earlier", and can't be picked again; the selection falls back
+  to one that hasn't been turned down. This is learned from what the
   provider answered rather than shipped as a list of retired models, which
   would be wrong for somebody the day it shipped.
 
 - **Candidate order follows the provider's own dates where it publishes
   them** (`SELECTION_RULE_VERSION` is now `4`). OpenAI, Anthropic, and
   Moonshot date every model they list, and a recently published model is
-  one the provider has not yet retired, so the walk tries the newest
+  one the provider hasn't yet retired, so the walk tries the newest
   first. Gemini and DeepSeek publish no dates, and maintained `-latest`
   aliases still lead there.
 
@@ -125,7 +125,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an invented ceiling is worse than an absent one. The viewer's "Context
   window" column appears for the providers that fill it.
 - `ImageInput`, `AudioInput`, and `FileInput` carried docstrings saying the
-  type was not accepted yet and that every adapter refused it before any
+  type wasn't accepted yet and that every adapter refused it before any
   network call. That stopped being true when the media paths shipped. Each
   now states which providers take it and in which form.
 
@@ -153,12 +153,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   async path was correct, it was untested.
 - **The Playground makes pictures.** A "Task" selector switches between
   writing text and making a picture; picture mode offers only that key's
-  image models, hides the controls that do not apply, and shows the result
-  inline, capped so it cannot push the page around, with a click to see it
+  image models, hides the controls that don't apply, and shows the result
+  inline, capped so it can't push the page around, with a click to see it
   full size and a link to save it. The full-size view carries a close
   button rather than relying on Escape or a backdrop click, neither of
   which a first-time user can see. The composer clears once a turn is on
-  screen, so a prompt cannot be sent twice by accident. The viewer's content-security policy now
+  screen, so a prompt can't be sent twice by accident. The viewer's content-security policy now
   allows `data:` images so the picture can render from bytes the page
   already holds, without writing it to disk or fetching anything remote.
 - **The Playground is a two-column workspace.** Settings live in a left
@@ -175,19 +175,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by the API field behind them: "Show the model a picture" instead of
   "Image", "When to use a tool" instead of "tool_choice", model categories
   as "Writes text" rather than `text_generation`. The picture panel says
-  outright that it sends a picture to a model and cannot make one, because
+  outright that it sends a picture to a model and can't make one, because
   "Image" read as image generation to a first-time user. Empty results are
   a designed state everywhere, saying what happened and what to try next,
   and the Generate and Run verify buttons report progress in their label
   instead of only greying out. Tab labels also line up with the header and
-  content, which they had not since the nav and main used different
+  content, which they hadn't since the nav and main used different
   gutters, and a hint that introduces a row of controls no longer sits
   crammed against them.
 
 ### Fixed
 
 - **Reloading the viewer logged you out.** The access token arrives in the
-  page URL and is stripped from the address bar so it does not linger in
+  page URL and is stripped from the address bar so it doesn't linger in
   browser history, but it was only held in a page variable, so a plain
   refresh left the page with no token and it died with "Not authorized".
   The token now lives in `sessionStorage` for the tab: reloads work, the
@@ -224,9 +224,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   embedding models that nothing in KeyCall could then invoke.
 - **`Usage.provider_units` carries non-token billing.** Perplexity reports
   a `cost` object whose `request_cost` is charged per call rather than per
-  token (verified 2026-08-09), which a token budget cannot see. Numeric
+  token (verified 2026-08-09), which a token budget can't see. Numeric
   entries now surface as `(name, value)` pairs; descriptive fields like
-  `search_context_size` are not units and are left out. The field had
+  `search_context_size` aren't units and are left out. The field had
   existed since 0.2.0 with nothing ever assigning it, the same broken
   promise `catalog_stale` carried. Providers that report no cost leave it
   `None`, meaning not reported rather than zero.
@@ -238,7 +238,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Media type is detected from the content for every kind, and a refusal
   names the providers that do accept it. This closes the last of the
   half-promised input types: nothing in the content taxonomy is now
-  exported without either working or saying precisely why it cannot.
+  exported without either working or saying precisely why it can't.
 - **Image input** on `generate_text()` and `stream_text()`: pass an
   `ImageInput` beside your text in a user message. Live-verified on OpenAI,
   Anthropic, Gemini, Perplexity, and Moonshot. Support splits by form
@@ -255,7 +255,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   400 for anything else (verified 2026-08-09; reported for kimi-k3, and the
   probe found it applies to the whole family). The error names the value
   that works rather than only refusing, and the permitted values still pass
-  through, so this does not become a blanket ban on sampling parameters.
+  through, so this doesn't become a blanket ban on sampling parameters.
 - `ModelDiscovery.catalog_stale` is now set, and carries a matching
   warning. The field has existed since 0.2.0 and nothing ever assigned it,
   so callers reading it always saw "fresh" no matter how old the bundled
@@ -269,7 +269,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `run_verify()` no longer raises when a target cannot be resolved (an
+- `run_verify()` no longer raises when a target can't be resolved (an
   unknown provider name with no protocol and base URL). It reports that
   target as `unresolvable_target` and carries on, so one malformed entry
   in a key file stops aborting verification of every other target.
@@ -291,7 +291,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carried no cache header at all, so a browser cached the page and its
   script heuristically and an open tab kept running the previous version's
   JavaScript against the new server. That is what made a control appear
-  dead or a status hang after an upgrade, and a plain reload did not clear
+  dead or a status hang after an upgrade, and a plain reload didn't clear
   it. This was the cause behind more than one "the UI isn't updating"
   report.
 - The viewer's model browser could hang on "Asking the provider…" forever
@@ -307,7 +307,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   match.
 - **OpenAI reasoning models rejected any replayed tool call.** When the
   model emits a `reasoning` item alongside a `function_call`, the call
-  cannot be replayed without it: the next request fails with HTTP 400
+  can't be replayed without it: the next request fails with HTTP 400
   naming the missing item. KeyCall discarded reasoning items as
   server-side traces, so every tool round on a reasoning model broke at
   the second turn. The item now travels in `ToolCall.opaque` and is
@@ -316,7 +316,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is why this survived the earlier live rounds; found by driving the
   Playground against gpt-5.3-chat-latest.
 - `ImageInput`, `AudioInput`, and `FileInput` now say plainly that text
-  generation does not accept them yet, in the error and on the types
+  generation doesn't accept them yet, in the error and on the types
   themselves. They are exported and validated, which reasonably reads as a
   promise of support; the refusal previously sounded like a malformed
   message rather than an unimplemented feature. It still raises
@@ -338,7 +338,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   text now live in the bundled catalog under each provider's
   `capabilities` block, each stamped with the date it was last verified
   against the live API. Gates and the error messages that list the working
-  alternatives read the same data, so they cannot drift apart, and adding a
+  alternatives read the same data, so they can't drift apart, and adding a
   capability is a catalog edit rather than a code change.
 
 - **Verification tries a provider's maintained `-latest` aliases before its
@@ -362,7 +362,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
-- OpenAI, like Gemini, lists models an account cannot invoke:
+- OpenAI, like Gemini, lists models an account can't invoke:
   `gpt-5-chat-latest` and `gpt-5.1-chat-latest` were both advertised and
   both returned "Model not found" on 2026-08-10, while `gpt-5.2` and
   `gpt-5.3` worked. The verify walk handles it by design, and the README
@@ -434,7 +434,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider raise `invalid_provider_response` rather than being dropped.
 - The live suite runs a full tool round per supporting provider, plus a
   capability-drift probe that fails if Perplexity ever starts accepting
-  tools, so the gate cannot silently outlive its evidence.
+  tools, so the gate can't silently outlive its evidence.
 
 ## [0.5.1] — 2026-08-08
 
@@ -469,7 +469,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Gemini rejects a `response_schema` containing `additionalProperties`
   (HTTP 400), while OpenAI's strict mode requires `additionalProperties:
-  false`. One schema cannot satisfy both providers; KeyCall passes the
+  false`. One schema can't satisfy both providers; KeyCall passes the
   caller's schema through unmodified to either.
 
 ## [0.4.1] — 2026-08-08
@@ -477,7 +477,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Code comments and docstrings state their constraints directly instead of
-  citing internal design documents that are not part of the repository.
+  citing internal design documents that aren't part of the repository.
 
 ## [0.4.0] — 2026-08-08
 
@@ -504,7 +504,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The README status line no longer hardcodes a version number; the 0.3.0
-  PyPI page showed "early release (0.2.0)" because the line was not bumped
+  PyPI page showed "early release (0.2.0)" because the line wasn't bumped
   with the release. The version now appears only in surfaces that update
   automatically (package metadata, this changelog, release tags).
 
@@ -563,15 +563,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known limitations (in addition to 0.2.0's)
 
-- Anthropic cannot combine `web_search=True` with `response_schema` in one
+- Anthropic can't combine `web_search=True` with `response_schema` in one
   call (forced tool_choice is mechanically incompatible with also invoking
   a second server-side tool); KeyCall raises before any network call.
-- Gemini's equivalent combination is not gated — no live-verified evidence
-  either way that Gemini itself rejects it, so it is passed through rather
+- Gemini's equivalent combination isn't gated — no live-verified evidence
+  either way that Gemini itself rejects it, so it's passed through rather
   than guessed at.
 - OpenAI's strict `json_schema` mode requires `additionalProperties: false`
   at every object level of the caller's schema, or the request 400s. This is
-  an OpenAI requirement; KeyCall does not rewrite caller-supplied schemas to
+  an OpenAI requirement; KeyCall doesn't rewrite caller-supplied schemas to
   add it.
 
 ## [0.2.0] — 2026-08-05
@@ -651,7 +651,7 @@ generation, live-verified against every supported provider.
   wire body when unset. Models with maintained evidence that they reject
   sampling parameters (OpenAI o-series and gpt-5; Anthropic Opus 4.7+,
   Opus 5+, Sonnet 5+) fail with `MODEL_NOT_SUITABLE` before any network call.
-- Usage fields distinguish "provider reported zero" from "provider did not
+- Usage fields distinguish "provider reported zero" from "provider didn't
   report", which stays `None` and is never fabricated.
 
 **Providers**
@@ -710,16 +710,16 @@ generation, live-verified against every supported provider.
 
 - Optional TraceAct integration emitting `keycall.list_models` and
   `keycall.text_generation` spans with safe fields only. Silent when TraceAct
-  is absent or the host has not configured it; disabled with one warning on an
+  is absent or the host hasn't configured it; disabled with one warning on an
   incompatible version.
 
 ### Known limitations
 
-- Streaming, tool calling, structured output, and non-text modalities are not
+- Streaming, tool calling, structured output, and non-text modalities aren't
   implemented.
-- Gemini's list endpoint advertises models an account cannot invoke and exposes
-  no lifecycle field, so they cannot be pre-filtered.
-- Perplexity's Sonar models are not API-discoverable and are maintained in the
+- Gemini's list endpoint advertises models an account can't invoke and exposes
+  no lifecycle field, so they can't be pre-filtered.
+- Perplexity's Sonar models aren't API-discoverable and are maintained in the
   bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 

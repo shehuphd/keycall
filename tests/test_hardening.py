@@ -511,7 +511,7 @@ def test_payment_required_is_not_reported_as_a_malformed_response():
 
 
 def test_model_level_feature_refusal_is_not_a_malformed_response():
-    """OpenAI supports web search, but gpt-3.5-turbo does not, so the
+    """OpenAI supports web search, but gpt-3.5-turbo doesn't, so the
     refusal is about the model rather than the request. Reporting it as
     invalid_provider_response sent the caller looking at their own JSON."""
     detail = "Tool 'web_search_preview' is not supported with gpt-3.5-turbo."

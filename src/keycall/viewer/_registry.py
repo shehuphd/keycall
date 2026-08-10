@@ -113,7 +113,7 @@ class Registry:
                 # Reaching past the client's public surface on purpose: the
                 # viewer ships with the library and these are the same
                 # frozen catalog facts the adapters gate on, so reading
-                # them here cannot drift from what a call would enforce.
+                # them here can't drift from what a call would enforce.
                 accepts=_accepts(entry.client._resolved.capabilities),
             )
             for entry_id, entry in entries

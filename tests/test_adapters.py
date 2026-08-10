@@ -665,7 +665,7 @@ def test_audio_and_file_gates_name_who_does_support_them():
 
 def test_non_token_billing_surfaces_in_provider_units():
     """Perplexity charges per request on top of tokens, so a budget built
-    on token counts alone cannot see it. The field existed since 0.2.0 and
+    on token counts alone can't see it. The field existed since 0.2.0 and
     nothing ever populated it."""
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -699,7 +699,7 @@ def test_non_token_billing_surfaces_in_provider_units():
     units = dict(result.usage.provider_units or ())
     assert units["request_cost"] == 0.005
     assert units["total_cost"] == 0.00502
-    # Descriptive fields are not units and must not be coerced into one.
+    # Descriptive fields aren't units and must not be coerced into one.
     assert "search_context_size" not in units
     # Token counts stay where they were.
     assert result.usage.total_tokens == 24

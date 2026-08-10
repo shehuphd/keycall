@@ -138,7 +138,7 @@ def test_text_alongside_the_image_is_surfaced_not_dropped():
 
 def test_a_response_with_no_image_is_a_typed_error():
     """An empty result would leave the caller guessing why no picture came
-    back; the provider said something, and it should not be swallowed."""
+    back; the provider said something, and it shouldn't be swallowed."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

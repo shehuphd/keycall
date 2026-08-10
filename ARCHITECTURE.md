@@ -90,7 +90,7 @@ provider name ──► catalog profile ──► protocol ──► adapter
   <custom> + base_url openai-compatible              OpenAICompatibleAdapter (is_custom)
 ```
 
-An unknown name is an error unless the caller explicitly passes `protocol="openai-compatible"` with a validated HTTPS `base_url`. Custom targets get the DNS-rebinding guard; named providers route to catalog-maintained hostnames and do not.
+An unknown name is an error unless the caller explicitly passes `protocol="openai-compatible"` with a validated HTTPS `base_url`. Custom targets get the DNS-rebinding guard; named providers route to catalog-maintained hostnames and don't.
 
 ## Retry policy
 

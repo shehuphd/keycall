@@ -86,7 +86,7 @@ One verified example: Thinking Machines' Tinker exposes an
 OpenAI-compatible endpoint at
 `https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1`.
 Text generation, streaming, and tool calling all work through it
-(verified 2026-08-09); image input and schema enforcement do not. Its
+(verified 2026-08-09); image input and schema enforcement don't. Its
 `GET /models` returns an empty list by design, because the models you
 address there are your own fine-tuned sampler checkpoints
 (`tinker://…/sampler_weights/000080`) rather than a shared catalog, so
@@ -132,7 +132,7 @@ both = client.list_models(
 
 Categories: `TEXT_GENERATION`, `IMAGE_GENERATION`, `EMBEDDING`,
 `TRANSCRIPTION`, `SPEECH_GENERATION`, `VIDEO_GENERATION`, `REALTIME`,
-`UNKNOWN`. Models KeyCall cannot classify are `UNKNOWN` and appear only when
+`UNKNOWN`. Models KeyCall can't classify are `UNKNOWN` and appear only when
 you request that category explicitly, never in the default text picker.
 
 `ModelDiscovery` fields: `models`, `provider`, `categories`, `fetched_at`,
@@ -150,7 +150,7 @@ Results are cached in-process for 5 minutes, keyed by an HMAC fingerprint of
 the credential. Force a live call with `client.list_models(refresh=True)`,
 always do this when verifying a newly entered key.
 
-A successful listing proves the credential works for discovery. It does not
+A successful listing proves the credential works for discovery. It doesn't
 prove every listed model can be invoked; some providers advertise retired or
 quota-walled models with no lifecycle field to filter on.
 
@@ -180,7 +180,7 @@ result.provider_request_id
 
 `messages` accepts any sequence of `Message` objects, a plain list is fine.
 Roles are `"system"`, `"user"`, `"assistant"`. Dicts and bare strings are
-not accepted; there is one canonical representation.
+not accepted; there's one canonical representation.
 
 The lower-level path accepts a typed request, useful when you build requests
 in one place and execute them in another:
@@ -204,7 +204,7 @@ provider 400. Two shapes:
 
 The evidence lives in the bundled catalog per provider, with the date each
 claim was last checked against the live API. A provider that merely
-announces a deprecation is not gated: Gemini announced `temperature` and
+announces a deprecation isn't gated: Gemini announced `temperature` and
 `top_p` as deprecated in July 2026 and still accepts both, so KeyCall
 passes them through.
 
@@ -299,7 +299,7 @@ Rules and behavior:
 - `ToolResult.content` may be a string or a JSON-serializable mapping;
   adapters convert to each provider's required form.
 - `tool_choice` accepts `"auto"`, `"required"`, or `"none"`. Forcing one
-  named tool is not yet supported. Some provider/model pairs reject
+  named tool isn't yet supported. Some provider/model pairs reject
   `"required"` (DeepSeek thinking models return 400); the provider's typed
   error is surfaced.
 - `web_search` combines with tools on OpenAI, Anthropic, and Gemini (where
@@ -373,7 +373,7 @@ any network call:
 - **Bytes are the portable form.** Every image-capable provider accepts
   them, so `ImageInput(data=...)` works everywhere images work.
 - **A URL is only sent, never fetched.** Providers that refuse remote URLs
-  raise `UNSUPPORTED_OPERATION` telling you to pass bytes. KeyCall will not
+  raise `UNSUPPORTED_OPERATION` telling you to pass bytes. KeyCall won't
   download it for you: an adapter making its own request could be pointed
   at anything by caller-supplied data.
 - **The media type is detected from the content** (PNG, JPEG, GIF, WebP).
@@ -494,7 +494,7 @@ parsed = json.loads(result.text)   # result.text is the JSON string on every pro
 | Gemini | `generationConfig.responseSchema` | yes |
 | Moonshot | `response_format={"type":"json_schema",...}` | yes |
 | Perplexity | `response_format={"type":"json_schema",...}` | yes |
-| DeepSeek | falls back to `response_format={"type":"json_object"}` | no — valid JSON guaranteed, schema conformance is not |
+| DeepSeek | falls back to `response_format={"type":"json_object"}` | no — valid JSON guaranteed, schema conformance isn't |
 | Custom OpenAI-compatible targets | same fallback as DeepSeek, since capability is unverified | no |
 
 On a non-enforcing provider, `result.warnings` explains that the schema
@@ -507,14 +507,14 @@ Three provider requirements to know before writing a schema:
   from the start rather than discovering it from an error.
 - **Gemini rejects any `additionalProperties` key** in the schema with a
   400 (live-verified 2026-08-08) — the direct opposite of OpenAI's
-  requirement. One schema cannot satisfy both providers; strip or add the
+  requirement. One schema can't satisfy both providers; strip or add the
   key per provider before the call.
 - **DeepSeek requires the word "json" somewhere in the prompt** for its
   fallback mode, or it 400s. KeyCall detects this and inserts a short system
   instruction automatically when needed — you'll see it noted in
   `result.warnings`, not applied silently.
 
-`response_schema` and `web_search` cannot be combined on Anthropic (forcing
+`response_schema` and `web_search` can't be combined on Anthropic (forcing
 the structured-output tool prevents the model calling a different one in the
 same turn); combining them raises `UNSUPPORTED_OPERATION` before any network
 call. The same combination on Gemini is untested and not gated — KeyCall
@@ -733,7 +733,7 @@ in your browser. Four tabs:
   to 16 kHz mono WAV in the browser), or a document, and send it to the
   provider. Results show text,
   timing, token usage, finish reason, and rendered citation links. An
-  attachment kind the selected key cannot send is disabled with a line
+  attachment kind the selected key can't send is disabled with a line
   naming which of your keys to use instead, read from the same catalog the
   adapters gate on. Switch the task to **Make a picture** to call an image
   model instead.
@@ -775,7 +775,7 @@ absent.
 
 The raw key enters at exactly one boundary (the client constructor), is
 wrapped in a redacting type immediately, and is revealed at exactly one call
-site (the transport layer's header builder). It cannot be pickled, copied,
+site (the transport layer's header builder). It can't be pickled, copied,
 printed, or read back off the client. Everything provider-originated is
 sanitized before it reaches you; redirects are refused; response sizes are
 capped; custom endpoints face HTTPS, private-address, and DNS-rebinding

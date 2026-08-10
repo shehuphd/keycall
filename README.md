@@ -119,7 +119,7 @@ of it fails:
 | Moonshot/Kimi | openai-compatible | verified | verified |
 | Custom endpoint (explicit `base_url`) | openai-compatible | fixtures only | fixtures only |
 
-**OpenAI** advertises `-latest` aliases its own account cannot invoke, and
+**OpenAI** advertises `-latest` aliases its own account can't invoke, and
 is retiring that family wholesale. On 2026-08-10 all four were dead:
 `gpt-5-chat-latest` and `gpt-5.1-chat-latest` returned "Model not found",
 and `gpt-5.2-chat-latest` and `gpt-5.3-chat-latest` were newly deprecated
@@ -130,7 +130,7 @@ every attempt rather than trusting the first listed model.
 
 Because of that, **candidate order follows the provider's own dates where it
 publishes them.** OpenAI, Anthropic, and Moonshot date every model they
-list, and a model a provider published recently is one it has not yet
+list, and a model a provider published recently is one it hasn't yet
 retired, so KeyCall tries the newest first. Gemini and DeepSeek publish no
 dates, and there maintained `-latest` aliases lead instead, which is right
 for Gemini because it keeps those aimed at a live model. Sorting aliases
@@ -157,7 +157,7 @@ of the default text picker.
 
 **Perplexity**'s `GET /v1/models` is scoped to the Agent API and returns
 vendor-prefixed router models (`anthropic/...`, `perplexity/sonar`) that the
-Sonar route rejects. Sonar's own models are not API-discoverable, so KeyCall
+Sonar route rejects. Sonar's own models aren't API-discoverable, so KeyCall
 maintains them in its catalog and uses the list call purely as a credential
 check. Note the version prefix: the unversioned `https://api.perplexity.ai/models`
 returns 404 for every key, valid or not, so anything validating a key against
@@ -172,11 +172,11 @@ that path rejects good credentials. `/v1/models` answers 401 for a bad key and
   an OpenAI requirement, not a KeyCall one — write schemas with it from the
   start.
 - **Anthropic** implements structured output by forcing a single synthetic
-  tool call; it cannot be combined with `web_search=True` in the same
+  tool call; it can't be combined with `web_search=True` in the same
   request (forcing one tool prevents the model calling a different one), and
   KeyCall rejects that combination before any network call.
 - **Gemini**'s equivalent combination (`web_search=True` with
-  `response_schema`) is not gated — no live-verified evidence either way
+  `response_schema`) isn't gated — no live-verified evidence either way
   that Gemini rejects it, so KeyCall passes it through rather than guessing.
 - **DeepSeek** hard-requires the literal word "json" somewhere in the prompt
   for its `json_object` fallback mode, or it 400s. KeyCall detects this and
@@ -198,7 +198,7 @@ succeeds, so drift stays visible rather than being masked by a silent retry.
 The viewer is token-protected and binds `127.0.0.1`: a dashboard with live key
 checks, a sortable model browser, a Playground (text, pictures in and out,
 recordings, documents, tool calling, web search), and a verify report that
-walks every key. An attachment the selected key cannot send is turned off with
+walks every key. An attachment the selected key can't send is turned off with
 a line naming a key that can.
 
 `keycall verify` takes the same sources as the viewer — TXT, JSON, or TOML

@@ -186,7 +186,7 @@ def dedupe_citations(citations: Sequence[Citation]) -> tuple[Citation, ...]:
     the same source legitimately appears several times and collapsing by URL
     would destroy the attribution. OpenAI sends url and title with no
     excerpt, so a source cited for three claims arrives as three identical
-    records carrying no information the first does not. Only the second kind
+    records carrying no information the first doesn't. Only the second kind
     is removed. Before this rule KeyCall collapsed by URL on Perplexity and
     on streamed Gemini but not on non-streamed Gemini, so the same request
     returned different citations depending on the path.
@@ -558,7 +558,7 @@ class ProviderAdapter(ABC):
         if status_code == 429:
             return ErrorCode.RATE_LIMITED, True, message or "rate limited"
         if status_code == 400 and "is not supported with" in message:
-            # A capability the provider has but this model does not, e.g.
+            # A capability the provider has but this model doesn't, e.g.
             # OpenAI's web_search tool on gpt-3.5-turbo. The request is
             # well formed, so calling it a malformed response points the
             # caller at their own JSON instead of at the model choice.

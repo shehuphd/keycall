@@ -86,7 +86,7 @@ class _OpenAIStreamAssembler(StreamAssembler):
         self._adapter = adapter
         self._final: InvocationResult | None = None
         # Reasoning items arrive as their own output item before the call
-        # they belong to; the call cannot be replayed without one.
+        # they belong to; the call can't be replayed without one.
         self._reasoning: dict[str, Any] | None = None
 
     def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:

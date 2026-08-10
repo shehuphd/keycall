@@ -65,7 +65,7 @@ def list_targets(registry: Registry) -> dict[str, Any]:
         # Which providers take each attachment kind at all, loaded or not,
         # so the Playground can name a provider that would work when none
         # of the loaded keys can. Read from the catalog the gates read, so
-        # the suggestion cannot drift from what the adapters enforce.
+        # the suggestion can't drift from what the adapters enforce.
         "providers_accepting": {
             kind: sorted(providers_with(f"{kind}_input"))
             for kind in ("image", "audio", "file")
@@ -136,7 +136,7 @@ def browse_models(
     except ValueError:
         return {"error": {"code": "bad_request", "message": f"unknown category {category!r}"}}
     # Same order the verify walk uses: newest first where the provider dates
-    # its models, maintained aliases first where it does not. Without this
+    # its models, maintained aliases first where it doesn't. Without this
     # the Playground's model picker defaulted to whatever the provider
     # happened to list first, which on Gemini is a model the walk already
     # knows to skip — so the first generation a person tried could fail on a

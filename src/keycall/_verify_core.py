@@ -38,7 +38,7 @@ DEFAULT_ATTEMPTS = 8
 # first filtered candidate and made exactly one attempt; "2" is the
 # bounded, fully-reported walk; "3" adds maintained-alias-first ordering
 # within that walk; "4" prefers the provider's own recency where it
-# reports one and keeps "3" only where it does not.
+# reports one and keeps "3" only where it doesn't.
 SELECTION_RULE_VERSION = "4"
 
 
@@ -54,7 +54,7 @@ def order_candidates(models: Sequence[Model]) -> list[Model]:
     """Put the models most likely to answer first.
 
     Newest-first when the provider dates its own models, because a model it
-    published recently is one it has not yet retired. OpenAI, Anthropic, and
+    published recently is one it hasn't yet retired. OpenAI, Anthropic, and
     Moonshot report a date; Gemini and DeepSeek report none, and there
     recency is unavailable so maintained aliases lead instead — Gemini keeps
     `-latest` aimed at a live model, and on 2026-08-09 the first six text
@@ -165,7 +165,7 @@ def run_verify(
                 base_url=target.base_url,
             )
         except KeyCallError as error:
-            # A target the registry cannot resolve (unknown provider name
+            # A target the registry can't resolve (unknown provider name
             # with no protocol and base_url) is a configuration fault, not
             # a provider one. Report it as this target's result: one bad
             # entry in a key file must not abort verification of the rest.

@@ -2,7 +2,7 @@
 
 Serves DeepSeek, Perplexity, Moonshot, and explicit custom targets. Only
 the conventional Chat Completions surface is assumed; provider-specific
-extensions are not (registry research section 9).
+extensions aren't (registry research section 9).
 """
 
 from __future__ import annotations
@@ -44,9 +44,9 @@ from ._base import (
 
 
 def _provider_units(usage_raw: dict[str, Any]) -> tuple[tuple[str, float], ...] | None:
-    """Billing the token counts do not cover. Perplexity reports a `cost`
+    """Billing the token counts don't cover. Perplexity reports a `cost`
     object whose `request_cost` is charged per call rather than per token
-    (verified 2026-08-09), which is money a token budget cannot see. Only
+    (verified 2026-08-09), which is money a token budget can't see. Only
     numeric entries are carried; a descriptive field like
     search_context_size is not a unit."""
     cost = usage_raw.get("cost")

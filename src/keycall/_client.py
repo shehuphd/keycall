@@ -139,7 +139,7 @@ def _build_discovery(
     if stale:
         # The bundled catalog carries endpoints, auth schemes, and
         # capability evidence. When it is this old the evidence predates
-        # provider changes KeyCall has not seen, so say so instead of
+        # provider changes KeyCall hasn't seen, so say so instead of
         # presenting it as current.
         warnings.append(
             f"keycall's bundled provider catalog was last verified "
@@ -318,7 +318,7 @@ class _BaseClient:
 
     def _embedding_spec(self, request: EmbeddingRequest) -> Any:
         # The refusal lives in ProviderAdapter.build_embedding_spec, whose
-        # default raises for every adapter that has not implemented one.
+        # default raises for every adapter that hasn't implemented one.
         # Gating here as well would duplicate the message in a second
         # place that could drift from it.
         return self._adapter.build_embedding_spec(request)

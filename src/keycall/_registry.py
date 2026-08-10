@@ -172,7 +172,7 @@ def providers_with(capability: str) -> frozenset[str]:
 def schema_mechanism(provider: str) -> str | None:
     """How a provider enforces response_schema: "native" for a dedicated
     adapter mechanism, "json_schema" for the compat-family response_format,
-    None when it cannot enforce and KeyCall falls back to JSON mode."""
+    None when it can't enforce and KeyCall falls back to JSON mode."""
     profile = _load_catalog()["providers"].get(provider) or {}
     mechanism = (profile.get("capabilities") or {}).get("schema_enforcement")
     return str(mechanism) if mechanism else None

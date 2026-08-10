@@ -11,7 +11,7 @@ retried after possible transmission because no supported provider documents
 generation idempotency.
 
 Response bodies are read incrementally against a size cap so a hostile or
-broken endpoint cannot buffer unbounded data into memory.
+broken endpoint can't buffer unbounded data into memory.
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ class TransportResult:
 
 def _warn_if_proxy_bypasses_guard(provider: str) -> None:
     """httpx routes proxied requests through its own proxy transports, not
-    the guarded default transport, so the DNS-rebinding guard cannot see
+    the guarded default transport, so the DNS-rebinding guard can't see
     them. With a proxy the proxy resolves DNS anyway, but the private-address
     check is also skipped — surface that instead of staying silent."""
     import os

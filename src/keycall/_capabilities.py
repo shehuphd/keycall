@@ -5,7 +5,7 @@ under each provider's `capabilities` block, with the date it was last
 verified against the live API. This module is the typed read side: it
 answers "can this provider do X" and "does this model restrict sampling",
 so a gate and the error message listing the alternatives always read the
-same data and cannot drift apart.
+same data and can't drift apart.
 
 Adding a capability claim means editing the catalog, not this file, and it
 requires confirmed live evidence: an entry here blocks a request before it

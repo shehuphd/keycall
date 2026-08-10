@@ -71,7 +71,7 @@ class ImageInput:
     """A picture for the model to look at, as bytes or a URL. Support is
     per-provider and per-form: OpenAI, Anthropic, and Perplexity take
     either, Gemini and Moonshot take bytes only, and DeepSeek takes
-    neither. A form the provider cannot accept is refused with
+    neither. A form the provider can't accept is refused with
     UNSUPPORTED_OPERATION before any network call, so an unsupported
     attachment costs nothing. `media_type` is a hint; KeyCall sniffs the
     bytes and trusts what it finds over what the caller claimed.
@@ -93,7 +93,7 @@ class AudioInput:
     that accepts one today, and only as bytes; every other provider refuses
     it with UNSUPPORTED_OPERATION before any network call. Sending audio to
     a text model is a different thing from transcription, which is its own
-    model category KeyCall does not call.
+    model category KeyCall doesn't call.
     """
 
     url: str | None = None
@@ -415,7 +415,7 @@ class CitationFound:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ToolCallStarted:
     """The model began requesting a tool. The name is known; the arguments
-    are not yet. Never act on this event — wait for ToolCallComplete."""
+    aren't yet. Never act on this event — wait for ToolCallComplete."""
 
     id: str
     name: str
@@ -505,7 +505,7 @@ class Model:
     # and Perplexity has no list endpoint at all. Unlike a context window,
     # a missing value here costs a caller nothing, because the one consumer
     # (candidate ordering in verify) falls back to a different rule rather
-    # than needing a number it cannot get.
+    # than needing a number it can't get.
     released_at: datetime | None = None
     # Largest input the model accepts, in tokens, where the provider says.
     # Gemini, Anthropic, and Moonshot report it under three different
@@ -539,7 +539,7 @@ class Citation:
     search_results). ``url`` is what the provider gave KeyCall — for
     Gemini this is a vertexaisearch.cloud.google.com redirect, not the
     direct source, by Google's own design; it resolves correctly when
-    followed, KeyCall does not pre-resolve it."""
+    followed, KeyCall doesn't pre-resolve it."""
 
     url: str
     title: str | None = None

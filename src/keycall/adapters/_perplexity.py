@@ -3,7 +3,7 @@
 Perplexity needs its own adapter because its two surfaces don't line up:
 ``GET /v1/models`` is scoped to the Agent API and returns vendor-prefixed
 router models (``anthropic/claude-...``, ``perplexity/sonar``) that the
-Sonar generation route rejects outright. Sonar's own models are not
+Sonar generation route rejects outright. Sonar's own models aren't
 API-discoverable.
 
 So the list call still runs — it proves the credential is valid, which is

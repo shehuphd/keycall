@@ -51,7 +51,7 @@ _CSP = "default-src 'self'; img-src 'self' data:; media-src 'self' blob:"
 
 # Large enough for a base64-encoded photo from the Playground's image
 # picker (encoding costs about a third on top of the file size), small
-# enough that a single request cannot exhaust memory on a local server.
+# enough that a single request can't exhaust memory on a local server.
 _MAX_BODY_BYTES = 8 * 1024 * 1024
 _MAX_VERIFY_ATTEMPTS_DEFAULT = 8
 _MAX_VERIFY_ATTEMPTS = 32
@@ -126,7 +126,7 @@ class _Handler(BaseHTTPRequestHandler):
         # heuristically, so upgrading KeyCall leaves an open tab running the
         # previous version's JavaScript against the new server: the symptoms
         # are a control that does nothing or a status that never resolves,
-        # and a plain reload does not clear it.
+        # and a plain reload doesn't clear it.
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Security-Policy", _CSP)
         self.end_headers()

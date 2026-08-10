@@ -626,7 +626,7 @@ class GeminiAdapter(ProviderAdapter):
                 # gemini-2.5-* ("no longer available to new users") whose
                 # documented shutdown is still months out, and the whole
                 # 2.0-flash family (shut down 2026-06-01) is still listed.
-                # The list alone cannot tell a caller which models they can
+                # The list alone can't tell a caller which models they can
                 # actually invoke, so say what does.
                 guidance = (
                     f"{message} (gemini lists models an account cannot invoke and "

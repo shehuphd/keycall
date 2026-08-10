@@ -520,7 +520,7 @@ def test_live_embeddings():
     from keycall import KeyCall
     from keycall._registry import providers_with
 
-    # Embedding models are not what the text walk selects, so name one per
+    # Embedding models aren't what the text walk selects, so name one per
     # provider; a retirement here shows up as a clean model_not_available.
     models = {"openai": "text-embedding-3-small", "gemini": "gemini-embedding-001"}
     inputs = ["the first string", "an entirely different second string"]
@@ -568,7 +568,7 @@ def test_live_image_generation():
     from keycall import KeyCall
     from keycall._registry import providers_with
 
-    # Image models are not what the text walk selects, so name one per
+    # Image models aren't what the text walk selects, so name one per
     # provider; a retirement shows up as a clean model_not_available.
     models = {"openai": "gpt-image-1", "gemini": "gemini-3.1-flash-image"}
     signatures = ((b"\x89PNG\r\n\x1a\n", "png"), (b"\xff\xd8\xff", "jpeg"),

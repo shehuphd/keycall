@@ -9,11 +9,11 @@ This transport wrapper resolves the hostname once per request, rejects the
 request if any resolved address is private/loopback/link-local/reserved,
 then rewrites the URL to the validated address while preserving the original
 hostname for TLS SNI and the Host header — so certificate verification still
-runs against the original hostname, and the connection cannot be re-pointed
+runs against the original hostname, and the connection can't be re-pointed
 between check and connect.
 
 Only wraps custom targets. Named providers route to hostnames from the
-KeyCall-maintained catalog and are not user-supplied.
+KeyCall-maintained catalog and aren't user-supplied.
 """
 
 from __future__ import annotations

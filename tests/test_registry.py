@@ -82,7 +82,7 @@ def test_localhost_http_requires_explicit_opt_in():
 
 def test_capability_facts_come_from_the_catalog():
     """The gates and the error messages that list alternatives read the
-    same registry data, so they cannot drift apart."""
+    same registry data, so they can't drift apart."""
     from keycall._capabilities import (
         SCHEMA_ENFORCING_PROVIDERS,
         TOOL_CALLING_PROVIDERS,

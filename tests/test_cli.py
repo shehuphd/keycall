@@ -332,7 +332,7 @@ def test_candidate_order_falls_back_when_only_some_models_are_dated():
 
 def test_unresolvable_target_is_reported_not_raised():
     """One bad entry in a key file must not abort verification of the rest:
-    run_verify promises it never raises for a target it cannot use."""
+    run_verify promises it never raises for a target it can't use."""
     from keycall._sources import Target
     from keycall._verify_core import run_verify
 
