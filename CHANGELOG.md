@@ -128,6 +128,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   type wasn't accepted yet and that every adapter refused it before any
   network call. That stopped being true when the media paths shipped. Each
   now states which providers take it and in which form.
+- **The DNS-rebinding guard could raise instead of deciding.** It passed
+  the first element of every resolved `sockaddr` to the private-address
+  check, which parses it as an IP. That element is only a string for
+  AF_INET and AF_INET6; another address family would have raised inside the
+  guard rather than returning a verdict. Non-string entries are now dropped
+  before the check, and dropping them all leaves the existing "resolved to
+  no addresses" refusal to fire, which is the safe direction.
+- **The viewer could return a 500 when a model list expired mid-request.**
+  `browse_models` re-read the cached listing after refreshing it, and that
+  entry carries the same 5-minute TTL as the library cache, so expiry
+  between the write and the read left it reading attributes off `None`. It
+  now returns a `cache_expired` error asking for a retry.
+- **The package's type annotations are checked again.** KeyCall ships
+  `py.typed`, so its annotations are a promise to callers' type checkers,
+  but nothing ran mypy in CI and the error count had drifted to 27 across
+  several releases. All are fixed, none suppressed (two stale
+  `type: ignore` comments were deleted), and `mypy src` now runs in both CI
+  and the release workflow. The two defects above were found this way.
 
 ## [0.9.0] — 2026-08-10
 
