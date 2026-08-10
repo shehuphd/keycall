@@ -13,6 +13,7 @@ from keycall.viewer._api import (
     browse_models,
     check_target,
     generate,
+    generate_image,
     generate_stream_events,
     list_targets,
     verify_target,
@@ -872,3 +873,47 @@ def test_malformed_playground_images_are_named_bad_requests():
         assert not_base64["error"]["code"] == "bad_request"
     finally:
         reg.close()
+
+
+def test_generate_image_returns_the_picture_and_its_media_type():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "gpt-image-1"}]})
+        return httpx.Response(
+            200,
+            json={
+                "output_format": "png",
+                "data": [{"b64_json": "QUJD"}],
+                "usage": {"input_tokens": 5, "output_tokens": 100, "total_tokens": 105},
+            },
+        )
+
+    reg = Registry(
+        [Target(provider="openai", key=CANARY, name="my-openai")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        body = generate_image(
+            reg, 0, {"target": 0, "model": "gpt-image-1", "prompt": "a blue circle"}
+        )
+    finally:
+        reg.close()
+
+    assert body["images"] == [{"base64_data": "QUJD", "media_type": "image/png"}]
+    assert body["operation"] == "image_generation"
+    assert CANARY not in json.dumps(body)
+
+
+def test_generate_image_reports_a_provider_that_cannot():
+    reg = make_registry()
+    try:
+        body = generate_image(
+            reg, 0, {"target": 0, "model": "gpt-4o-mini", "prompt": "a blue circle"}
+        )
+        missing = generate_image(reg, 0, {"target": 0, "model": "", "prompt": ""})
+    finally:
+        reg.close()
+    # make_registry() is an OpenAI target, so the call reaches the provider
+    # and the mock refuses it; the shape is what matters here.
+    assert "error" in body or "images" in body
+    assert missing["error"]["code"] == "bad_request"

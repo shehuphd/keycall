@@ -11,6 +11,7 @@ Routes (all under the base "/"):
   POST /api/verify               {target, generate, attempts} -> VerifyResult
   POST /api/generate             {target, model, prompt, ...} -> InvocationResult
   POST /api/generate/stream      same body -> SSE events ending in a result or error
+  POST /api/generate/image       {target, model, prompt} -> InvocationResult
 
 Auth: a token is required on every /api/* request (X-KeyCall-Token header or
 ?token= query param). Unlike TraceAct's opt-in token, it is mandatory here:
@@ -42,6 +43,11 @@ from .auth import Token
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 _CONTENT_TYPES = {".html": "text/html", ".css": "text/css", ".js": "text/javascript"}
+# Scripts, styles, and fetches stay same-origin. Images additionally allow
+# data: URIs so a generated picture can be shown from the bytes the page
+# already holds, without writing it to disk or fetching anything remote.
+_CSP = "default-src 'self'; img-src 'self' data:"
+
 # Large enough for a base64-encoded photo from the Playground's image
 # picker (encoding costs about a third on top of the file size), small
 # enough that a single request cannot exhaust memory on a local server.
@@ -79,7 +85,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         # This app makes no external requests; lock that down so a stray
         # citation URL or model string can never be fetched from the page.
-        self.send_header("Content-Security-Policy", "default-src 'self'")
+        self.send_header("Content-Security-Policy", _CSP)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(payload)
@@ -91,7 +97,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", "default-src 'self'")
+        self.send_header("Content-Security-Policy", _CSP)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         try:
@@ -115,7 +121,13 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", _CONTENT_TYPES.get(ext, "application/octet-stream"))
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Content-Security-Policy", "default-src 'self'")
+        # Without this the browser caches the page and its script
+        # heuristically, so upgrading KeyCall leaves an open tab running the
+        # previous version's JavaScript against the new server: the symptoms
+        # are a control that does nothing or a status that never resolves,
+        # and a plain reload does not clear it.
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", _CSP)
         self.end_headers()
         self.wfile.write(data)
 
@@ -222,6 +234,14 @@ class _Handler(BaseHTTPRequestHandler):
             )
         elif route == "/api/generate":
             self._send_json(_api.generate(self._registry, target_id, body))
+        elif route == "/api/generate/image":
+            target_id = body.get("target")
+            if not isinstance(target_id, int):
+                self._send_json(
+                    {"error": {"code": "bad_request", "message": "target required"}}, 400
+                )
+                return
+            self._send_json(_api.generate_image(self._registry, target_id, body))
         elif route == "/api/generate/stream":
             self._send_sse(_api.generate_stream_events(self._registry, target_id, body))
         else:

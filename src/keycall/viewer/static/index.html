@@ -84,6 +84,13 @@
           <div class="pg-group">
             <h3>Key and model</h3>
             <div class="pg-row">
+              <label for="pg-mode">Task</label>
+              <select id="pg-mode">
+                <option value="text">Write text</option>
+                <option value="image">Make a picture</option>
+              </select>
+            </div>
+            <div class="pg-row">
               <label for="pg-target">Key</label>
               <select id="pg-target"></select>
             </div>
@@ -91,18 +98,22 @@
               <label for="pg-model">Model</label>
               <select id="pg-model"></select>
             </div>
-            <div class="pg-row">
+            <div class="pg-row" id="pg-maxtok-row">
               <label for="pg-maxtok">Longest reply</label>
               <input id="pg-maxtok" type="number" value="256" min="1">
             </div>
-            <div class="pg-row stacked">
+            <div class="pg-row stacked" id="pg-system-row">
               <label for="pg-system">Standing instructions</label>
               <input id="pg-system" type="text"
                      placeholder="Optional, e.g. &quot;answer in one short sentence&quot;">
             </div>
+            <p class="hint" id="pg-image-mode-note" hidden>
+              Picture models take a description and nothing else. Generating one
+              takes longer than text, often half a minute.
+            </p>
           </div>
 
-          <div class="pg-group">
+          <div class="pg-group" id="pg-extras">
             <h3>Extras</h3>
             <p class="hint">
               Support varies by model as well as provider. If one is refused,

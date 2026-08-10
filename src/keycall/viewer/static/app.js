@@ -406,17 +406,27 @@ el("models-refresh").addEventListener("click", () => loadModels(true));
 async function loadPlaygroundModels() {
   const id = el("pg-target").value;
   if (id === "") return;
+  const category = currentMode() === "image" ? "image_generation" : "text_generation";
   const sel = el("pg-model");
   clear(sel);
   const opt = document.createElement("option");
   opt.textContent = "loading models…";
   sel.appendChild(opt);
-  const data = await api(`/api/models?target=${id}&category=text_generation`);
+  const data = await api(`/api/models?target=${id}&category=${category}`);
   clear(sel);
   if (data.error) {
     const o = document.createElement("option");
     o.textContent = `error: ${data.error.code}`;
     sel.appendChild(o);
+    return;
+  }
+  if (!data.models.length) {
+    const none = document.createElement("option");
+    none.textContent =
+      currentMode() === "image"
+        ? "this key has no picture models"
+        : "this key has no text models";
+    sel.appendChild(none);
     return;
   }
   data.models.forEach((m) => {
@@ -428,6 +438,60 @@ async function loadPlaygroundModels() {
 }
 
 el("pg-target").addEventListener("change", loadPlaygroundModels);
+
+// --- task mode --------------------------------------------------------------
+
+// Image generation is its own operation, not a switch on text generation:
+// different models, a different request, and a picture rather than words
+// coming back. The mode drives which models are offered and which controls
+// make sense.
+function currentMode() {
+  return el("pg-mode").value;
+}
+
+function applyMode() {
+  const image = currentMode() === "image";
+  el("pg-extras").hidden = image;
+  el("pg-maxtok-row").hidden = image;
+  el("pg-system-row").hidden = image;
+  el("pg-image-mode-note").hidden = !image;
+  el("pg-prompt").placeholder = image
+    ? "Describe the picture you want. Press Generate, or Ctrl+Enter."
+    : "Ask anything. Press Generate, or Ctrl+Enter.";
+  loadPlaygroundModels();
+}
+
+el("pg-mode").addEventListener("change", applyMode);
+
+function addImageBubble(result) {
+  const bubble = addBubble("model");
+  (result.images || []).forEach((image) => {
+    const picture = document.createElement("img");
+    picture.className = "pg-picture";
+    picture.alt = "The generated picture";
+    picture.src = `data:${image.media_type};base64,${image.base64_data}`;
+    bubble.appendChild(picture);
+    const save = document.createElement("a");
+    save.href = picture.src;
+    save.download = `keycall-image.${(image.media_type || "image/png").split("/")[1]}`;
+    save.textContent = "Save this picture";
+    save.className = "meta";
+    bubble.appendChild(save);
+  });
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent =
+    `${result.model} · ${Math.round(result.round_trip_duration_ms)} ms · ` +
+    usageLabel(result.usage);
+  bubble.appendChild(meta);
+  (result.warnings || []).forEach((warning) => {
+    const note = document.createElement("div");
+    note.className = "meta";
+    note.textContent = warning;
+    bubble.appendChild(note);
+  });
+  return bubble;
+}
 
 // --- transcript -------------------------------------------------------------
 
@@ -650,8 +714,24 @@ async function runGeneration({ continuation }) {
     renderGeneration(note, { error: { code: "bad_request", message: err.message } });
     return;
   }
-  working(btn, "Generating…");
+  working(btn, currentMode() === "image" ? "Drawing…" : "Generating…");
   if (!continuation) addUserTurn(prompt, Boolean(images));
+  if (currentMode() === "image") {
+    const placeholder = addBubble("model");
+    placeholder.textContent = "Drawing. This usually takes longer than text…";
+    const data = await api("/api/generate/image", {
+      method: "POST",
+      body: { target: Number(el("pg-target").value), model, prompt },
+    });
+    placeholder.remove();
+    if (data.error) {
+      renderGeneration(addBubble("model"), data);
+    } else {
+      addImageBubble(data);
+    }
+    done(btn);
+    return;
+  }
   const out = addBubble("model");
   out.textContent = "Waiting for the model…";
   const body = {

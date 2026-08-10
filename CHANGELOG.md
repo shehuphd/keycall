@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check that fails if a parameter is added to one client and not the other,
   and a live async test in the release gate. No defects turned up: the
   async path was correct, it was untested.
+- **The Playground makes pictures.** A "Task" selector switches between
+  writing text and making a picture; picture mode offers only that key's
+  image models, hides the controls that do not apply, and shows the result
+  inline with a link to save it. The viewer's content-security policy now
+  allows `data:` images so the picture can render from bytes the page
+  already holds, without writing it to disk or fetching anything remote.
 - **The Playground is a two-column workspace.** Settings live in a left
   sidebar grouped as "Key and model" and "Extras"; the conversation owns
   the right, with turns as bubbles and a composer pinned at the bottom
@@ -153,6 +159,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hover, and formats the number with separators. Category cells read
   "Writes text" rather than `text_generation`, matching the filter
   dropdown.
+- **The viewer's static files are served `Cache-Control: no-store`.** They
+  carried no cache header at all, so a browser cached the page and its
+  script heuristically and an open tab kept running the previous version's
+  JavaScript against the new server. That is what made a control appear
+  dead or a status hang after an upgrade, and a plain reload did not clear
+  it. This was the cause behind more than one "the UI isn't updating"
+  report.
 - The viewer's model browser could hang on "Asking the provider…" forever
   if the page threw while loading. Any failure now lands in a visible
   panel with a way forward, and empty states are left-aligned with the

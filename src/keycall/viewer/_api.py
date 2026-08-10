@@ -37,6 +37,7 @@ __all__ = [
     "check_target",
     "error_body",
     "generate",
+    "generate_image",
     "generate_stream_events",
     "list_targets",
     "verify_target",
@@ -330,6 +331,33 @@ def generate(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[s
         return error_body(error)
 
     return _result_dict(result)
+
+
+def generate_image(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """Image generation is its own operation, not a flag on text: the
+    request shape, the result parts, and the models are all different."""
+    try:
+        client = registry.client(target_id)
+    except KeyError:
+        return {"error": {"code": "not_found", "message": "unknown target id"}}
+
+    model = body.get("model")
+    prompt = body.get("prompt")
+    if not model or not isinstance(model, str) or not prompt or not isinstance(prompt, str):
+        return {"error": {"code": "bad_request", "message": "model and prompt are required"}}
+
+    try:
+        result = client.generate_image(model=model, prompt=prompt)
+    except KeyCallError as error:
+        return error_body(error)
+
+    body_out = _result_dict(result)
+    body_out["images"] = [
+        {"base64_data": part.base64_data, "media_type": part.media_type}
+        for part in result.parts
+        if getattr(part, "kind", None) == "image"
+    ]
+    return body_out
 
 
 def generate_stream_events(
