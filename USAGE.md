@@ -13,7 +13,7 @@ Python 3.10+. Optional extras: `pip install "keycall[traceact]"` for tracing.
 
 ## Test KeyCall in under 60 seconds
 
-Test KeyCall against a key you already have. No config file needed: simply point KeyCall at an environment variable.
+No config file needed: simply point KeyCall at an environment variable for a key you already own.
 
 ```bash
 export OPENAI_API_KEY=...
