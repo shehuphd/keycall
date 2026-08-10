@@ -558,6 +558,63 @@ def test_live_embeddings():
     assert checked, "no embedding-capable target in the live source"
 
 
+def test_live_image_generation():
+    """Both providers answer in different shapes (OpenAI a dedicated images
+    endpoint, Gemini an inlineData part on generateContent), and the bytes
+    have to decode to a real image, not just arrive."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import base64
+
+    from keycall import KeyCall
+    from keycall._registry import providers_with
+
+    # Image models are not what the text walk selects, so name one per
+    # provider; a retirement shows up as a clean model_not_available.
+    models = {"openai": "gpt-image-1", "gemini": "gemini-3.1-flash-image"}
+    signatures = ((b"\x89PNG\r\n\x1a\n", "png"), (b"\xff\xd8\xff", "jpeg"),
+                  (b"RIFF", "webp"))
+
+    targets, _ = load_targets(source)
+    supporting = providers_with("image_generation")
+    checked = []
+    for target in targets:
+        if target.provider not in supporting:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+            read_timeout=180.0,
+        )
+        try:
+            result = client.generate_image(
+                model=models[target.provider],
+                prompt="A simple flat illustration of a blue circle on a white background",
+            )
+            assert result.parts, "no image part returned"
+            part = result.parts[0]
+            raw = base64.b64decode(part.base64_data or "")
+            kind = next((name for magic, name in signatures if raw.startswith(magic)), None)
+            assert kind is not None, (
+                f"{models[target.provider]} returned bytes that are not a known image "
+                f"format (first bytes {raw[:8]!r})"
+            )
+            assert kind in (part.media_type or ""), (
+                f"media_type {part.media_type!r} disagrees with the actual {kind} bytes"
+            )
+            print(
+                f"{target.display_name}: {len(raw)} byte {kind} from "
+                f"{models[target.provider]}, {result.usage.total_tokens} tokens"
+            )
+            checked.append(target.provider)
+        finally:
+            client.close()
+    assert checked, "no image-capable target in the live source"
+
+
 def test_live_async_client_parity():
     """The async client shares the adapters but has its own transport,
     context managers, and stream iteration. Everything shipped since 0.5.0

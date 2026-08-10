@@ -66,6 +66,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Image generation** (`generate_image()` on both clients), KeyCall's third
+  operation. Supported on OpenAI, which answers on a dedicated
+  `/images/generations` endpoint with base64 PNG, and on Gemini, whose
+  image models answer on the ordinary content endpoint with an inline JPEG
+  part; the two shapes normalize to the same `ImageOutput` parts. The
+  request is deliberately a model and a prompt only, because OpenAI's size
+  and count have no equivalent on Gemini. `media_type` is read from the
+  response rather than assumed, so saved bytes get the right extension. A
+  response carrying no image raises instead of returning an empty result,
+  and when Gemini answers a refusal in words the error repeats what the
+  model said. Anthropic, DeepSeek, Perplexity, and Moonshot generate no
+  images and refuse before any network call.
 - **Embeddings** (`embed()` on both clients), KeyCall's second operation.
   One `EmbeddingOutput` per input, in input order, so results zip against
   the strings that produced them; a provider returning a different count

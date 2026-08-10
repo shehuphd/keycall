@@ -35,6 +35,7 @@ from ._registry import (
 from ._transport import AsyncTransport, Transport
 from ._types import (
     EmbeddingRequest,
+    ImageGenerationRequest,
     InvocationResult,
     Message,
     Model,
@@ -291,6 +292,29 @@ class _BaseClient:
             result={"models": len(models), "filtered": len(discovery.models)},
         )
         return discovery
+
+    def _image_spec(self, request: ImageGenerationRequest) -> Any:
+        # The refusal lives in ProviderAdapter.build_image_spec, whose
+        # default covers every adapter without an implementation.
+        return self._adapter.build_image_spec(request)
+
+    def _parse_image(
+        self, request: ImageGenerationRequest, result: Any, trace: Any
+    ) -> InvocationResult:
+        invocation = self._adapter.parse_image_response(
+            result.payload,
+            headers=result.headers,
+            round_trip_duration_ms=result.duration_ms,
+            model=request.model,
+        )
+        trace.event(
+            "model",
+            operation="image_generation",
+            target=invocation.model,
+            duration_ms=invocation.round_trip_duration_ms,
+            result={"images": len(invocation.parts)},
+        )
+        return invocation
 
     def _embedding_spec(self, request: EmbeddingRequest) -> Any:
         # The refusal lives in ProviderAdapter.build_embedding_spec, whose
@@ -610,6 +634,23 @@ class KeyCall(_BaseClient):
             )
             return self._parse_invocation(request, result, trace)
 
+    def generate_image(self, *, model: str, prompt: str) -> InvocationResult:
+        """Generate a picture. The result's parts are ImageOutput values
+        carrying base64 data and the media type the provider produced."""
+        self._require_open()
+        request = ImageGenerationRequest(model=model, prompt=prompt)
+        spec = self._image_spec(request)
+        with _tracing.span(
+            "keycall.image_generation", provider=self.provider, model=model
+        ) as trace:
+            result = self._transport.request(
+                spec,
+                operation="image_generation",
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            return self._parse_image(request, result, trace)
+
     def embed(self, *, model: str, inputs: Sequence[str]) -> InvocationResult:
         """Embed one or more strings. The result's parts are EmbeddingOutput
         values in the order the inputs were given, so they zip together."""
@@ -794,6 +835,22 @@ class AsyncKeyCall(_BaseClient):
                 translate_error=self._adapter.translate_error,
             )
             return self._parse_invocation(request, result, trace)
+
+    async def generate_image(self, *, model: str, prompt: str) -> InvocationResult:
+        """Async twin of KeyCall.generate_image()."""
+        self._require_open()
+        request = ImageGenerationRequest(model=model, prompt=prompt)
+        spec = self._image_spec(request)
+        with _tracing.span(
+            "keycall.image_generation", provider=self.provider, model=model
+        ) as trace:
+            result = await self._transport.request(
+                spec,
+                operation="image_generation",
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            return self._parse_image(request, result, trace)
 
     async def embed(self, *, model: str, inputs: Sequence[str]) -> InvocationResult:
         """Async twin of KeyCall.embed()."""

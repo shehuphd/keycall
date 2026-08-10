@@ -203,6 +203,52 @@ class OpenAIAdapter(ProviderAdapter):
             )
         return models, None  # GET /models is unpaginated
 
+    def build_image_spec(self, request: Any) -> RequestSpec:
+        op = self.resolved.operations["image_generation"]
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"],
+            json_body={"model": request.model, "prompt": request.prompt},
+        )
+
+    def parse_image_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        model: str,
+    ) -> InvocationResult:
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise KeyCallError(
+                "image response missing 'data' array",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.IMAGE_GENERATION.value,
+            )
+        # The response names its own format; b64_json is what the images
+        # endpoint returns by default (verified 2026-08-10).
+        media_type = f"image/{payload.get('output_format', 'png')}"
+        images = [
+            (str(entry["b64_json"]), media_type)
+            for entry in payload["data"]
+            if isinstance(entry, dict) and entry.get("b64_json")
+        ]
+        usage_raw = payload.get("usage") or {}
+        return self.image_result(
+            images,
+            usage=Usage(
+                input_tokens=usage_raw.get("input_tokens"),
+                output_tokens=usage_raw.get("output_tokens"),
+                total_tokens=usage_raw.get("total_tokens"),
+            ),
+            model=model,
+            round_trip_duration_ms=round_trip_duration_ms,
+            provider_request_id=safe_request_id(
+                headers.get(self.resolved.provider_request_id_header or "")
+            ),
+        )
+
     def build_embedding_spec(self, request: Any) -> RequestSpec:
         op = self.resolved.operations["embeddings"]
         return RequestSpec(

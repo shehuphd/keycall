@@ -512,6 +512,41 @@ which is one request instead of N. OpenAI reports token usage for the
 batch; Gemini's batch endpoint reports none, so `usage` is empty there
 rather than fabricated.
 
+## Image generation
+
+```python
+result = client.generate_image(
+    model="gpt-image-1",
+    prompt="A flat illustration of a blue circle on a white background",
+)
+
+image = result.parts[0]
+image.media_type          # "image/png", "image/jpeg", …
+Path("out.png").write_bytes(base64.b64decode(image.base64_data))
+```
+
+| Provider | Image generation | Example model | Returns |
+|---|---|---|---|
+| OpenAI | yes | `gpt-image-1`, `gpt-image-2` | base64 PNG from `/images/generations` |
+| Gemini | yes | `gemini-3.1-flash-image` | base64 JPEG, from the ordinary content endpoint |
+| Anthropic, DeepSeek, Perplexity, Moonshot | no | | |
+
+- **The request is a model and a prompt, nothing else.** OpenAI accepts a
+  size and a count; Gemini's image models accept neither, and a parameter
+  that silently does nothing on half the providers is worse than no
+  parameter.
+- **`media_type` reports what the provider actually produced**, so the
+  bytes you write to disk carry the right extension. It is read from the
+  response, never assumed.
+- **A response with no image raises** rather than returning an empty
+  result. Gemini answers refusals and clarifying questions as text instead
+  of a picture, so the error repeats what the model said.
+- Generation is slow: these calls take tens of seconds, and the default
+  60-second read timeout can be tight. Pass a larger `read_timeout` on the
+  client for image work.
+- Image *generation* is separate from image *input*. Sending a picture to
+  a model is `ImageInput` on `generate_text()`, described above.
+
 ## Error handling
 
 Every failure raises `KeyCallError` with a typed `code`:

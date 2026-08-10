@@ -4,8 +4,9 @@ One consistent interface for validating AI-provider API keys, listing and filter
 
 **Status: early release.** Key validation, model listing and filtering,
 text generation, streaming, tool calling, native web search with normalized
-citations, structured JSON output, and image, audio, and document input all
-work and are live-verified against every provider that supports them. The API
+citations, structured JSON output, embeddings, image generation, and image,
+audio, and document input all work and are live-verified against every
+provider that supports them. The API
 is settled but may still shift before 1.0.
 
 Docs: [USAGE.md](https://github.com/shehuphd/keycall/blob/main/USAGE.md) for the full API and CLI reference · [ARCHITECTURE.md](https://github.com/shehuphd/keycall/blob/main/ARCHITECTURE.md) for the layer diagram and component contracts · [CHANGELOG.md](https://github.com/shehuphd/keycall/blob/main/CHANGELOG.md) for version history.
@@ -34,6 +35,7 @@ print(result.round_trip_duration_ms)
 - **Typed errors.** Invalid key, rate limit, provider outage, timeout, and malformed response are distinguishable, never collapsed into "invalid key."
 - **Streaming.** `stream_text()` yields typed events (text increments, citations, tool calls, finish) across all four wire protocols, and refuses to call a stream complete without the provider's own terminal signal.
 - **Tool calling.** Define tools once and KeyCall normalizes all four call/result wire shapes, streamed or not, carrying the provider echo data some models require back verbatim. It never executes a tool.
+- **Image generation.** `generate_image()` returns the picture as bytes with the media type the provider produced, on OpenAI and Gemini; the rest refuse before the network.
 - **Embeddings.** `embed()` returns one vector per input, in input order, on OpenAI and Gemini; providers without an embeddings endpoint refuse before the network instead of 404ing.
 - **Images, audio, and documents.** Pass bytes (or a URL where the provider fetches one) beside your text; KeyCall maps each provider's shape and detects the media type from the content. Support varies by provider and by form, so a refusal happens before the network and names who does accept that kind.
 - **Web search with citations.** `web_search=True` turns on the provider's native search tool (OpenAI, Anthropic, Gemini; Perplexity always searches) and returns sources normalized to one `Citation` shape.

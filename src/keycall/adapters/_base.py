@@ -20,6 +20,7 @@ from .._transport import RequestSpec
 from .._types import (
     Citation,
     EmbeddingOutput,
+    ImageOutput,
     InvocationResult,
     Model,
     OutputPart,
@@ -401,6 +402,67 @@ class ProviderAdapter(ABC):
             usage=usage,
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=provider_request_id,
+        )
+
+    # --- image generation ---
+
+    def build_image_spec(self, request: Any) -> RequestSpec:
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} cannot generate images; "
+            "image generation is supported on: "
+            + ", ".join(sorted(providers_with("image_generation"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.IMAGE_GENERATION.value,
+        )
+
+    def parse_image_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        model: str,
+    ) -> InvocationResult:
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} cannot generate images",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.IMAGE_GENERATION.value,
+        )
+
+    def image_result(
+        self,
+        images: list[tuple[str, str]],
+        *,
+        usage: Usage,
+        model: str,
+        round_trip_duration_ms: float,
+        provider_request_id: str | None = None,
+        warnings: tuple[str, ...] = (),
+    ) -> InvocationResult:
+        """images is (base64_data, media_type) per picture. A response with
+        no image is a typed error: a caller asking for a picture and getting
+        an empty result would otherwise have to guess why."""
+        if not images:
+            raise KeyCallError(
+                "provider returned no image for an image-generation request",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.IMAGE_GENERATION.value,
+            )
+        return InvocationResult(
+            provider=self.resolved.provider,
+            model=model,
+            operation=Operation.IMAGE_GENERATION,
+            parts=tuple(
+                ImageOutput(base64_data=data, media_type=media_type)
+                for data, media_type in images
+            ),
+            usage=usage,
+            round_trip_duration_ms=round_trip_duration_ms,
+            provider_request_id=provider_request_id,
+            warnings=warnings,
         )
 
     # --- error translation (transport calls this, then scrubs) ---

@@ -23,6 +23,7 @@ __all__ = [
     "EmbeddingRequest",
     "FileInput",
     "FileOutput",
+    "ImageGenerationRequest",
     "ImageInput",
     "ImageOutput",
     "InputPart",
@@ -366,6 +367,21 @@ class EmbeddingRequest:
             if not value:
                 raise ValueError("inputs must not contain an empty string")
         object.__setattr__(self, "inputs", inputs)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ImageGenerationRequest:
+    """Carries no provider and no credential — those are client identity.
+    Deliberately just a model and a prompt: size and count are supported on
+    OpenAI and ignored by Gemini's image models, and a parameter that
+    silently does nothing on half the providers is worse than none."""
+
+    model: str
+    prompt: str
+
+    def __post_init__(self) -> None:
+        if not self.prompt or not self.prompt.strip():
+            raise ValueError("ImageGenerationRequest.prompt must not be empty")
 
 
 # --- stream events ---------------------------------------------------------

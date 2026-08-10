@@ -35,3 +35,4 @@ class Operation(str, Enum):
 
     TEXT_GENERATION = "text_generation"
     EMBEDDING = "embedding"
+    IMAGE_GENERATION = "image_generation"

@@ -277,6 +277,69 @@ class GeminiAdapter(ProviderAdapter):
             )
         return models, next_spec
 
+    def build_image_spec(self, request: Any) -> RequestSpec:
+        # Gemini's image models take the ordinary generateContent path and
+        # answer with an inlineData part instead of text (verified
+        # 2026-08-10), so there is no separate image endpoint to call.
+        op = self.resolved.operations["image_generation"]
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"].replace("{model}", quote(_strip_prefix(request.model), safe="")),
+            json_body={
+                "contents": [{"role": "user", "parts": [{"text": request.prompt}]}]
+            },
+        )
+
+    def parse_image_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        model: str,
+    ) -> InvocationResult:
+        candidates = payload.get("candidates") if isinstance(payload, dict) else None
+        candidate = candidates[0] if isinstance(candidates, list) and candidates else {}
+        parts = candidate.get("content", {}).get("parts", []) if isinstance(candidate, dict) else []
+        images = []
+        commentary = []
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            inline = part.get("inlineData")
+            if isinstance(inline, dict) and inline.get("data"):
+                images.append((str(inline["data"]), str(inline.get("mimeType", "image/png"))))
+            elif part.get("text"):
+                commentary.append(str(part["text"]))
+        usage_raw = payload.get("usageMetadata") or {} if isinstance(payload, dict) else {}
+        if not images and commentary:
+            # The model answered in words instead of drawing, which is how a
+            # refusal or a clarifying question arrives. Repeat what it said
+            # rather than reporting a bare "no image".
+            raise KeyCallError(
+                "model returned no image, only text: " + " ".join(commentary)[:300],
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.IMAGE_GENERATION.value,
+            )
+        warnings: tuple[str, ...] = ()
+        if commentary:
+            # The model sometimes narrates alongside the picture; surface it
+            # rather than dropping it, since a refusal arrives this way.
+            warnings = (f"model also returned text: {' '.join(commentary)[:200]}",)
+        return self.image_result(
+            images,
+            usage=Usage(
+                input_tokens=usage_raw.get("promptTokenCount"),
+                output_tokens=usage_raw.get("candidatesTokenCount"),
+                total_tokens=usage_raw.get("totalTokenCount"),
+            ),
+            model=_strip_prefix(str(payload.get("modelVersion", model))),
+            round_trip_duration_ms=round_trip_duration_ms,
+            provider_request_id=safe_request_id(payload.get("responseId")),
+            warnings=warnings,
+        )
+
     def build_embedding_spec(self, request: Any) -> RequestSpec:
         op = self.resolved.operations["embeddings"]
         model = request.model if request.model.startswith("models/") else f"models/{request.model}"
