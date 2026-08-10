@@ -5,7 +5,7 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] — 2026-08-10
 
 ### Added
 
@@ -237,6 +237,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is unusable.
 
 ### Notes
+
+- OpenAI, like Gemini, lists models an account cannot invoke:
+  `gpt-5-chat-latest` and `gpt-5.1-chat-latest` were both advertised and
+  both returned "Model not found" on 2026-08-10, while `gpt-5.2` and
+  `gpt-5.3` worked. The verify walk handles it by design, and the README
+  now records it against OpenAI rather than only Gemini.
 
 - Google announced `temperature`, `top_p`, and `top_k` as deprecated on its
   latest Gemini models on 2026-07-21. KeyCall does **not** gate them:
@@ -593,7 +599,8 @@ generation, live-verified against every supported provider.
   bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
-[Unreleased]: https://github.com/shehuphd/keycall/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/shehuphd/keycall/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/shehuphd/keycall/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/shehuphd/keycall/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/shehuphd/keycall/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/shehuphd/keycall/compare/v0.5.1...v0.6.0

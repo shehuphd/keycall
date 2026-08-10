@@ -393,3 +393,7 @@ a { color: var(--accent); }
 }
 .lightbox-close:hover { background: var(--code); }
 .lightbox img { cursor: default; }
+
+/* The run status is a caption for the results below it, so it needs room
+   to read as one rather than crowding the first card. */
+#verify-status { margin: 0.75rem 0 1rem; }

@@ -20,6 +20,7 @@ from .._errors import KeyCallError
 from .._sources import SourceError, load_targets
 from .._types import (
     ImageInput,
+    ImageOutput,
     Message,
     MessageRole,
     TextGenerationRequest,
@@ -355,7 +356,7 @@ def generate_image(registry: Registry, target_id: int, body: dict[str, Any]) -> 
     body_out["images"] = [
         {"base64_data": part.base64_data, "media_type": part.media_type}
         for part in result.parts
-        if getattr(part, "kind", None) == "image"
+        if isinstance(part, ImageOutput)
     ]
     return body_out
 

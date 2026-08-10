@@ -66,7 +66,7 @@ Everything between those two points handles the opaque `Credential` wrapper. Sup
 | Component | Owns | Must never |
 |---|---|---|
 | `_client.py` | Identity binding, page loop, cache use, tracing spans, category filtering | Expose the credential through any property or repr |
-| `_registry.py` + `_catalog/catalog.json` | Name → endpoint/auth/operations resolution, custom-URL validation, per-provider capability evidence (tool calling, web search, schema enforcement, image forms, sampling constraints), each dated | Accept credential-routing data from outside the bundled catalog |
+| `_registry.py` + `_catalog/catalog.json` | Name → endpoint/auth/operations resolution (text generation, embeddings, image generation), custom-URL validation, per-provider capability evidence (tool calling, web search, schema enforcement, media input forms, sampling constraints), each dated | Accept credential-routing data from outside the bundled catalog |
 | `adapters/` | Request building, response parsing, error translation, model classification evidence | Perform I/O, see the credential, leak raw provider objects |
 | `_transport.py` | HTTP execution, retries, size cap, redirect refusal, header construction | Retry generation, follow a redirect, emit unscrubbed provider text |
 | `_dnsguard.py` | Per-request resolve-validate-pin for custom targets | Wrap named providers (their hostnames come from the catalog) |

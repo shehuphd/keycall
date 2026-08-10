@@ -58,7 +58,15 @@ provider that supports them, and blocks publishing if any of it fails:
 | Moonshot/Kimi | openai-compatible | verified | verified |
 | Custom endpoint (explicit `base_url`) | openai-compatible | fixtures only | fixtures only |
 
-Two provider quirks worth knowing, both handled:
+**OpenAI** advertises `-latest` aliases its own account cannot invoke: on
+2026-08-10 `GET /v1/models` listed `gpt-5-chat-latest` and
+`gpt-5.1-chat-latest`, and generating with either returned "Model not found"
+while `gpt-5.2-chat-latest` and `gpt-5.3-chat-latest` worked. This is the
+same failure as Gemini's retired models, on a provider people assume is
+tidier, and it is why `verify` walks the candidates and reports every
+attempt rather than trusting the first listed model.
+
+Two further provider quirks worth knowing, both handled:
 
 **Gemini** keeps retired models in its list endpoint with no lifecycle field to
 pre-filter on, and withdraws them per account ahead of the published shutdown
@@ -120,8 +128,8 @@ keycall view --source ./keys.toml
 
 Opens a token-protected local web app over your loaded targets: a dashboard
 with live key checks, a sortable model browser with category filters, a
-playground for real generation calls (web search, pictures, and tool calling
-included), and a verify report that walks every key. Keys never leave the
+playground that both writes text and makes pictures (web search, image
+input, and tool calling included), and a verify report that walks every key. Keys never leave the
 server process and never appear in the browser.
 
 Or double-click / run a launcher from a fresh clone — it creates the venv,
