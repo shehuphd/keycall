@@ -1148,3 +1148,143 @@ def test_targets_tell_the_browser_what_each_key_can_accept():
     assert body["providers_accepting"]["audio"] == ["gemini"]
     assert "deepseek" not in body["providers_accepting"]["image"]
     assert CANARY not in json.dumps(body)
+
+
+# --- cookie auth and CSRF ---------------------------------------------------
+
+
+def _raw(url, *, method="GET", body=None, headers=None, follow=True):
+    """A request with full control over headers and redirect following, so
+    the cookie handshake can be inspected rather than followed blindly."""
+    import urllib.error
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    opener = urllib.request.build_opener(
+        *([] if follow else [_NoRedirect])
+    )
+    req = urllib.request.Request(url, data=body, method=method)
+    for name, value in (headers or {}).items():
+        req.add_header(name, value)
+    try:
+        with opener.open(req) as resp:
+            return resp.status, dict(resp.headers), resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
+
+
+def test_opening_the_printed_link_trades_the_token_for_a_cookie(server):
+    """The terminal link is the only way the browser learns the token. It
+    must not stay in the address bar, where it would reach history and
+    anything the user copies."""
+    base, token = server
+    status, headers, _ = _raw(f"{base}/?token={token}", follow=False)
+
+    assert status == 303, "expected a redirect that strips the token"
+    assert headers["Location"] == "/"
+    cookie = headers["Set-Cookie"]
+    assert token in cookie
+    # httpOnly is the whole point: page script renders untrusted model
+    # output and must not be able to read this.
+    assert "HttpOnly" in cookie
+    # SameSite=Strict keeps it off requests other sites make.
+    assert "SameSite=Strict" in cookie
+    # Secure would stop the cookie being stored at all over plain http on
+    # loopback, which is what this server is.
+    assert "Secure" not in cookie
+
+
+def test_the_cookie_alone_authenticates_afterwards(server):
+    base, token = server
+    status, _ = _get(f"{base}/api/targets")  # no credentials at all
+    assert status == 403
+
+    status, _, payload = _raw(
+        f"{base}/api/targets", headers={"Cookie": f"keycall_viewer_token={token}"}
+    )
+    assert status == 200
+    assert len(json.loads(payload)["targets"]) == 2
+
+
+def test_a_wrong_cookie_is_refused(server):
+    base, _ = server
+    status, _, _ = _raw(
+        f"{base}/api/targets", headers={"Cookie": "keycall_viewer_token=not-the-token"}
+    )
+    assert status == 403
+
+
+def test_cookie_post_without_a_json_content_type_is_refused(server):
+    """The CSRF gate. A cross-site POST can skip the CORS preflight only by
+    staying a "simple request", which cannot carry application/json. Any
+    other content type is therefore something a browser would have let
+    another page send with our cookie attached."""
+    base, token = server
+    payload = json.dumps({"target": 0, "model": "gpt-4o-mini", "prompt": "hi"}).encode()
+
+    for content_type in ("text/plain", "application/x-www-form-urlencoded", "multipart/form-data"):
+        status, _, body = _raw(
+            f"{base}/api/generate",
+            method="POST",
+            body=payload,
+            headers={"Cookie": f"keycall_viewer_token={token}", "Content-Type": content_type},
+        )
+        assert status == 403, f"{content_type} was accepted"
+        assert json.loads(body)["error"]["code"] == "forbidden"
+
+    # The same request as JSON goes through.
+    status, _, body = _raw(
+        f"{base}/api/generate",
+        method="POST",
+        body=payload,
+        headers={"Cookie": f"keycall_viewer_token={token}", "Content-Type": "application/json"},
+    )
+    assert status == 200
+
+
+def test_a_post_from_another_origin_is_refused(server):
+    """Belt to SameSite's braces: if a browser ever attached the cookie
+    anyway, the Origin header still gives it away."""
+    base, token = server
+    status, _, body = _raw(
+        f"{base}/api/generate",
+        method="POST",
+        body=json.dumps({"target": 0, "model": "gpt-4o-mini", "prompt": "hi"}).encode(),
+        headers={
+            "Cookie": f"keycall_viewer_token={token}",
+            "Content-Type": "application/json",
+            "Origin": "https://evil.example",
+        },
+    )
+    assert status == 403
+    assert json.loads(body)["error"]["code"] == "forbidden"
+
+
+def test_header_auth_still_works_for_scripts(server):
+    """curl, the CLI, and this suite authenticate with the header, which
+    carries its own CSRF immunity: a cross-origin request cannot set a
+    custom header without a preflight this server never answers."""
+    base, token = server
+    status, body = _get(f"{base}/api/targets", token=token)
+    assert status == 200
+    status, body = _post(
+        f"{base}/api/generate",
+        {"target": 0, "model": "gpt-4o-mini", "prompt": "hi"},
+        token=token,
+    )
+    assert status == 200
+    assert body["text"] == "hello"
+
+
+def test_the_page_shell_never_carries_the_token(server):
+    """Whatever the browser is handed on first load must not contain the
+    secret, or stripping it from the URL would be theatre."""
+    base, token = server
+    _, _, shell = _raw(f"{base}/?token={token}")
+    assert token.encode() not in shell
+    _, _, script = _raw(f"{base}/static/app.js")
+    assert token.encode() not in script
+    # And the script no longer has any token machinery to leak through.
+    assert b"sessionStorage" not in script

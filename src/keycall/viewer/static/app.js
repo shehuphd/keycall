@@ -1,54 +1,36 @@
 // KeyCall viewer frontend. Vanilla ES module, no dependencies (the CSP
 // blocks external anything).
 //
-// The access token arrives once in the page URL's ?token=. We move it into
-// sessionStorage and strip it from the address bar: keeping it in the URL
-// would leave the secret in browser history and in anything the user
-// bookmarks or copies, and keeping it only in a page variable meant a
-// plain reload lost it and the app died with "Not authorized". Session
-// storage is scoped to this tab and this origin, and it clears when the
-// tab closes, so a reload works and the token still stays out of history.
+// There is no token in this file, on purpose.
+//
+// The terminal prints a link carrying one; the server trades it for an
+// httpOnly cookie and redirects the token out of the address bar before
+// this script ever runs. httpOnly means page script cannot read the cookie,
+// so an injection in a model's reply has nothing to steal, and the secret
+// stays out of browser history. The browser attaches the cookie to
+// same-origin requests by itself, which is why nothing below sets an auth
+// header.
+//
+// The cookie is SameSite=Strict and the server additionally requires
+// Content-Type: application/json on every POST, because a cookie — unlike
+// the custom header this replaced — is sent on requests other sites make.
 
 import { renderMarkdown } from "/static/markdown.js";
 
-const TOKEN_KEY = "keycall.viewer.token";
-
-function readToken() {
-  const params = new URLSearchParams(location.search);
-  const fromUrl = params.get("token");
-  if (fromUrl) {
-    try {
-      sessionStorage.setItem(TOKEN_KEY, fromUrl);
-    } catch {
-      // Private modes can refuse storage; the token still works for this
-      // page load, it just won't survive a reload.
-    }
-    history.replaceState(null, "", location.pathname);
-    return fromUrl;
-  }
-  try {
-    return sessionStorage.getItem(TOKEN_KEY) || "";
-  } catch {
-    return "";
-  }
-}
-
-function forgetToken() {
-  try {
-    sessionStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // Nothing stored, nothing to clear.
-  }
-}
-
-const TOKEN = readToken();
-
 async function api(path, options = {}) {
-  const opts = { ...options, headers: { ...(options.headers || {}), "X-KeyCall-Token": TOKEN } };
+  const opts = {
+    ...options,
+    headers: { ...(options.headers || {}) },
+    // Explicit rather than relying on the default: this is the line that
+    // carries the session cookie, and it should be obvious.
+    credentials: "same-origin",
+  };
   if (opts.body && typeof opts.body !== "string") {
     opts.body = JSON.stringify(opts.body);
-    opts.headers["Content-Type"] = "application/json";
   }
+  // Always JSON, so the server's CSRF gate passes for us and fails for a
+  // cross-site "simple request" that cannot set this header.
+  if (opts.body) opts.headers["Content-Type"] = "application/json";
   try {
     const res = await fetch(path, opts);
     return await res.json();
@@ -230,10 +212,10 @@ el("source-load").addEventListener("click", async () => {
 async function boot() {
   const health = await api("/api/health");
   if (health.error) {
-    // Either this tab never had a token, or the server restarted and
-    // issued a new one. A stale token can only mislead the next reload,
-    // so drop it and say plainly where the working link comes from.
-    forgetToken();
+    // Either this browser never adopted a token, or the server restarted
+    // and issued a new one, leaving a cookie that no longer matches. The
+    // cookie is httpOnly so this script cannot clear it; the next opened
+    // link overwrites it, which is what the message asks for.
     showFatal(
       "This page needs the link from your terminal. KeyCall printed a web " +
       "address ending in ?token=… when it started — open that exact link " +
@@ -1479,7 +1461,8 @@ async function streamGeneration(out, body) {
   try {
     res = await fetch("/api/generate/stream", {
       method: "POST",
-      headers: { "X-KeyCall-Token": TOKEN, "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
       body: JSON.stringify(body),
     });
   } catch (err) {

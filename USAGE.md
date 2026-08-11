@@ -720,7 +720,19 @@ keycall view --source ./keys.toml
 ```
 
 Starts a local, token-protected web app over the loaded targets and opens it
-in your browser. Four tabs:
+in your browser.
+
+The token is printed once and never written to disk. Opening the printed link
+is a handshake: the server sets an httpOnly, `SameSite=Strict` session cookie
+and redirects the token out of the address bar, so it never reaches page
+script or browser history, and a reload keeps working. Scripts and `curl` can
+authenticate with an `X-KeyCall-Token` header instead. Because a cookie rides
+along on requests other sites make, every POST must carry
+`Content-Type: application/json` and must not carry a foreign `Origin`. The
+cookie dies with the browser session, and restarting `keycall view` issues a
+new token that invalidates the old one.
+
+Four tabs:
 
 - **Dashboard** — every loaded target; click one for a live key check and its
   text-model count.

@@ -136,6 +136,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and what to change, and it explains the trap people hit: on a reasoning
   model the hidden reasoning is charged to the same budget, so a small
   `max_output_tokens` can be spent before any text appears.
+- **The viewer's token moved out of reach of page script.** It lived in
+  `sessionStorage`, where any script on the page could read it — and the
+  page renders untrusted model output. Opening the printed link is now a
+  handshake: the server sets an httpOnly, `SameSite=Strict` session cookie
+  and redirects the token out of the address bar, so it reaches neither
+  page script nor browser history. Reload still works, and the
+  `X-KeyCall-Token` header still authenticates scripts and `curl`.
+
+  Cookie auth needs defences header auth did not. A custom header cannot be
+  set cross-origin without a CORS preflight this server never answers, so
+  the old scheme was CSRF-immune by construction; a cookie is attached by
+  the browser to whatever another site asks for. Every POST now requires
+  `Content-Type: application/json`, which forces that preflight, and
+  rejects a foreign `Origin`. The Content-Type was previously unchecked,
+  which was harmless under header auth and would not have been under a
+  cookie.
+- **The viewer's content security policy sets `base-uri`, `form-action`,
+  and `frame-ancestors`**, three directives that don't inherit from
+  `default-src` and were therefore unset.
 - **The viewer renders markdown in replies.** Models answer in markdown
   whether or not you ask them to, so headings, bold, lists, links, and
   fenced code arrived as punctuation. Parsed into DOM nodes with no

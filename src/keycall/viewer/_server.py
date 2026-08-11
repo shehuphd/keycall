@@ -13,13 +13,30 @@ Routes (all under the base "/"):
   POST /api/generate/stream      same body -> SSE events ending in a result or error
   POST /api/generate/image       {target, model, prompt} -> InvocationResult
 
-Auth: a token is required on every /api/* request (X-KeyCall-Token header or
-?token= query param). Unlike TraceAct's opt-in token, it is mandatory here:
-this server holds live credentials and can make billable provider calls. The
-page shell and static assets are unauthenticated — they're the same bytes
+Auth: a token is required on every /api/* request. Unlike TraceAct's opt-in
+token, it is mandatory here: this server holds live credentials and can make
+billable provider calls. It is printed once to the terminal, never written
+to disk, and accepted three ways:
+
+  X-KeyCall-Token header   scripts, curl, the test suite
+  session cookie           the browser, after the handshake below
+  ?token= query param      first open only, from the printed link
+
+Opening the printed link is a handshake: the server sets an httpOnly,
+SameSite=Strict cookie and redirects to the bare path. The token therefore
+never reaches page script (which renders untrusted model output) and never
+lands in browser history.
+
+That cookie is why POSTs are CSRF-checked. A custom header cannot be set
+cross-origin without a CORS preflight this server never answers, so header
+auth was immune by construction; a cookie is not, because the browser
+attaches it to whatever another site asks for. Every POST must therefore
+carry Content-Type: application/json — which forces a preflight — and must
+not carry a foreign Origin.
+
+The page shell and static assets are unauthenticated: they're the same bytes
 `pip install keycall` ships, and every credential-touching path is behind
-/api. The token is printed once to the terminal and embedded in the opened
-URL; it is never written to disk.
+/api.
 
 Binds 127.0.0.1 by default. ThreadingHTTPServer so a slow provider call on
 one request never blocks the static assets or another tab.
@@ -31,6 +48,7 @@ import json
 import os
 import threading
 import webbrowser
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -63,6 +81,15 @@ _CSP = (
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
 
+# The browser's copy of the token. httpOnly so page script can't read it:
+# the viewer renders untrusted model output, and a token in reach of script
+# is a token an injection could send elsewhere. SameSite=Strict so it never
+# rides along on a request another site makes. Deliberately not Secure —
+# this server is plain http on loopback, and Secure would stop the cookie
+# being stored at all. No Max-Age, so it dies with the browser session,
+# matching a token that was never persisted server-side either.
+_COOKIE_NAME = "keycall_viewer_token"
+
 # Large enough for a base64-encoded photo from the Playground's image
 # picker (encoding costs about a third on top of the file size), small
 # enough that a single request can't exhaust memory on a local server.
@@ -91,12 +118,77 @@ class _Handler(BaseHTTPRequestHandler):
     def _token(self) -> Token:
         return self.server.token
 
+    def _cookie_token(self) -> str | None:
+        """The token from the session cookie, if the browser sent one."""
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return None
+        jar: SimpleCookie = SimpleCookie()
+        try:
+            jar.load(raw)
+        except CookieError:
+            return None
+        morsel = jar.get(_COOKIE_NAME)
+        return morsel.value if morsel else None
+
     def _authorised(self, parsed: Any) -> bool:
+        # Header first: it is what a script, curl, or the test suite uses,
+        # and it is immune to CSRF because a cross-origin request carrying a
+        # custom header must pass a CORS preflight, which this server never
+        # answers.
         header = self.headers.get("X-KeyCall-Token")
         if header is not None:
             return self._token.matches(header)
+        # Then the cookie, which is how the browser authenticates once the
+        # page has loaded. A cookie rides along on cross-site requests by
+        # default, so everything that accepts one has to be CSRF-checked;
+        # see _csrf_safe below.
+        if self._token.matches(self._cookie_token()):
+            return True
+        # Finally the query string, which exists only so the link printed to
+        # the terminal works on first open. That request is a top-level GET
+        # that sets the cookie and redirects the token out of the URL.
         supplied = parse_qs(parsed.query).get("token")
         return self._token.matches(supplied[0] if supplied else None)
+
+    def _csrf_safe(self) -> bool:
+        """Whether a state-changing request may be honored.
+
+        Only relevant for cookie-authenticated requests: the browser
+        attaches the cookie to any request another site makes to this
+        origin, so without a check, a page you visit while the viewer is
+        open could spend your API credit or read a key file.
+
+        Two gates, either of which is sufficient on its own:
+
+        1. Content-Type must be JSON. A cross-origin POST can skip the CORS
+           preflight only by staying a "simple request", which restricts it
+           to form, plain-text, or multipart content types. Requiring JSON
+           forces a preflight, and this server answers none.
+        2. Origin, when the browser sends one, must be this server.
+
+        The cookie is also SameSite=Strict, which browsers enforce
+        independently. This is the belt to that pair of braces.
+        """
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in self._self_origins():
+            return False
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+        return content_type.lower() == "application/json"
+
+    def _self_origins(self) -> set[str]:
+        address = self.server.server_address
+        # socketserver types the bound address loosely enough to be bytes,
+        # and formatting bytes straight into a string yields "b'127.0.0.1'",
+        # which would never match a browser's Origin and would quietly fail
+        # the check open or shut depending on the branch. Decode it.
+        raw_host = address[0]
+        host = raw_host.decode() if isinstance(raw_host, (bytes, bytearray)) else str(raw_host)
+        port = address[1]
+        # The browser's Origin carries the host as the user typed it, so
+        # accept the loopback spellings that reach this server.
+        names = {host, "127.0.0.1", "localhost", "[::1]"}
+        return {f"http://{name}:{port}" for name in names}
 
     def _send_json(self, body: dict[str, Any], status: int = 200) -> None:
         payload = json.dumps(body).encode("utf-8")
@@ -173,9 +265,39 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             return None
 
+    def _adopt_token(self, parsed: Any) -> bool:
+        """Turn the token in the opened link into a session cookie.
+
+        The terminal prints a URL carrying the token, which is the only way
+        the browser can learn it. Left in the address bar it would end up in
+        history and in anything the user copies or bookmarks, so this trades
+        it for an httpOnly cookie and redirects to the bare path. The page
+        script never sees it at any point.
+        """
+        supplied = parse_qs(parsed.query).get("token")
+        if not supplied or not self._token.matches(supplied[0]):
+            return False
+        cookie: SimpleCookie = SimpleCookie()
+        cookie[_COOKIE_NAME] = self._token.value
+        morsel = cookie[_COOKIE_NAME]
+        morsel["path"] = "/"
+        morsel["httponly"] = True
+        morsel["samesite"] = "Strict"
+        self.send_response(303)
+        self.send_header("Location", parsed.path or "/")
+        self.send_header("Set-Cookie", morsel.OutputString())
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         route = parsed.path
+
+        # The opened link, before anything else: swap the token for a cookie
+        # and get it out of the URL.
+        if route == "/" and parse_qs(parsed.query).get("token") and self._adopt_token(parsed):
+            return
 
         if route.startswith("/api/") and not self._authorised(parsed):
             self._send_json({"error": {"code": "unauthorized", "message": "token required"}}, 403)
@@ -213,6 +335,24 @@ class _Handler(BaseHTTPRequestHandler):
 
         if not self._authorised(parsed):
             self._send_json({"error": {"code": "unauthorized", "message": "token required"}}, 403)
+            return
+
+        # Every POST here spends money or reads a key file. Authorization
+        # alone stopped being enough once a cookie could supply it, because
+        # the browser attaches a cookie to whatever any other site asks for.
+        if not self._csrf_safe():
+            self._send_json(
+                {
+                    "error": {
+                        "code": "forbidden",
+                        "message": (
+                            "request rejected: send Content-Type: application/json "
+                            "from this origin"
+                        ),
+                    }
+                },
+                403,
+            )
             return
 
         body = self._read_json_body()

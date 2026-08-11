@@ -195,7 +195,11 @@ succeeds, so drift stays visible rather than being masked by a silent retry.
 
 ## The viewer and the verify CLI in full
 
-The viewer is token-protected and binds `127.0.0.1`: a dashboard with live key
+The viewer is token-protected and binds `127.0.0.1`. Opening the printed link
+trades its token for an httpOnly, `SameSite=Strict` session cookie and strips
+it from the address bar, so the secret never reaches page script or browser
+history, and state-changing requests are CSRF-checked. Inside: a dashboard
+with live key
 checks, a sortable model browser, a Playground (text, pictures in and out,
 recordings, documents, tool calling, web search), and a verify report that
 walks every key. An attachment the selected key can't send is turned off with
