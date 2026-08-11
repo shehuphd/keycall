@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ._enums import ModelCategory, Operation
 
@@ -531,19 +532,71 @@ class ModelDiscovery:
     warnings: tuple[str, ...] = ()
 
 
+def _without_tracking(url: str) -> str:
+    """The URL with campaign-tracking parameters dropped.
+
+    Deliberately narrow. Only keys beginning ``utm_`` go: they are a
+    convention for attributing traffic and are ignored by the servers that
+    receive them, so removing one can't change what the URL resolves to.
+    Anything else — a document id, a page anchor, a signed parameter — is
+    load-bearing somewhere, and guessing wrong would break the link rather
+    than tidy it.
+
+    Order of the surviving parameters, the fragment, and everything else is
+    preserved, so a URL with no tracking comes back byte-identical.
+    """
+    # Case-folded, or the fast path would skip a provider that capitalizes
+    # the key while the check below is case-insensitive.
+    if "utm_" not in url.lower():
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        # Not parseable: hand it back rather than damage it.
+        return url
+    kept = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if not key.lower().startswith("utm_")
+    ]
+    if len(kept) == len(parse_qsl(parts.query, keep_blank_values=True)):
+        return url
+    return urlunsplit(parts._replace(query=urlencode(kept)))
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Citation:
     """One normalized web-search source, across whichever shape the
     provider actually returned it in (OpenAI's text annotations, Anthropic's
     per-block citations, Gemini's grounding chunks, Perplexity's
-    search_results). ``url`` is what the provider gave KeyCall — for
-    Gemini this is a vertexaisearch.cloud.google.com redirect, not the
-    direct source, by Google's own design; it resolves correctly when
-    followed, KeyCall doesn't pre-resolve it."""
+    search_results).
+
+    ``url`` is the provider's, with campaign-tracking parameters removed.
+    OpenAI appends ``?utm_source=openai`` to every cited URL (verified
+    2026-08-10; Anthropic, Gemini, and Perplexity append nothing), which
+    attributes the click to OpenAI in the destination site's analytics and
+    follows the link into whatever a caller renders, logs, or stores.
+    Nothing about it identifies the source, so it is stripped here rather
+    than at each of the nine places a citation is built — normalizing at
+    the type is what stops a new adapter or a streamed event slipping past.
+    There is no API option to suppress it: OpenAI's web_search tool exposes
+    eight settings and none concerns tracking.
+
+    Only the ``utm_*`` family is removed, because it never changes what a
+    URL resolves to. Every other parameter is left exactly as it arrived,
+    including Gemini's vertexaisearch.cloud.google.com redirect, which is
+    the direct source by Google's own design and which KeyCall doesn't
+    pre-resolve.
+    """
 
     url: str
     title: str | None = None
     cited_text: str | None = None
+
+    def __post_init__(self) -> None:
+        cleaned = _without_tracking(self.url)
+        if cleaned != self.url:
+            object.__setattr__(self, "url", cleaned)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -803,3 +803,61 @@ def test_complete_reply_carries_no_truncation_warning():
     )
     client.close()
     assert not any("max_output_tokens ran out" in w for w in result.warnings)
+
+
+def test_tracking_parameters_are_stripped_from_citation_urls():
+    """OpenAI appends ?utm_source=openai to every URL its web search cites
+    (verified live 2026-08-10; no other provider does, and OpenAI offers no
+    option to turn it off). It attributes the click to OpenAI in the
+    destination's analytics and follows the link into whatever a caller
+    renders or stores, so KeyCall removes it."""
+    from keycall import Citation
+
+    # The case as reported.
+    assert (
+        Citation(url="https://www.imdb.com/name/nm0561030/bio/?utm_source=openai").url
+        == "https://www.imdb.com/name/nm0561030/bio/"
+    )
+    # The whole utm_ family, and only that family.
+    assert (
+        Citation(url="https://e.com/p?utm_source=a&utm_medium=b&utm_campaign=c&id=42").url
+        == "https://e.com/p?id=42"
+    )
+    # Case-insensitive, because a provider may shout.
+    assert Citation(url="https://e.com/p?UTM_Source=a").url == "https://e.com/p"
+
+
+def test_everything_other_than_tracking_survives_untouched():
+    """A URL with nothing to strip must come back byte-identical: guessing
+    at 'cruft' would break links rather than tidy them."""
+    from keycall import Citation
+
+    for url in [
+        "https://e.com/p?id=42",
+        "https://e.com/p",
+        "https://e.com/p?a=1&b=2",                     # order preserved
+        "https://e.com/p?q=hello+world&x=%2Fa%2Fb",    # encoding preserved
+        "https://e.com/p#section",
+        # Gemini's redirect is the citation by Google's design, not cruft.
+        "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AbC123",
+        # A parameter that merely mentions the word must not be caught.
+        "https://e.com/p?custom_utm_note=keep",
+        "not a url at all",
+    ]:
+        assert Citation(url=url).url == url, url
+
+    # A fragment survives even when tracking is removed from the query.
+    assert Citation(url="https://e.com/p?utm_source=a#top").url == "https://e.com/p#top"
+
+
+def test_stripping_lets_dedupe_collapse_the_same_source():
+    """Two citations for one page that differ only by a tracking parameter
+    are one source. Before stripping they read as two."""
+    from keycall import Citation
+    from keycall.adapters._base import dedupe_citations
+
+    same = [
+        Citation(url="https://e.com/a?utm_source=openai", title="A"),
+        Citation(url="https://e.com/a", title="A"),
+    ]
+    assert len(dedupe_citations(same)) == 1

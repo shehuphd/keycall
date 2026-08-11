@@ -434,6 +434,15 @@ didn't supply are `None`.
 
 What the citation list does and doesn't guarantee:
 
+- **Campaign-tracking parameters are stripped.** OpenAI appends
+  `?utm_source=openai` to every URL it cites, which attributes the click to
+  OpenAI in the destination's analytics and would otherwise follow the link
+  into whatever you render, log, or store; it offers no option to turn this
+  off. Only the `utm_*` family goes, since those keys are ignored by the
+  server receiving them and so can't change what a URL resolves to.
+  Everything else is byte-identical to what the provider sent, including
+  Gemini's `vertexaisearch.cloud.google.com` redirect, which is the
+  citation by Google's design and which KeyCall doesn't pre-resolve.
 - **One URL can legitimately appear more than once.** Providers cite per
   claim, not per source. Anthropic gives each citation its own
   `cited_text`, so three citations of one page are three different

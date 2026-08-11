@@ -128,6 +128,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   type wasn't accepted yet and that every adapter refused it before any
   network call. That stopped being true when the media paths shipped. Each
   now states which providers take it and in which form.
+- **Citation URLs no longer carry OpenAI's tracking parameter.** Its web
+  search appends `?utm_source=openai` to every URL it cites, which
+  attributes the click to OpenAI in the destination site's analytics and
+  follows the link into whatever a caller renders, logs, or stores. Live
+  checks on 2026-08-10 found Anthropic, Gemini, and Perplexity append
+  nothing, and OpenAI's `web_search` tool exposes eight settings with no
+  way to suppress it, so the only lever is on this side. `Citation`
+  normalizes it away.
+
+  Only the `utm_*` family is removed, because those keys are a traffic
+  attribution convention that the receiving server ignores, so dropping one
+  can't change what a URL resolves to. Everything else survives byte for
+  byte, including Gemini's `vertexaisearch.cloud.google.com` redirect,
+  which is the citation by Google's design rather than cruft. A side
+  benefit: two results for one page that differed only by the parameter
+  now dedupe to one source.
 - **A truncated reply now says so, in one vocabulary.** Each provider names
   a spent output budget differently — `incomplete:max_output_tokens` on
   OpenAI, `max_tokens` on Anthropic, `MAX_TOKENS` on Gemini, `length` on
