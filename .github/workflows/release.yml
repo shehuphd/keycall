@@ -44,13 +44,21 @@ jobs:
           print(f"version {version} matches tag")
           EOF
 
+      # Pinned so a runner image bump can't change the runtime under the
+      # renderer tests mid-release. No package.json, no npm dependency.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
       - name: Run tests
         run: |
           pip install -e ".[dev]"
           ruff check src tests
           mypy src
           pytest -q
-          node --test "tests/js/**/*.test.mjs"
+          # Shell-expanded: `node --test` only accepts glob patterns itself
+          # from Node 21 onward.
+          node --test tests/js/*.test.mjs
 
       - name: Build
         run: python -m build
