@@ -850,6 +850,36 @@ def test_everything_other_than_tracking_survives_untouched():
     assert Citation(url="https://e.com/p?utm_source=a#top").url == "https://e.com/p#top"
 
 
+def test_surviving_parameters_are_passed_through_byte_for_byte():
+    """Removing one parameter must not rewrite the others.
+
+    Parsing the query and re-encoding it is the obvious implementation and
+    silently rewrites `%20` to `+` and turns a valueless `&flag` into
+    `&flag=`. Usually equivalent, occasionally not, and a signed or opaque
+    parameter is exactly where "usually" fails.
+    """
+    from keycall import Citation
+
+    cases = [
+        # A session id whose mixed case must be untouched.
+        (
+            "https://example.com/?utm_source=chatgpt&session_id=wxwi232ADCW232aseren977A&page=3",
+            "https://example.com/?session_id=wxwi232ADCW232aseren977A&page=3",
+        ),
+        # Percent-encoding survives rather than being normalized to "+".
+        ("https://e.com/p?utm_source=a&q=hello%20world", "https://e.com/p?q=hello%20world"),
+        ("https://e.com/p?utm_source=a&q=hello+world", "https://e.com/p?q=hello+world"),
+        # A valueless flag keeps its shape; an empty value keeps its "=".
+        ("https://e.com/p?utm_source=a&empty=&flag", "https://e.com/p?empty=&flag"),
+        # A signed parameter, where a rewrite would invalidate the signature.
+        ("https://e.com/p?utm_source=a&sig=ABC%2Fdef%3D%3D", "https://e.com/p?sig=ABC%2Fdef%3D%3D"),
+        # Mixed-case keys and values, and a fragment after the query.
+        ("https://e.com/Path?a=1&utm_medium=x&B=CaSe#Frag", "https://e.com/Path?a=1&B=CaSe#Frag"),
+    ]
+    for url, expected in cases:
+        assert Citation(url=url).url == expected, url
+
+
 def test_stripping_lets_dedupe_collapse_the_same_source():
     """Two citations for one page that differ only by a tracking parameter
     are one source. Before stripping they read as two."""

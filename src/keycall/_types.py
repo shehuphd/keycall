@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from ._enums import ModelCategory, Operation
 
@@ -542,11 +542,18 @@ def _without_tracking(url: str) -> str:
     load-bearing somewhere, and guessing wrong would break the link rather
     than tidy it.
 
-    Order of the surviving parameters, the fragment, and everything else is
-    preserved, so a URL with no tracking comes back byte-identical.
+    Every surviving parameter is passed through byte for byte: its order,
+    its case, and its exact percent-encoding. Parsing the query and
+    re-encoding it would have been shorter, and wrong — that round trip
+    rewrites ``%20`` as ``+`` and turns a valueless ``&flag`` into
+    ``&flag=``. Both are usually equivalent and occasionally not, and a
+    signed or opaque parameter is precisely where "usually" fails. So the
+    query is split on ``&`` and filtered as text, and nothing that stays is
+    ever re-serialized.
     """
-    # Case-folded, or the fast path would skip a provider that capitalizes
-    # the key while the check below is case-insensitive.
+    # Case-folded for the check only; the value tested is discarded and the
+    # URL itself is never lowercased. Without this the fast path would skip
+    # a provider that capitalizes the key.
     if "utm_" not in url.lower():
         return url
     try:
@@ -554,14 +561,19 @@ def _without_tracking(url: str) -> str:
     except ValueError:
         # Not parseable: hand it back rather than damage it.
         return url
-    kept = [
-        (key, value)
-        for key, value in parse_qsl(parts.query, keep_blank_values=True)
-        if not key.lower().startswith("utm_")
-    ]
-    if len(kept) == len(parse_qsl(parts.query, keep_blank_values=True)):
+    if not parts.query:
         return url
-    return urlunsplit(parts._replace(query=urlencode(kept)))
+    segments = parts.query.split("&")
+    kept = [
+        segment
+        for segment in segments
+        # The key is everything before the first "=", or the whole segment
+        # when there is no "=" at all.
+        if not segment.split("=", 1)[0].lower().startswith("utm_")
+    ]
+    if len(kept) == len(segments):
+        return url
+    return urlunsplit(parts._replace(query="&".join(kept)))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
