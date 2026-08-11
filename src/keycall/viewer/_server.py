@@ -47,7 +47,21 @@ _CONTENT_TYPES = {".html": "text/html", ".css": "text/css", ".js": "text/javascr
 # data: URIs so a generated picture can be shown from the bytes the page
 # already holds, and media allows blob: so a recording can be played back
 # from memory before it is sent. Neither reaches the network.
-_CSP = "default-src 'self'; img-src 'self' data:; media-src 'self' blob:"
+#
+# The last three don't inherit from default-src and were therefore unset:
+#   base-uri       a <base> tag can re-point every relative URL on the page
+#   form-action    a form can post somewhere else entirely
+#   frame-ancestors  nothing may embed this page, so it can't be clickjacked
+# None of them are used by the viewer, so 'none' costs nothing and closes
+# the gap. Relax frame-ancestors only if the viewer ever needs embedding.
+#
+# media-src is deliberately left room to grow: speech and video generation
+# will need to play provider bytes back, and if those arrive as data: URIs
+# the way generated pictures do, this is the line that has to allow them.
+_CSP = (
+    "default-src 'self'; img-src 'self' data:; media-src 'self' blob:; "
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
 
 # Large enough for a base64-encoded photo from the Playground's image
 # picker (encoding costs about a third on top of the file size), small

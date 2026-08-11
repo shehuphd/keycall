@@ -40,6 +40,14 @@ jobs:
         # only; live tests are deselected by the default -m filter.
         run: pytest -q
 
+      - name: Test the viewer's renderer
+        # The viewer renders untrusted model output into a page holding a
+        # live credential token, so the no-HTML-parsing guarantee needs a
+        # regression test rather than a one-off manual check. Node's own
+        # runner, no dependencies, no browser; the runner ships with the
+        # GitHub image.
+        run: node --test "tests/js/**/*.test.mjs"
+
   # Live-verification mode "warn": live smoke on manual dispatch only,
   # never on routine pushes or fork PRs. Failures are reported but do not
   # fail CI.

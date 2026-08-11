@@ -9,6 +9,8 @@
 // storage is scoped to this tab and this origin, and it clears when the
 // tab closes, so a reload works and the token still stays out of history.
 
+import { renderMarkdown } from "/static/markdown.js";
+
 const TOKEN_KEY = "keycall.viewer.token";
 
 function readToken() {
@@ -1553,156 +1555,6 @@ function usageLabel(usage) {
   return parts.length ? `${parts.join(" / ")} tokens` : "usage unreported";
 }
 
-// --- markdown ---------------------------------------------------------------
-//
-// Models answer in markdown whether or not you ask them to, so showing the
-// raw text meant reading **bold** and ### headings as punctuation.
-//
-// Everything below builds DOM nodes and never touches innerHTML. Model
-// output is untrusted input: it arrives from a third party, it can contain
-// anything, and a single innerHTML here would turn a prompt injection into
-// script execution inside a page that holds a live credential token. The
-// subset is deliberately small — the constructs models actually emit — and
-// anything unrecognised falls through as plain text rather than being
-// guessed at.
-
-const MD_FENCE = /^\s*```/;
-const MD_HEADING = /^(#{1,6})\s+(.*)$/;
-const MD_BULLET = /^\s*[-*+]\s+(.*)$/;
-const MD_NUMBERED = /^\s*\d+[.)]\s+(.*)$/;
-
-function renderMarkdown(text) {
-  const root = document.createElement("div");
-  root.className = "md";
-  const lines = String(text).split("\n");
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    if (MD_FENCE.test(line)) {
-      const pre = document.createElement("pre");
-      const code = document.createElement("code");
-      const body = [];
-      i++;
-      while (i < lines.length && !MD_FENCE.test(lines[i])) body.push(lines[i++]);
-      i++; // closing fence, or end of text if the model never closed it
-      code.textContent = body.join("\n");
-      pre.appendChild(code);
-      root.appendChild(pre);
-      continue;
-    }
-
-    const heading = line.match(MD_HEADING);
-    if (heading) {
-      // Capped at h6 by the pattern; offset so a model's "#" doesn't
-      // outrank the page's own headings.
-      const el = document.createElement(`h${Math.min(6, heading[1].length + 2)}`);
-      appendInline(el, heading[2]);
-      root.appendChild(el);
-      i++;
-      continue;
-    }
-
-    if (MD_BULLET.test(line) || MD_NUMBERED.test(line)) {
-      const ordered = !MD_BULLET.test(line) && MD_NUMBERED.test(line);
-      const list = document.createElement(ordered ? "ol" : "ul");
-      while (i < lines.length) {
-        const item = lines[i].match(ordered ? MD_NUMBERED : MD_BULLET);
-        if (!item) break;
-        const li = document.createElement("li");
-        appendInline(li, item[1]);
-        list.appendChild(li);
-        i++;
-      }
-      root.appendChild(list);
-      continue;
-    }
-
-    if (!line.trim()) {
-      i++;
-      continue;
-    }
-
-    // A paragraph runs until a blank line or the start of another block.
-    const para = [];
-    while (
-      i < lines.length &&
-      lines[i].trim() &&
-      !MD_FENCE.test(lines[i]) &&
-      !MD_HEADING.test(lines[i]) &&
-      !MD_BULLET.test(lines[i]) &&
-      !MD_NUMBERED.test(lines[i])
-    ) {
-      para.push(lines[i++]);
-    }
-    const p = document.createElement("p");
-    appendInline(p, para.join("\n"));
-    root.appendChild(p);
-  }
-
-  if (!root.childNodes.length) root.appendChild(document.createTextNode(text));
-  return root;
-}
-
-// Inline spans, innermost-first so `**a**` inside code stays literal. Code
-// is matched before emphasis for that reason.
-const MD_INLINE = [
-  { re: /`([^`\n]+)`/, tag: "code" },
-  { re: /\*\*([^*\n]+)\*\*/, tag: "strong" },
-  { re: /__([^_\n]+)__/, tag: "strong" },
-  { re: /(?<![*\w])\*([^*\n]+)\*(?!\*)/, tag: "em" },
-  { re: /(?<![_\w])_([^_\n]+)_(?!\w)/, tag: "em" },
-];
-
-function appendInline(parent, text) {
-  if (!text) return;
-  // Links first: their label can itself carry emphasis.
-  const link = text.match(/\[([^\]\n]*)\]\(([^)\s]+)\)/);
-  if (link) {
-    appendInline(parent, text.slice(0, link.index));
-    parent.appendChild(safeLink(link[1], link[2]));
-    appendInline(parent, text.slice(link.index + link[0].length));
-    return;
-  }
-  for (const { re, tag } of MD_INLINE) {
-    const match = text.match(re);
-    if (match) {
-      appendInline(parent, text.slice(0, match.index));
-      const el = document.createElement(tag);
-      // Code is literal; everything else may nest.
-      if (tag === "code") el.textContent = match[1];
-      else appendInline(el, match[1]);
-      parent.appendChild(el);
-      appendInline(parent, text.slice(match.index + match[0].length));
-      return;
-    }
-  }
-  parent.appendChild(document.createTextNode(text));
-}
-
-/** A link the model asked for, or plain text if the scheme is not one we
- *  will hand to the browser. javascript: and data: URLs are the injection
- *  vector here, so only http and https survive; anything else is shown as
- *  the text it was, never made clickable. */
-function safeLink(label, href) {
-  let url;
-  try {
-    url = new URL(href, location.href);
-  } catch {
-    return document.createTextNode(label || href);
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return document.createTextNode(label || href);
-  }
-  const a = document.createElement("a");
-  a.href = url.href;
-  a.target = "_blank";
-  a.rel = "noopener noreferrer";
-  a.textContent = label || url.href;
-  return a;
-}
-
 function renderGeneration(out, data) {
   clear(out);
   if (data.error) {
@@ -1723,7 +1575,9 @@ function renderGeneration(out, data) {
   const text = document.createElement("div");
   text.className = "result-text";
   if (data.text) {
-    text.appendChild(renderMarkdown(data.text));
+    // location.href is the base for resolving a relative link; passing it
+    // in keeps the renderer itself free of globals and testable.
+    text.appendChild(renderMarkdown(data.text, document, location.href));
   } else {
     text.textContent = "(no text output)";
   }
