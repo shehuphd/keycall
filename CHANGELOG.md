@@ -5,6 +5,15 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-08-14
+
+### Fixed
+
+- **PyPI classifiers matched the pre-1.0 package.** `Development Status`
+  still read "3 - Alpha" on the 1.0.0 listing, and the Python version
+  classifiers stopped at 3.13 despite CI testing 3.14. Now "5 -
+  Production/Stable" with the full 3.10–3.14 range.
+
 ## [1.0.0] — 2026-08-14
 
 ### Added
