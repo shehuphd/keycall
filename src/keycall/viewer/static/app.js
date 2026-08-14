@@ -103,6 +103,7 @@ function pill(text, kind) {
 let TARGETS = [];
 // {image: [...providers], audio: [...], file: [...]}, from the catalog.
 let PROVIDERS_ACCEPTING = {};
+let PROVIDER_CAPABILITIES = {};
 
 // --- sortable tables --------------------------------------------------------
 
@@ -180,6 +181,8 @@ async function refreshTargets() {
   }
   TARGETS = data.targets || [];
   PROVIDERS_ACCEPTING = data.providers_accepting || {};
+  PROVIDER_CAPABILITIES = data.provider_capabilities || {};
+  fillProviderOptions(data.providers || []);
   const version = el("health").textContent.split(" ")[1] || "";
   el("health").textContent = `keycall ${version} · ${TARGETS.length} target(s)`;
   renderDashboard();
@@ -189,6 +192,109 @@ async function refreshTargets() {
     await loadModels();          // fills the cache…
     await loadPlaygroundModels(); // …which this then reuses instantly
   }
+}
+
+el("source-toggle").addEventListener("click", (event) => {
+  event.preventDefault();
+  const panel = el("source-file");
+  panel.hidden = !panel.hidden;
+  el("source-toggle").textContent = panel.hidden
+    ? "Load a key file instead"
+    : "Hide the key file option";
+});
+
+// The same form appears twice: on the empty state, and on the dashboard so
+// a one-off key can be tested without editing a file first, even when a key
+// file is already loaded. Nothing is saved either way — the key lives in
+// the running process and goes when it does. One implementation, addressed
+// by id prefix.
+function wireKeyForm(prefix) {
+  const field = el(`${prefix}-value`);
+  const status = el(`${prefix}-status`);
+  const button = el(`${prefix}-add`);
+
+  const submit = async () => {
+    const key = field.value.trim();
+    if (!key) {
+      status.textContent = "paste a key first";
+      return;
+    }
+    working(button, "Adding…");
+    status.textContent = "";
+    const data = await api("/api/key", {
+      method: "POST",
+      body: { provider: el(`${prefix}-provider`).value, key },
+    });
+    done(button);
+    if (data.error) {
+      status.textContent = `${data.error.code}: ${data.error.message}`;
+      return;
+    }
+    // Clear the field the moment the server has it: the key is in the local
+    // process now, and leaving it on screen is the one copy anyone can read.
+    field.value = "";
+    status.textContent = "";
+    await refreshTargets();
+  };
+
+  button.addEventListener("click", submit);
+  field.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submit();
+    }
+  });
+}
+
+wireKeyForm("key");
+wireKeyForm("dash-key");
+
+el("dash-key-toggle").addEventListener("click", () => {
+  const form = el("dash-key-form");
+  form.hidden = !form.hidden;
+  el("dash-key-toggle").textContent = form.hidden ? "Test another key" : "Cancel";
+  if (!form.hidden) el("dash-key-value").focus();
+});
+
+// Used only when the server reports no provider list at all, which happens
+// when the page is newer than the process serving it: static files are
+// re-read per request, but Python modules load once, so an upgraded
+// KeyCall that hasn't been restarted serves this script against an older
+// API. Without a fallback the dropdown renders empty and the form cannot
+// be used, with nothing on screen to explain why.
+const FALLBACK_PROVIDERS = [
+  "openai", "anthropic", "gemini", "deepseek", "perplexity", "moonshot", "xai",
+];
+
+/** Fill both provider dropdowns from the catalog the server reports. */
+function fillProviderOptions(providers) {
+  // An empty list means the server didn't report one, not that there are no
+  // providers, so fall back rather than emptying a dropdown the form needs.
+  const names = providers && providers.length ? providers : FALLBACK_PROVIDERS;
+  // Display names for the ones whose catalog id isn't how people say it.
+  const labels = {
+    openai: "OpenAI",
+    anthropic: "Anthropic",
+    gemini: "Google Gemini",
+    deepseek: "DeepSeek",
+    perplexity: "Perplexity",
+    moonshot: "Moonshot / Kimi",
+    xai: "xAI / Grok",
+  };
+  ["key-provider", "dash-key-provider"].forEach((id) => {
+    const sel = el(id);
+    const previous = sel.value;
+    clear(sel);
+    names.forEach((name) => {
+      const option = document.createElement("option");
+      option.value = name;
+      // An unlabelled provider still appears, under its catalog id, rather
+      // than being dropped because this map wasn't updated.
+      option.textContent = labels[name] || name;
+      sel.appendChild(option);
+    });
+    if (previous) sel.value = previous;
+  });
 }
 
 el("source-load").addEventListener("click", async () => {
@@ -289,7 +395,7 @@ function fillTargetSelects() {
       sel.appendChild(opt);
     });
   });
-  gateAttachments();
+  applyKeyGates();
 }
 
 // --- models browser ---------------------------------------------------------
@@ -470,9 +576,9 @@ function noteModelOutcome(targetId, modelId, code) {
 
 el("pg-target").addEventListener("change", () => {
   loadPlaygroundModels();
-  // What a key can accept changes with the key, so re-gate before the user
+  // What a key can do changes with the key, so re-gate before the user
   // reaches for a control the new one cannot honour.
-  gateAttachments();
+  applyKeyGates();
 });
 
 // Bound the two Playground columns to what is actually left on screen, so
@@ -582,7 +688,7 @@ function addImageBubble(result) {
   const meta = document.createElement("div");
   meta.className = "meta";
   meta.textContent =
-    `${result.model} · ${Math.round(result.round_trip_duration_ms)} ms · ` +
+    `${result.model} · ${formatDuration(result.round_trip_duration_ms)} · ` +
     usageLabel(result.usage);
   bubble.appendChild(meta);
   (result.warnings || []).forEach((warning) => {
@@ -1186,12 +1292,13 @@ function clearAttachments() {
 // Disable an attachment the selected key can never satisfy, and say which
 // providers can. Discovering this after a round trip wastes a call and
 // reads as a bug; the control should be plainly unavailable instead.
-function gateAttachments() {
+function gateAttachments(off = null) {
   const target = TARGETS.find((t) => String(t.id) === el("pg-target").value);
   ATTACHMENTS.forEach(({ id, noun }) => {
     const accepts = target && target.accepts ? target.accepts[id] : null;
     const ok = !target || !accepts || accepts.bytes || accepts.url;
     const toggle = el(`pg-${id}-on`);
+    if (!ok && toggle.checked && off) off.push(`send a ${noun}`);
     toggle.disabled = !ok;
     if (!ok) {
       toggle.checked = false;
@@ -1242,6 +1349,92 @@ function capableProviders(id) {
 // ids are lowercase and begin with any letter, so a sentence that would
 // need "a" or "an" before a list gets rephrased rather than guessed at, and
 // the list always comes last so nothing dangles after it.
+// Transient notice for a state change the page made on the user's behalf,
+// such as turning a toggle off because the new key cannot honour it.
+let TOAST_TIMER = null;
+function showToast(text) {
+  let toast = el("toast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "toast";
+    document.body.appendChild(toast);
+  }
+  toast.textContent = text;
+  toast.classList.add("show");
+  clearTimeout(TOAST_TIMER);
+  TOAST_TIMER = setTimeout(() => toast.classList.remove("show"), 4000);
+}
+
+// Providers whose capability flag for `cap` is on, straight from the
+// catalog map the server sends.
+function providersAble(cap) {
+  return Object.keys(PROVIDER_CAPABILITIES)
+    .filter((p) => PROVIDER_CAPABILITIES[p][cap])
+    .sort();
+}
+
+// Same contract as gateAttachments, for the capability toggles: a key
+// switch mid-conversation must not leave anything switched on that the
+// new provider will refuse after a billable round trip. Controls the new
+// key cannot honour are disabled with an inline note; controls the new
+// key can honour come back. `off` collects what was force-disabled while
+// switched on, for one toast naming everything at once.
+function gateCapabilities(off) {
+  const target = TARGETS.find((t) => String(t.id) === el("pg-target").value);
+  const caps = target ? PROVIDER_CAPABILITIES[target.provider] : null;
+
+  const gateToggle = (checkboxId, wrapId, noteId, cap, noun) => {
+    const ok = !target || !caps || Boolean(caps[cap]);
+    const toggle = el(checkboxId);
+    const wasOn = toggle.checked;
+    toggle.disabled = !ok;
+    el(wrapId).classList.toggle("pg-toggle-off", !ok);
+    const note = el(noteId);
+    note.hidden = ok;
+    if (!ok) {
+      toggle.checked = false;
+      const loaded = providersAble(cap).filter((p) =>
+        TARGETS.some((t) => t.provider === p)
+      );
+      note.textContent = `This ${target.provider} key can't ${noun}. ` +
+        (loaded.length
+          ? keyPhrase("Pick", "above", loaded)
+          : keyPhrase("Load", "", providersAble(cap)));
+      if (wasOn) off.push(noun);
+    }
+  };
+
+  gateToggle("pg-search", "pg-search-toggle", "pg-search-unavailable",
+    "web_search", "search the web");
+  gateToggle("pg-tools-on", "pg-tools-toggle", "pg-tools-unavailable",
+    "tool_calling", "offer tools");
+  if (el("pg-tools-on").disabled) el("pg-tools-panel").hidden = true;
+
+  // The task picker: a provider with no image models can't draw. The
+  // option greys out, and a selected image task falls back to text.
+  const imageOk = !target || !caps || Boolean(caps.image_generation);
+  const imageOption = [...el("pg-mode").options].find((o) => o.value === "image");
+  imageOption.disabled = !imageOk;
+  if (!imageOk && el("pg-mode").value === "image") {
+    el("pg-mode").value = "text";
+    el("pg-mode").dispatchEvent(new Event("change", { bubbles: true }));
+    off.push("make a picture");
+  }
+}
+
+// One pass over everything a key switch can invalidate, ending in a
+// single toast when anything was turned off on the user's behalf.
+function applyKeyGates() {
+  const off = [];
+  gateAttachments(off);
+  gateCapabilities(off);
+  if (off.length) {
+    const target = TARGETS.find((t) => String(t.id) === el("pg-target").value);
+    const who = target ? `this ${target.provider} key` : "this key";
+    showToast(`Turned off for ${who}: ${off.join(", ")}.`);
+  }
+}
+
 function keyPhrase(verb, where, names) {
   const tail = where ? ` ${where}` : "";
   if (!names.length) return `${verb} a key from a provider that can.`;
@@ -1339,8 +1532,11 @@ function renderToolCalls(result) {
         content: input.value || "(no result)",
       };
     });
-    // The model's turn, then ours, both replayed on the next request.
-    PG_HISTORY.push({ role: "assistant", parts: calls });
+    // The model's turn, then ours, both replayed on the next request. The
+    // model may have said something alongside its calls, and that text is
+    // part of the same turn.
+    const assistantParts = result.text ? [{ kind: "text", text: result.text }, ...calls] : calls;
+    PG_HISTORY.push({ role: "assistant", parts: assistantParts });
     PG_HISTORY.push({ role: "user", parts: results });
     clear(panel);
     runGeneration({ continuation: true });
@@ -1349,7 +1545,37 @@ function renderToolCalls(result) {
   panel.appendChild(card);
 }
 
+// Every settled exchange goes into PG_HISTORY so the conversation is
+// replayed with the next request, whichever model or key answers it.
+function recordExchange({ prompt, labels, data, continuation }) {
+  if (data.error) return;
+  if (!continuation) {
+    const parts = [];
+    if (prompt) parts.push({ kind: "text", text: prompt });
+    // Media is not replayed on later turns (each replay is billed again),
+    // so a short label stands in for what was attached.
+    (labels || []).forEach((label) => {
+      parts.push({ kind: "text", text: `[attached earlier: ${label}]` });
+    });
+    if (parts.length) PG_HISTORY.push({ role: "user", parts });
+  }
+  if (data.tool_calls && data.tool_calls.length) {
+    // The tool panel records this assistant turn together with the results
+    // when they are sent back; recording it here too would duplicate it.
+    return;
+  }
+  if (data.text) {
+    PG_HISTORY.push({ role: "assistant", parts: [{ kind: "text", text: data.text }] });
+  }
+}
+
 el("pg-run").addEventListener("click", () => runGeneration({ continuation: false }));
+
+el("pg-new").addEventListener("click", () => {
+  PG_HISTORY = [];
+  clear(el("pg-tool-calls"));
+  transcriptEmpty();
+});
 
 el("pg-prompt").addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.shiftKey) return;
@@ -1383,7 +1609,8 @@ async function runGeneration({ continuation }) {
     return;
   }
   if (!continuation) {
-    PG_HISTORY = [];
+    // A fresh send abandons any unanswered tool calls: their turn was never
+    // recorded, so history stays free of calls with no results.
     clear(el("pg-tool-calls"));
   }
   let tooling;
@@ -1437,7 +1664,8 @@ async function runGeneration({ continuation }) {
     history: PG_HISTORY.length ? PG_HISTORY : undefined,
   };
   try {
-    await streamGeneration(out, body);
+    const data = await streamGeneration(out, body);
+    if (data) recordExchange({ prompt, labels: attached.labels, data, continuation });
   } catch (err) {
     if (err && err.sawDelta) {
       // Tokens already arrived and were spent; a second call would be a
@@ -1451,79 +1679,138 @@ async function runGeneration({ continuation }) {
       const data = await api("/api/generate", { method: "POST", body });
       renderGeneration(out, data);
       renderToolCalls(data);
+      recordExchange({ prompt, labels: attached.labels, data, continuation });
     }
   }
   done(btn);
 }
 
+// A finished duration reads in seconds once it takes a second: "75.65 s"
+// says slow at a glance where "75649 ms" needs arithmetic.
+function formatDuration(ms) {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${Math.round(ms)} ms`;
+}
+
+function formatElapsed(startedAt) {
+  const s = Math.floor((Date.now() - startedAt) / 1000);
+  const m = Math.floor(s / 60);
+  return m ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+}
+
 async function streamGeneration(out, body) {
-  let res;
-  try {
-    res = await fetch("/api/generate/stream", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify(body),
-    });
-  } catch (err) {
-    throw { sawDelta: false };
-  }
-  if (!res.ok || !res.body) throw { sawDelta: false };
+  // One status line, always with the elapsed time: a web search can run
+  // half a minute before the first token, and a bare "Waiting…" gives no
+  // sense of whether anything is happening.
+  const startedAt = Date.now();
+  let phase = "Waiting for the model…";
+  let meta = null;
+  const paint = () => {
+    if (!phase) return;
+    const label = `${phase} · ${formatElapsed(startedAt)}`;
+    if (meta) meta.textContent = label;
+    else out.textContent = label;
+  };
+  const setPhase = (next) => {
+    phase = next;
+    paint();
+  };
+  const ticker = setInterval(paint, 1000);
+  paint();
 
-  clear(out);
-  const card = document.createElement("div");
-  card.className = "card";
-  const text = document.createElement("div");
-  text.className = "result-text";
-  text.textContent = "";
-  card.appendChild(text);
-  const meta = document.createElement("div");
-  meta.className = "meta";
-  meta.textContent = "streaming…";
-  card.appendChild(meta);
-  out.appendChild(card);
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let sawDelta = false;
-  let settled = false;
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let boundary;
-      while ((boundary = buffer.indexOf("\n\n")) !== -1) {
-        const frame = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-        if (!frame.startsWith("data:")) continue;
-        const event = JSON.parse(frame.slice(5));
-        if (event.error) {
-          renderGeneration(out, event);
-          settled = true;
-        } else if (event.kind === "text_delta") {
-          sawDelta = true;
-          // Append a text node per delta: textContent += would re-copy the
-          // whole accumulated string on every token.
-          text.appendChild(document.createTextNode(event.text));
-        } else if (event.kind === "tool_call_started") {
-          // Named before the arguments finish parsing, so show the call is
-          // coming without implying it can be acted on yet.
-          meta.textContent = `calling ${event.name}…`;
-        } else if (event.kind === "result") {
-          renderGeneration(out, event);
-          renderToolCalls(event);
-          settled = true;
+    let res;
+    try {
+      res = await fetch("/api/generate/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      throw { sawDelta: false };
+    }
+    if (!res.ok || !res.body) throw { sawDelta: false };
+
+    clear(out);
+    const card = document.createElement("div");
+    card.className = "card";
+    const text = document.createElement("div");
+    text.className = "result-text";
+    text.textContent = "";
+    card.appendChild(text);
+    meta = document.createElement("div");
+    meta.className = "meta";
+    card.appendChild(meta);
+    out.appendChild(card);
+    setPhase("streaming…");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let sawDelta = false;
+    let settled = false;
+    let outcome = null;
+    let reasoningChars = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let boundary;
+        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          if (!frame.startsWith("data:")) continue;
+          const event = JSON.parse(frame.slice(5));
+          if (event.error) {
+            renderGeneration(out, event);
+            settled = true;
+            phase = null;
+          } else if (event.kind === "text_delta") {
+            if (!sawDelta) setPhase("streaming…");
+            sawDelta = true;
+            // Append a text node per delta: textContent += would re-copy the
+            // whole accumulated string on every token.
+            text.appendChild(document.createTextNode(event.text));
+          } else if (event.kind === "reasoning_delta") {
+            // A reasoning model can think for a long stretch before its
+            // first visible token; show that as progress, not silence.
+            reasoningChars += event.chars || 0;
+            if (!sawDelta) {
+              setPhase(`thinking… ${reasoningChars.toLocaleString()} characters of reasoning so far`);
+            }
+          } else if (event.kind === "provider_event") {
+            // Bounded provider activity kinds relayed by the server. A
+            // server-side search is the one to name while the answer has
+            // not started.
+            if (!sawDelta && /web_search/.test(event.what || "")) {
+              setPhase("searching the web…");
+            }
+          } else if (event.kind === "tool_call_started") {
+            // Named before the arguments finish parsing, so show the call is
+            // coming without implying it can be acted on yet.
+            setPhase(`calling ${event.name}…`);
+          } else if (event.kind === "result") {
+            renderGeneration(out, event);
+            renderToolCalls(event);
+            settled = true;
+            outcome = event;
+            phase = null;
+          }
         }
       }
+    } catch (err) {
+      throw { sawDelta };
     }
-  } catch (err) {
-    throw { sawDelta };
-  }
-  if (!settled) {
-    // The connection closed without a result or error event.
-    throw { sawDelta };
+    if (!settled) {
+      // The connection closed without a result or error event.
+      throw { sawDelta };
+    }
+    // The settled result, or null when the server reported an error: the
+    // caller records successful exchanges into the conversation history.
+    return outcome;
+  } finally {
+    clearInterval(ticker);
   }
 }
 
@@ -1569,7 +1856,7 @@ function renderGeneration(out, data) {
   const meta = document.createElement("div");
   meta.className = "meta";
   meta.textContent =
-    `${data.model} · ${Math.round(data.round_trip_duration_ms)} ms · ${usageLabel(data.usage)}` +
+    `${data.model} · ${formatDuration(data.round_trip_duration_ms)} · ${usageLabel(data.usage)}` +
     (data.finish_reason ? ` · ${data.finish_reason}` : "");
   card.appendChild(meta);
 
@@ -1664,7 +1951,7 @@ function renderVerify(target, data) {
       // Only the total reaches the attempt record, so name the field the
       // CLI names: a provider can report per-direction counts and no total.
       const tokens = a.total_tokens != null ? a.total_tokens : "unreported";
-      line.textContent = `✓ ${a.model_id} (pos ${a.position}) — ${Math.round(a.round_trip_duration_ms)} ms, total tokens: ${tokens}`;
+      line.textContent = `✓ ${a.model_id} (pos ${a.position}) — ${formatDuration(a.round_trip_duration_ms)}, total tokens: ${tokens}`;
     } else {
       line.textContent = `✗ ${a.model_id} (pos ${a.position}) — ${a.error_code}: ${a.error_message}`;
     }
@@ -1672,5 +1959,105 @@ function renderVerify(target, data) {
   });
   return card;
 }
+
+// --- traces -----------------------------------------------------------------
+
+const TRACE_ROUTE_LABELS = {
+  "/api/generate/stream": "Streamed text",
+  "/api/generate": "Text",
+  "/api/generate/image": "Picture",
+  "/api/verify": "Verify",
+  "/api/models": "Model list",
+};
+
+let tracesTimer = null;
+
+function traceTargetName(id) {
+  const t = (TARGETS || []).find((entry) => entry.id === id);
+  if (t) return `${t.name} (${t.provider})`;
+  return id != null ? `#${id}` : "—";
+}
+
+
+async function loadTraces() {
+  const data = await api("/api/traces");
+  if (data.error) {
+    // api() wraps every failure; a JSON parse failure here means the
+    // route answered HTML — an older server with no traces endpoint.
+    // Static files reload per request, the Python process doesn't.
+    if (data.error.code === "request_failed" && /JSON/i.test(data.error.message)) {
+      el("traces-status").textContent =
+        "This viewer's server is older than the page and has no traces " +
+        "endpoint yet — stop keycall view and start it again.";
+      stopTracesTimer();
+    } else {
+      el("traces-status").textContent = `${data.error.code}: ${data.error.message}`;
+    }
+    return;
+  }
+  const rows = data.traces || [];
+  el("traces-status").textContent = rows.length
+    ? ""
+    : "Nothing yet. Use the Playground or Verify, then look back here.";
+  const tbody = document.querySelector("#traces-table tbody");
+  clear(tbody);
+  rows.forEach((r) => {
+    const tr = document.createElement("tr");
+    let outcome = r.status;
+    if (r.events != null) outcome += ` · ${r.events} event(s)`;
+    if (r.detail) outcome += ` — ${r.detail}`;
+    const cells = [
+      r.at,
+      TRACE_ROUTE_LABELS[r.route] || r.route,
+      traceTargetName(r.target),
+      r.model || "—",
+      formatDuration(r.duration_ms),
+      outcome,
+    ];
+    cells.forEach((text, i) => {
+      const td = document.createElement("td");
+      td.textContent = String(text);
+      if (i === 5 && r.status !== "ok") td.className = "fail";
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function stopTracesTimer() {
+  if (tracesTimer) {
+    clearInterval(tracesTimer);
+    tracesTimer = null;
+  }
+}
+
+function startTracesTimer() {
+  stopTracesTimer();
+  if (el("traces-auto").checked && el("traces").classList.contains("active")) {
+    tracesTimer = setInterval(loadTraces, 2000);
+  }
+}
+
+document.querySelectorAll("#tabs button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (btn.dataset.tab === "traces") {
+      loadTraces();
+      startTracesTimer();
+    } else {
+      stopTracesTimer();
+    }
+  });
+});
+
+el("traces-refresh").addEventListener("click", loadTraces);
+el("traces-clear").addEventListener("click", async () => {
+  const data = await api("/api/traces/clear", { method: "POST", body: {} });
+  if (data.error) {
+    el("traces-status").textContent = `${data.error.code}: ${data.error.message}`;
+    return;
+  }
+  loadTraces();
+});
+el("traces-auto").addEventListener("change", startTracesTimer);
 
 boot();

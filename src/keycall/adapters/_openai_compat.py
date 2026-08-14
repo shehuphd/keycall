@@ -23,6 +23,7 @@ from .._types import (
     InvocationResult,
     Model,
     OutputPart,
+    ReasoningDelta,
     StreamEvent,
     StreamFinish,
     StreamStart,
@@ -74,7 +75,7 @@ def _image_url(part: ImageInput) -> str:
 # 2026-08-08). Unverified custom targets don't get the extra field: an
 # unknown endpoint may reject it, and a missing-usage warning is the safer
 # failure.
-_STREAM_USAGE_PROVIDERS = frozenset({"deepseek", "moonshot"})
+_STREAM_USAGE_PROVIDERS = frozenset({"deepseek", "moonshot", "xai"})
 
 
 class CompatStreamAssembler(StreamAssembler):
@@ -104,6 +105,10 @@ class CompatStreamAssembler(StreamAssembler):
                     events.append(TextDelta(text=text))
                 elif delta.get("reasoning_content"):
                     self._saw_reasoning = True
+                    # Surfaced so a long think is visible progress, not a
+                    # hang: grok-4.6 reasoned 40 s before its first answer
+                    # token (observed 2026-08-14).
+                    events.append(ReasoningDelta(text=str(delta["reasoning_content"])))
                 events.extend(self._tool_call_events(delta))
             if choice.get("finish_reason"):
                 self.finish_reason = str(choice["finish_reason"])
@@ -279,6 +284,12 @@ class OpenAICompatibleAdapter(ProviderAdapter):
         if request.max_output_tokens is not None:
             body["max_tokens"] = request.max_output_tokens
         body.update(self.sampling_fields(request))
+        if request.reasoning_effort is not None:
+            # Only providers whose catalog entry records a live-verified
+            # binding control reach this line; the gate refuses the rest
+            # (DeepSeek answers 200 to this field but its reasoning token
+            # counts do not follow the value, measured 2026-08-14).
+            body["reasoning_effort"] = request.reasoning_effort
         if request.tools:
             body["tools"] = [
                 {

@@ -17,8 +17,8 @@ from typing import Any
 
 from .._enums import ModelCategory
 from .._errors import KeyCallError
-from .._registry import providers_with
-from .._sources import SourceError, load_targets
+from .._registry import providers_with, resolve_provider, supported_providers
+from .._sources import SourceError, _target_from_mapping, load_targets
 from .._types import (
     AudioInput,
     FileInput,
@@ -36,6 +36,7 @@ from .._verify_core import DEFAULT_ATTEMPTS, order_candidates, run_verify
 from ._registry import Registry
 
 __all__ = [
+    "add_key",
     "add_source",
     "browse_models",
     "check_target",
@@ -70,6 +71,21 @@ def list_targets(registry: Registry) -> dict[str, Any]:
             kind: sorted(providers_with(f"{kind}_input"))
             for kind in ("image", "audio", "file")
         },
+        # Per-provider capability flags, read from the same catalog the
+        # adapters gate on, so every Playground control can gate itself on
+        # a key switch instead of failing after a billable round trip.
+        "provider_capabilities": {
+            name: {
+                "web_search": caps.web_search,
+                "tool_calling": caps.tool_calling,
+                "image_generation": caps.image_generation,
+            }
+            for name in supported_providers()
+            for caps in (resolve_provider(name).capabilities,)
+        },
+        # Every provider a key can be added for, straight from the catalog,
+        # so the form's dropdown can't drift from what the library accepts.
+        "providers": list(supported_providers()),
     }
 
 
@@ -319,13 +335,15 @@ def _generation_fields(body: dict[str, Any]) -> dict[str, Any] | None:
     system = body.get("system")
     if system:
         messages.append(Message(role="system", content=[TextInput(text=str(system))]))
+    # Prior turns first, then the turn being asked now: the conversation
+    # must reach the provider in the order it happened.
+    messages.extend(history)
     user_parts: list[Any] = []
     if prompt and isinstance(prompt, str):
         user_parts.append(TextInput(text=prompt))
     user_parts.extend(attachments)
     if user_parts:
         messages.append(Message(role="user", content=user_parts))
-    messages.extend(history)
     tool_choice = body.get("tool_choice") or None
     return {
         "model": model,
@@ -446,6 +464,12 @@ def generate_stream_events(
             for event in stream:
                 if event.kind == "text_delta":
                     yield {"kind": "text_delta", "text": event.text}
+                elif event.kind == "reasoning_delta":
+                    # The page shows progress, not the trace itself, so
+                    # only the size is sent: reasoning can run to
+                    # thousands of characters before the first answer
+                    # token, and the length is what proves liveness.
+                    yield {"kind": "reasoning_delta", "chars": len(event.text)}
                 elif event.kind == "stream_start":
                     yield {"kind": "stream_start", "model": event.model}
                 elif event.kind == "citation":
@@ -457,6 +481,12 @@ def generate_stream_events(
                         "kind": "tool_call_complete",
                         "tool_call": _tool_call_dict(event.tool_call),
                     }
+                elif event.kind == "unknown":
+                    # Bounded provider kind only, never a payload. This is
+                    # how the page learns a server-side search is running:
+                    # those frames are activity, not answer content, and
+                    # without them a 30-second search reads as a hang.
+                    yield {"kind": "provider_event", "what": event.provider_kind[:60]}
                 # stream_finish carries nothing the final result event lacks.
             result = stream.result()
         yield {"kind": "result", **_result_dict(result)}
@@ -484,6 +514,40 @@ def verify_target(
     body["attempts"] = [_attempt_dict(a) for a in result.attempts]
     body["target_id"] = target_id
     return body
+
+
+def add_key(registry: Registry, body: dict[str, Any]) -> dict[str, Any]:
+    """Load one target from a key typed into the viewer.
+
+    The key reaches this process over loopback and stays in memory for the
+    life of the run, the same way a key read from a file does: nothing is
+    written to disk, and the response is the ordinary target list, which
+    carries no credential. `keycall view` already accepted a pasted key at
+    the terminal prompt; the browser had no way in, so anyone holding a key
+    had to write a TOML file before they could click anything.
+    """
+    provider = body.get("provider")
+    key = body.get("key")
+    if not isinstance(provider, str) or not provider.strip():
+        return {"error": {"code": "bad_request", "message": "a provider is required"}}
+    if not isinstance(key, str) or not key.strip():
+        return {"error": {"code": "bad_request", "message": "a key is required"}}
+    fields = {"provider": provider, "key": key}
+    for optional in ("name", "protocol", "base_url"):
+        value = body.get(optional)
+        if isinstance(value, str) and value.strip():
+            fields[optional] = value.strip()
+    try:
+        # The same constructor the file parsers use, so a pasted target gets
+        # the same field validation rather than a second, looser path.
+        target = _target_from_mapping(fields, where="the key you entered")
+    except SourceError as error:
+        return {"error": {"code": "bad_source", "message": str(error)}}
+    try:
+        registry.add_targets([target])
+    except KeyCallError as error:
+        return error_body(error)
+    return list_targets(registry)
 
 
 def add_source(registry: Registry, body: dict[str, Any]) -> dict[str, Any]:

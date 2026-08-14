@@ -17,8 +17,11 @@ __all__ = ["Token"]
 class Token:
     __slots__ = ("_value",)
 
-    def __init__(self) -> None:
-        self._value = secrets.token_urlsafe(32)
+    def __init__(self, value: str | None = None) -> None:
+        # A value is only ever passed by the dev-reload restart, which must
+        # keep the running browser tab's token working across the restart.
+        # Every other construction generates fresh.
+        self._value = value or secrets.token_urlsafe(32)
 
     def matches(self, candidate: str | None) -> bool:
         if not candidate:

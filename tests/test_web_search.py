@@ -28,7 +28,7 @@ def simple_messages():
 # --- request-side gating ----------------------------------------------------
 
 
-@pytest.mark.parametrize("provider", ["deepseek", "moonshot"])
+@pytest.mark.parametrize("provider", ["deepseek"])
 def test_web_search_rejected_for_providers_without_native_search(provider):
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("must fail before any network call")
@@ -396,3 +396,199 @@ def test_gemini_citations_match_between_streamed_and_non_streamed():
     # The events a caller saw match the result they get back.
     found = [e.citation for e in events if e.kind == "citation"]
     assert tuple(found) == streamed.citations
+
+
+def test_xai_web_search_reroutes_to_the_responses_surface():
+    """Grok's search lives on POST /v1/responses (the OpenAI Responses
+    shape), while plain generation stays on chat completions — both
+    verified live 2026-08-14. One flag must switch route, body shape,
+    and parser together."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp-1",
+                "model": "grok-4.6",
+                "status": "completed",
+                "output": [
+                    {"type": "reasoning", "id": "rs_1", "summary": []},
+                    {"type": "web_search_call", "id": "ws_1", "status": "completed"},
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "Today is Friday, August 14, 2026.",
+                                "annotations": [
+                                    {
+                                        "type": "url_citation",
+                                        "url": "https://www.datetoday.net/",
+                                        "title": "Date Today",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                ],
+                "usage": {"input_tokens": 6054, "output_tokens": 2033, "total_tokens": 8087},
+            },
+        )
+
+    client = make_client("xai", handler)
+    result = client.generate_text(
+        model="grok-4.6", messages=simple_messages(), web_search=True
+    )
+    client.close()
+
+    assert captured["path"] == "/v1/responses"
+    assert {"type": "web_search"} in captured["body"]["tools"]
+    assert "messages" not in captured["body"], "the responses surface takes input items"
+    assert result.text == "Today is Friday, August 14, 2026."
+    assert [c.url for c in result.citations] == ["https://www.datetoday.net/"]
+    assert result.usage.total_tokens == 8087
+
+
+def _moonshot_search_round(call_id="ws_1"):
+    """Round one of Moonshot's builtin flow: the search already ran
+    server-side; the model asks for its echo (shape observed live
+    2026-08-14 on kimi-k2.6)."""
+    return {
+        "model": "kimi-k2.6",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "$web_search",
+                                "arguments": json.dumps(
+                                    {
+                                        "search_result": {"search_id": "s-123"},
+                                        "usage": {"total_tokens": 6053},
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 27, "completion_tokens": 1, "total_tokens": 28},
+    }
+
+
+def test_moonshot_web_search_runs_the_echo_loop():
+    """The builtin's round trip is KeyCall's to complete: one call from
+    the caller's seat, two on the wire, with the echo carrying the
+    arguments back verbatim and usage summed across rounds."""
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        if len(bodies) == 1:
+            return httpx.Response(200, json=_moonshot_search_round())
+        return httpx.Response(
+            200,
+            json={
+                "model": "kimi-k2.6",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "It is August 14, 2026."},
+                    }
+                ],
+                "usage": {"prompt_tokens": 8279, "completion_tokens": 1648, "total_tokens": 9927},
+            },
+        )
+
+    client = make_client("moonshot", handler)
+    result = client.generate_text(
+        model="kimi-k2.6", messages=simple_messages(), web_search=True
+    )
+    client.close()
+
+    assert len(bodies) == 2
+    assert {"type": "builtin_function", "function": {"name": "$web_search"}} in bodies[0]["tools"]
+    # Round two replays the call and echoes its arguments as the tool answer.
+    tool_message = next(m for m in bodies[1]["messages"] if m["role"] == "tool")
+    assert tool_message["tool_call_id"] == "ws_1"
+    assert json.loads(tool_message["content"])["search_result"] == {"search_id": "s-123"}
+    assert {"type": "builtin_function", "function": {"name": "$web_search"}} in bodies[1]["tools"]
+
+    assert result.text == "It is August 14, 2026."
+    # 28 + 9927: both rounds were billed and both are reported.
+    assert result.usage.total_tokens == 9955
+    # The handshake's tool call is not part of the answer's parts.
+    assert all(p.kind == "text" for p in result.parts)
+
+
+def test_moonshot_refuses_an_unbounded_echo_loop():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_moonshot_search_round())
+
+    client = make_client("moonshot", handler)
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(model="kimi-k2.6", messages=simple_messages(), web_search=True)
+    client.close()
+    assert excinfo.value.code is ErrorCode.PROVIDER_UNAVAILABLE
+    assert "budget" in excinfo.value.message
+
+
+def test_moonshot_without_web_search_sends_no_builtin():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": "hi"}, "finish_reason": "stop"}
+                ],
+                "usage": {},
+            },
+        )
+
+    client = make_client("moonshot", handler)
+    client.generate_text(model="kimi-k2.6", messages=simple_messages())
+    client.close()
+    assert "tools" not in captured["body"]
+
+
+def test_xai_without_web_search_stays_on_chat_completions():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        return httpx.Response(
+            200,
+            json={
+                "id": "c1",
+                "model": "grok-4.6",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Hi."},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    client = make_client("xai", handler)
+    result = client.generate_text(model="grok-4.6", messages=simple_messages())
+    client.close()
+    assert captured["path"] == "/v1/chat/completions"
+    assert result.text == "Hi."

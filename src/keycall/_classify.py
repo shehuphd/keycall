@@ -20,7 +20,7 @@ _RULES: tuple[tuple[tuple[str, ...], ModelCategory], ...] = (
     (("tts", "speech"), ModelCategory.SPEECH_GENERATION),
     (("realtime",), ModelCategory.REALTIME),
     (("dall-e", "image", "imagen", "flux"), ModelCategory.IMAGE_GENERATION),
-    (("sora", "veo"), ModelCategory.VIDEO_GENERATION),
+    (("sora", "veo", "imagine-video"), ModelCategory.VIDEO_GENERATION),
     # Ambiguous or out-of-taxonomy families stay unknown rather than
     # guessing: moderation/reranking/guard models, audio-hybrid previews.
     (("moderation", "rerank", "guard", "audio"), ModelCategory.UNKNOWN),

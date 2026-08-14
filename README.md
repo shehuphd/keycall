@@ -2,12 +2,12 @@
 
 One consistent interface for validating AI-provider API keys, listing and filtering the models available to them, and making normalized calls, so every product stops rebuilding the same model-picker filters and provider wrappers.
 
-**Status: early release.** Key validation, model listing and filtering,
-text generation, streaming, tool calling, native web search with normalized
-citations, structured JSON output, embeddings, image generation, and image,
-audio, and document input all work and are live-verified against every
-provider that supports them. The API
-is settled but may still shift before 1.0.
+**Status: 1.0.** Key validation, model listing and filtering, text
+generation, streaming, tool calling, native web search with normalized
+citations, structured JSON output, embeddings, image, speech, realtime
+voice, and video generation, and image, audio, and document input all
+work and are live-verified against every provider that supports them.
+The API is stable.
 
 Docs: [USAGE.md](https://github.com/shehuphd/keycall/blob/main/USAGE.md) for the full API and CLI reference · [ARCHITECTURE.md](https://github.com/shehuphd/keycall/blob/main/ARCHITECTURE.md) for the layer diagram and component contracts · [CHANGELOG.md](https://github.com/shehuphd/keycall/blob/main/CHANGELOG.md) for version history.
 
@@ -38,8 +38,8 @@ keycall verify --provider openai --source env:OPENAI_API_KEY --generate
 That is one command telling you the key is valid, how many text models it can
 reach, and that a generation came back — including which model answered and
 where it sat in the provider's own list. Swap `openai` for
-`anthropic`, `gemini`, `deepseek`, `perplexity`, or `moonshot` and it works the
-same way.
+`anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, or `xai` and it
+works the same way.
 
 Prefer to click around? Same key, one word different:
 
@@ -91,12 +91,16 @@ print(result.round_trip_duration_ms)
 - **No credential storage.** Keys live in memory for the client's lifetime, wrapped in a redacting type that keeps them out of reprs, logs, traces, exceptions, and pickles. Your app decides how to store them.
 - **Model filtering built in.** Text-generation models by default; embeddings, image, audio, and other categories on request; unknown models never silently enter the default picker.
 - **Typed errors.** Invalid key, rate limit, provider outage, timeout, and malformed response are distinguishable, never collapsed into "invalid key."
-- **Streaming.** `stream_text()` yields typed events (text increments, citations, tool calls, finish) across all four wire protocols, and refuses to call a stream complete without the provider's own terminal signal.
+- **Streaming.** `stream_text()` yields typed events (text increments, visible reasoning progress, citations, tool calls, finish) across all four wire protocols, and refuses to call a stream complete without the provider's own terminal signal.
 - **Tool calling.** Define tools once and KeyCall normalizes all four call/result wire shapes, streamed or not, carrying the provider echo data some models require back verbatim. It never executes a tool.
 - **Image generation.** `generate_image()` returns the picture as bytes with the media type the provider produced, on OpenAI and Gemini; the rest refuse before the network.
+- **Speech generation.** `generate_speech()` speaks text aloud on OpenAI and Gemini, the only providers with a public API for it — Anthropic's voice mode runs on a third-party subcontractor behind a consumer app, not a callable endpoint. The result carries the media type the provider sent, including Gemini's raw PCM, never a container the provider didn't produce.
+- **Video generation.** `start_video()` returns a job handle, `check_video()` polls it, `fetch_video()` downloads the finished MP4 — or `generate_video()` runs all three against a timeout you choose. Gemini (Veo) and xAI (Grok Imagine) support it; the rest refuse before the network. A timeout hands back the still-valid job, so a slow render is never lost.
 - **Embeddings.** `embed()` returns one vector per input, in input order, on OpenAI and Gemini; providers without an embeddings endpoint refuse before the network instead of 404ing.
 - **Images, audio, and documents.** Pass bytes (or a URL where the provider fetches one) beside your text; KeyCall maps each provider's shape and detects the media type from the content. Support varies by provider and by form, so a refusal happens before the network and names who does accept that kind.
-- **Web search with citations.** `web_search=True` turns on the provider's native search tool (OpenAI, Anthropic, Gemini; Perplexity always searches) and returns sources normalized to one `Citation` shape.
+- **Web search with citations.** `web_search=True` turns on the provider's native search tool (OpenAI, Anthropic, Gemini, xAI, Moonshot; Perplexity always searches) and returns sources normalized to one `Citation` shape (Moonshot reports none).
+- **Reasoning effort control.** `reasoning_effort="low"` (or `"medium"` / `"high"`) maps to the provider's native thinking control on OpenAI, Anthropic, Gemini, Perplexity, and xAI — each verified live to move reasoning-token spend. Providers that accept the parameter without honoring it refuse instead of silently ignoring it.
+- **Realtime voice sessions.** `realtime()` opens a live WebSocket conversation on OpenAI, xAI, or Gemini — text or microphone audio up, normalized audio/transcript/turn events down, sync and async. The credential rides the handshake headers and never enters a URL.
 - **Structured output.** `response_schema=<JSON Schema>` is enforced provider-side on OpenAI, Anthropic, Gemini, Moonshot, and Perplexity; on providers without enforcement (DeepSeek, unverified custom targets) KeyCall falls back to guaranteed-valid-JSON mode and adds a result warning rather than claiming a guarantee it can't back. `result.text` is always the JSON string, regardless of which mechanism produced it.
 - **Hardened transport.** TLS always verified, redirects refused, response sizes capped, SSRF and DNS-rebinding guards on custom endpoints, and generation is never silently retried.
 
@@ -117,6 +121,7 @@ of it fails:
 | DeepSeek | openai-compatible | verified | verified |
 | Perplexity | openai-compatible | verified | verified |
 | Moonshot/Kimi | openai-compatible | verified | verified |
+| xAI (Grok) | openai-compatible | verified | verified |
 | Custom endpoint (explicit `base_url`) | openai-compatible | fixtures only | fixtures only |
 
 **OpenAI** advertises `-latest` aliases its own account can't invoke, and

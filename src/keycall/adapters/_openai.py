@@ -22,6 +22,7 @@ from .._types import (
     InvocationResult,
     Model,
     OutputPart,
+    ReasoningDelta,
     StreamEvent,
     StreamFinish,
     StreamStart,
@@ -55,6 +56,9 @@ _STREAM_PLUMBING = frozenset(
         "response.content_part.added",
         "response.content_part.done",
         "response.output_text.done",
+        "response.reasoning_summary_part.added",
+        "response.reasoning_summary_part.done",
+        "response.reasoning_summary_text.done",
     }
 )
 
@@ -109,6 +113,10 @@ class _OpenAIStreamAssembler(StreamAssembler):
             delta = str(payload.get("delta", ""))
             self.append_text(delta)
             return [TextDelta(text=delta)]
+        if kind == "response.reasoning_summary_text.delta":
+            # The visible reasoning trace, streamed ahead of the answer —
+            # surfaced so a long think doesn't read as a hang.
+            return [ReasoningDelta(text=str(payload.get("delta", "")))]
         if kind == "response.output_item.added":
             item = payload.get("item")
             if isinstance(item, dict) and item.get("type") == "reasoning":
@@ -257,6 +265,51 @@ class OpenAIAdapter(ProviderAdapter):
             ),
         )
 
+    def build_speech_spec(self, request: Any) -> RequestSpec:
+        op = self.resolved.operations["speech_generation"]
+        body: dict[str, Any] = {"model": request.model, "input": request.text}
+        if request.voice:
+            body["voice"] = request.voice
+        return RequestSpec(method=op["method"], path=op["path"], json_body=body)
+
+    def parse_speech_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        model: str,
+    ) -> InvocationResult:
+        # This endpoint answers with the audio file itself, not a JSON
+        # envelope (verified live 2026-08-12), so the transport hands the
+        # raw bytes straight through rather than a parsed dict — this is
+        # the one adapter method in the package whose payload is not JSON.
+        if not isinstance(payload, bytes) or not payload:
+            raise KeyCallError(
+                "speech response was not audio bytes",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.SPEECH_GENERATION.value,
+            )
+        # The response's own Content-Type is authoritative for what format
+        # came back; nothing here should assume a fixed format,
+        # since response_format on this endpoint isn't sent by KeyCall and
+        # OpenAI's own default has changed across model generations.
+        media_type = (headers.get("content-type") or "audio/mpeg").split(";")[0].strip()
+        return self.speech_result(
+            base64_data=base64.b64encode(payload).decode("ascii"),
+            media_type=media_type,
+            # No usage is reported anywhere on this response: no JSON body
+            # to carry it in, and no dedicated usage header either. None
+            # here means "not reported", the same as everywhere else.
+            usage=Usage(),
+            model=model,
+            round_trip_duration_ms=round_trip_duration_ms,
+            provider_request_id=safe_request_id(
+                headers.get(self.resolved.provider_request_id_header or "")
+            ),
+        )
+
     def build_embedding_spec(self, request: Any) -> RequestSpec:
         op = self.resolved.operations["embeddings"]
         return RequestSpec(
@@ -299,6 +352,21 @@ class OpenAIAdapter(ProviderAdapter):
             ),
             expected=expected,
         )
+
+    def realtime_plan(self, config: Any) -> tuple[str, Any]:
+        if not self.resolved.capabilities.realtime or "realtime" not in self.resolved.operations:
+            return super().realtime_plan(config)
+        from urllib.parse import quote
+
+        from ._realtime import OpenAIRealtimeTranslator
+
+        path = self.resolved.operations["realtime"]["path"].format(
+            model=quote(config.model, safe="")
+        )
+        translator = OpenAIRealtimeTranslator(
+            config, provider=self.resolved.provider, ga_session=True
+        )
+        return path, translator
 
     def build_generation_spec(self, request: TextGenerationRequest) -> RequestSpec:
         self.validate_generation_request(request)
@@ -363,6 +431,10 @@ class OpenAIAdapter(ProviderAdapter):
         if request.max_output_tokens is not None:
             body["max_output_tokens"] = request.max_output_tokens
         body.update(self.sampling_fields(request))
+        if request.reasoning_effort is not None:
+            # The Responses effort control (live-verified 2026-08-14);
+            # xAI's responses surface takes the same shape.
+            body["reasoning"] = {"effort": request.reasoning_effort}
         tools: list[dict[str, Any]] = [
             {
                 "type": "function",

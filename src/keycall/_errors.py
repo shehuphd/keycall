@@ -1,15 +1,20 @@
-"""Normalized error codes and the single public exception type.
+"""Normalized error codes and the public exception types.
 
-One exception class with a typed ``ErrorCode`` discriminator. Subclasses
-may be added later if observed caller behavior demonstrates useful catch
-boundaries; starting flat is the reversible choice.
+One exception class with a typed ``ErrorCode`` discriminator, plus one
+subclass, ``VideoJobTimeout``, which exists because it carries something a
+flat error can't: the still-valid job handle, so a caller whose waiting
+budget ran out never loses a render they already paid to start.
 """
 
 from __future__ import annotations
 
 from enum import Enum
+from typing import TYPE_CHECKING
 
-__all__ = ["ErrorCode", "KeyCallError"]
+if TYPE_CHECKING:
+    from ._types import VideoJob
+
+__all__ = ["ErrorCode", "KeyCallError", "VideoJobTimeout"]
 
 
 class ErrorCode(str, Enum):
@@ -65,3 +70,20 @@ class KeyCallError(Exception):
             f"{type(self).__name__}(code={self.code.value!r}, message={self.message!r}, "
             f"provider={self.provider!r}, retryable={self.retryable!r})"
         )
+
+
+class VideoJobTimeout(KeyCallError):
+    """generate_video's waiting budget ran out while the render was still
+    going. The job is not dead: ``job`` is the still-valid handle, and
+    ``check_video(error.job)`` picks up polling where the wait left off.
+    Raised with ``code=ErrorCode.TIMEOUT``."""
+
+    def __init__(self, message: str, *, provider: str, job: VideoJob) -> None:
+        super().__init__(
+            message,
+            code=ErrorCode.TIMEOUT,
+            provider=provider,
+            operation="video_generation",
+            retryable=True,
+        )
+        self.job = job

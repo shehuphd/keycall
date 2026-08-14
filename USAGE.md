@@ -234,6 +234,7 @@ Event types, discriminated by `kind`:
 |---|---|---|
 | `StreamStart` | `stream_start` | model id the provider confirmed |
 | `TextDelta` | `text_delta` | a text increment; with `response_schema`, a fragment of the final JSON |
+| `ReasoningDelta` | `reasoning_delta` | an increment of a visible reasoning trace, on providers that stream one (DeepSeek, Moonshot, xAI) — progress you can show while a reasoning model thinks, never part of `result.text` |
 | `CitationFound` | `citation` | one web-search source, as it surfaces |
 | `ToolCallStarted` | `tool_call_started` | id and name of a call beginning; arguments not known yet |
 | `ToolCallArgumentsDelta` | `tool_call_arguments_delta` | a raw fragment of that call's argument JSON |
@@ -423,10 +424,147 @@ for citation in result.citations:
 | Anthropic | `web_search_20250305` tool | direct source URLs, with `cited_text` |
 | Gemini | `google_search` tool | Google `vertexaisearch` redirect links (by Google's design; they resolve to the source when followed) |
 | Perplexity | Sonar always searches — the flag is a no-op | direct source URLs, with snippets |
+| xAI | `web_search` tool, on xAI's Responses-shaped agentic route | direct source URLs |
+| Moonshot | `$web_search` builtin function; KeyCall runs the echo round trip internally | none — Moonshot returns no citation structure |
 
-DeepSeek, Moonshot, and custom OpenAI-compatible targets have no native
-search tool: `web_search=True` raises `UNSUPPORTED_OPERATION` before any
+On Moonshot the search runs server-side, but the wire protocol needs a
+second round: the model answers with a `$web_search` tool call, and the
+caller must echo it back before the answer arrives. KeyCall runs that
+loop itself (bounded, with usage summed across the rounds), so the call
+you write is the same one-liner as everywhere else — it just bills as
+two or more provider calls when the model searches.
+
+DeepSeek and custom OpenAI-compatible targets have no native search
+tool: `web_search=True` raises `UNSUPPORTED_OPERATION` before any
 network call rather than silently ignoring the request.
+
+### The model decides when to search
+
+On every provider, `web_search=True` offers the tool; the model chooses
+whether to use it, per request. A question the model believes it can
+answer from memory often gets answered from memory, searched nowhere,
+and cited by nothing — with yesterday's knowledge presented
+confidently. Two phrasings of the same question:
+
+```python
+# The model may skip the search and answer from training data:
+"Name one tech news headline from this week."
+
+# Naming the need makes the search near-certain:
+"Search the web for tech news from this week and name one headline."
+```
+
+Guidelines that hold across providers:
+
+- Say "search the web" (or "look this up") when the answer must be
+  current — the instruction, not the flag, is what the model weighs.
+- Anchor the request in time ("as of today", "this week", "in August
+  2026"): recency the model can't have is the strongest search trigger.
+- Check `result.citations` when the answer must be grounded: an empty
+  tuple on a citation-reporting provider usually means no search
+  happened (on Moonshot it is always empty — see below).
+- Perplexity is the exception: Sonar always searches, flag or no flag.
+
+## Reasoning effort
+
+`reasoning_effort` tells a reasoning-capable model how hard to think,
+which is the main lever on both latency and reasoning-token spend:
+
+```python
+result = client.generate_text(
+    model="grok-4.6",
+    messages=[Message(role="user", content=[TextInput(text="Why is the sky blue?")])],
+    reasoning_effort="low",
+)
+```
+
+The value is passed in the provider's own vocabulary (commonly `"low"` /
+`"medium"` / `"high"`; OpenAI also takes `"minimal"`) and is never
+converted, so an unsupported value gets the provider's own typed error.
+Each mapping was verified live to bind — reasoning-token counts follow
+the requested level:
+
+| Provider | Native control |
+|---|---|
+| OpenAI | `reasoning.effort` (Responses API) |
+| Anthropic | `output_config.effort` |
+| Gemini | `thinkingConfig.thinkingLevel` (KeyCall uppercases the value) |
+| Perplexity | `reasoning_effort` |
+| xAI | `reasoning.effort`, on the `/v1/responses` route |
+
+On xAI, naming an effort switches the request to `/v1/responses` the
+same way `web_search=True` does: Grok's chat completions accepts a
+`reasoning_effort` field with HTTP 200 but measured reasoning-token
+counts don't follow it, while the responses route honors the level.
+
+DeepSeek accepts the parameter and ignores it the same way (HTTP 200,
+unmoved token counts), and Moonshot's thinking model wasn't available to
+verify — so on DeepSeek, Moonshot, and custom targets, `reasoning_effort`
+raises `UNSUPPORTED_OPERATION` before any network call rather than
+shipping a knob that does nothing.
+
+## Realtime sessions
+
+`realtime()` opens a live WebSocket conversation with a voice model —
+one connection, many turns, audio and words streaming back as they are
+generated:
+
+```python
+with client.realtime(
+    model="gpt-realtime",
+    instructions="You are a concise assistant.",
+) as session:
+    session.send_text("Why is the sky blue?")
+    for event in session.events(timeout=60):
+        if event.kind == "audio_delta":
+            speaker.play(event.data)          # raw 16-bit PCM
+        elif event.kind == "transcript_delta":
+            print(event.text, end="", flush=True)
+        elif event.kind == "turn_complete":
+            break
+```
+
+Turns go up three ways: `send_text(text)` is a whole typed turn,
+`send_audio(pcm)` streams caller microphone audio in chunks, and
+`end_audio_turn()` closes an audio turn and asks for the response
+(providers with server-side voice detection can also decide on their
+own). Events come back normalized:
+
+| Event kind | Meaning |
+|---|---|
+| `session_started` | the provider accepted the session |
+| `audio_delta` | a chunk of generated speech, decoded to raw PCM bytes |
+| `transcript_delta` | the words being spoken (or the text answer, in a text-modality session) |
+| `turn_complete` | the response finished; carries `usage` where the provider reports it |
+| `interrupted` | the turn was cut off by a new one |
+| `session_ended` | the connection closed; always the final event |
+
+Provider notes, all verified live:
+
+- **OpenAI** (`gpt-realtime`): the GA Realtime API; the only provider
+  with a text output modality; usage reported per turn.
+- **xAI** (`grok-voice-latest`): Grok Voice is voice-only — the words
+  arrive as the transcript of the audio — and reports no usage.
+- **Gemini** (`gemini-2.5-flash-native-audio-latest`): audio-only
+  models; the API key rides a header on the WebSocket handshake, never
+  the URL; usage includes thought tokens. Caller audio is 16 kHz 16-bit
+  PCM (OpenAI and xAI take 24 kHz); generated audio is 24 kHz on all
+  three.
+
+Everything KeyCall doesn't model can be passed as
+`provider_config={...}`, merged verbatim into the provider's
+session-configuration message; using it reports a warning, since those
+keys won't port between providers. `AsyncKeyCall.realtime()` is the same
+surface with `async for` over `events()`. Providers without a realtime
+API (Anthropic, DeepSeek, Perplexity, Moonshot, custom targets) refuse
+with `UNSUPPORTED_OPERATION` before any connection.
+
+On xAI the flag also changes which surface answers: plain generation
+uses chat completions, while a searched request goes to xAI's agentic
+route (`/v1/responses`, the same shape as OpenAI's Responses API).
+KeyCall switches route, body, and parser together — the call you write
+stays identical, and searched replies still stream, cite, and report
+usage the same way.
 
 `result.citations` is a tuple of `Citation(url, title, cited_text)`,
 normalized across all four provider response shapes. Fields the provider
@@ -434,6 +572,12 @@ didn't supply are `None`.
 
 What the citation list does and doesn't guarantee:
 
+- **Moonshot returns none.** Its `$web_search` builtin injects results
+  into the model's context without any citation structure in the
+  response (verified live 2026-08-14), so a searched Moonshot answer is
+  grounded but unattributed: `result.citations` is always `()` there.
+  Code that treats an empty citations tuple as "no search happened" must
+  except Moonshot.
 - **Campaign-tracking parameters are stripped.** OpenAI appends
   `?utm_source=openai` to every URL it cites, which attributes the click to
   OpenAI in the destination's analytics and would otherwise follow the link
@@ -597,6 +741,104 @@ Path("out.png").write_bytes(base64.b64decode(image.base64_data))
 - Image *generation* is separate from image *input*. Sending a picture to
   a model is `ImageInput` on `generate_text()`, described above.
 
+## Speech generation
+
+```python
+result = client.generate_speech(
+    model="gpt-4o-mini-tts",
+    text="Welcome to KeyCall.",
+    voice="alloy",  # optional on this model — see the table below
+)
+
+clip = result.parts[0]
+clip.media_type            # "audio/mpeg" on OpenAI
+Path("out.mp3").write_bytes(base64.b64decode(clip.base64_data))
+```
+
+| Provider | Speech generation | Example model | Returns |
+|---|---|---|---|
+| OpenAI | yes | `gpt-4o-mini-tts`, `tts-1`, `tts-1-hd` | raw audio file (`audio/mpeg` by default), read from `/audio/speech` |
+| Gemini | yes | `gemini-2.5-flash-preview-tts` | raw PCM (`audio/L16;codec=pcm;rate=24000`), on the ordinary content endpoint |
+| Anthropic, DeepSeek, Perplexity, Moonshot | no | | |
+
+- **`voice` is optional, but not uniformly.** Gemini defaults one, and so
+  does OpenAI's `gpt-4o-mini-tts`; OpenAI's `tts-1` and `tts-1-hd` require
+  it and answer 400 without it (live-verified 2026-08-12 across all
+  three). KeyCall never picks a voice for you — that would be a choice you
+  never made — so a call to one of the older models needs `voice` passed
+  explicitly, or the provider's own error names what's missing.
+- **`media_type` is the provider's, not a guess, and it is not always a
+  playable container.** OpenAI's response is a normal audio file. Gemini's
+  is raw 16-bit PCM: to play or save it as a `.wav`, wrap it in a WAV
+  header yourself (44 bytes, standard format — any audio library, or a
+  dozen lines of `struct.pack`, does this) rather than treating the bytes
+  as an MP3 or handing them to something that expects a container.
+- **The response itself is not JSON on OpenAI** — the only operation in
+  the package where that's true. Nothing about calling `generate_speech()`
+  changes for this; it's mentioned here because if you ever inspect
+  KeyCall's transport layer, this is the one route whose successful
+  response is raw bytes rather than a parsed body.
+- A text-only reply (Gemini asking a clarifying question, or refusing)
+  raises rather than returning silence, and repeats what the model said —
+  same posture as image generation's equivalent case.
+
+## Video generation
+
+Video renders as a job, not a round trip: every supporting provider
+answers a render request with a handle and expects polling, and render
+times observed live range from 10 seconds to over 11 minutes. KeyCall
+gives you the job directly, plus a one-call wrapper:
+
+```python
+result = client.generate_video(
+    model="grok-imagine-video-1.5",
+    prompt="A paper boat drifting across a puddle, morning light.",
+    duration_seconds=6,        # optional; the provider defaults it otherwise
+    aspect_ratio="16:9",       # optional
+    timeout=300.0,             # required: your waiting budget, in seconds
+)
+
+clip = result.parts[0]
+clip.media_type                # "video/mp4" on both providers
+clip.url                       # the provider's own download URL, while it lives
+Path("out.mp4").write_bytes(base64.b64decode(clip.base64_data))
+```
+
+Or drive the three phases yourself — the handle is plain data you can
+store and poll later, even from another process:
+
+```python
+job = client.start_video(model="veo-3.1-lite-generate-preview", prompt="...")
+job = client.check_video(job)      # returns a new VideoJob; never mutates
+if job.status == "succeeded":
+    result = client.fetch_video(job)
+```
+
+| Provider | Video generation | Example model | Finished file |
+|---|---|---|---|
+| Gemini | yes | `veo-3.1-lite-generate-preview`, `veo-3.1-fast-generate-preview` | MP4 from Gemini's own host, kept about 2 days |
+| xAI | yes | `grok-imagine-video-1.5` | MP4 from `vidgen.x.ai`, as a temporary unsigned URL |
+| OpenAI, Anthropic, DeepSeek, Perplexity, Moonshot | no | | |
+
+- **`timeout` on `generate_video()` has no default.** Only you know how
+  long is too long for your caller. When the budget runs out KeyCall
+  raises `VideoJobTimeout`, whose `.job` is the still-valid handle: the
+  render keeps going provider-side, and `check_video(error.job)` picks
+  up where the wait left off. You never lose a render you paid to start.
+- **`job.status` is a closed set** — `running`, `succeeded`, `failed` —
+  and `job.provider_status` carries the provider's own word verbatim
+  (xAI's `expired` arrives as `failed` with `provider_status="expired"`).
+  A failed render keeps the provider's message in `job.error_message`.
+- **Job failures are outcomes, not HTTP errors.** Veo under load refuses
+  renders with "high demand" messages inside a successful poll response;
+  KeyCall reports these as failed jobs with the provider's wording, and
+  never silently re-renders — a retry would be a second billable job.
+- **Downloads are pinned.** The URL a job reports is only followed to
+  hosts live-verified for that provider, the credential is only ever sent
+  to the provider's own API host, and xAI's download URL works with no
+  credential at all — treat that URL as a secret, since anyone holding it
+  can fetch the file while it lives.
+
 ## Error handling
 
 Every failure raises `KeyCallError` with a typed `code`:
@@ -741,7 +983,7 @@ along on requests other sites make, every POST must carry
 cookie dies with the browser session, and restarting `keycall view` issues a
 new token that invalidates the old one.
 
-Four tabs:
+Five tabs:
 
 - **Dashboard** — every loaded target; click one for a live key check and its
   text-model count.
@@ -753,16 +995,33 @@ Four tabs:
   (from a file, or the microphone button in the message box, which encodes
   to 16 kHz mono WAV in the browser), or a document, and send it to the
   provider. Results show text,
-  timing, token usage, finish reason, and rendered citation links. An
+  timing, token usage, finish reason, and rendered citation links.
+  The conversation carries across turns: each settled exchange is replayed
+  with the next request, so follow-up questions keep their context, and
+  switching the key or model mid-conversation hands the whole exchange to
+  the new model. New chat clears the transcript and starts over.
+  Attachments belong to the turn that sent them and are not replayed on
+  later turns (each replay would be billed again); a short label stands in
+  for the media. An
   attachment kind the selected key can't send is disabled with a line
   naming which of your keys to use instead, read from the same catalog the
   adapters gate on. Switch the task to **Make a picture** to call an image
   model instead.
 - **Verify** — run the same walk as `keycall verify` (optionally with
   generation) across every target and read the per-model attempt report.
+- **Traces** — every request this viewer run has made, newest first: which
+  key and model, how long it took, and how it ended. When a button seems
+  slow or silent, the answer is here — a reasoning model can think for
+  most of a minute before its first visible token, and the trace shows
+  that time. Prompts and replies are never recorded, only timing and
+  outcomes, and the log lives in the server process's memory for the run;
+  Clear traces wipes it without a restart.
 
 Options: `--host` (default `127.0.0.1`), `--port` (default: pick a free one),
-`--no-open` to skip the browser launch. Sources are the same TXT/JSON/TOML/
+`--no-open` to skip the browser launch, `--reload` to restart the server
+whenever KeyCall's own source changes, keeping the same address and token so
+a hard reload in the browser picks up server-side edits (static files are
+re-read per request either way; this flag is for working on KeyCall itself). Sources are the same TXT/JSON/TOML/
 `env:VAR` formats `verify` accepts.
 
 Security properties, in brief: a fresh auth token is generated per run,

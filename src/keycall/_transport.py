@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -31,7 +32,7 @@ from ._errors import ErrorCode, KeyCallError
 from ._registry import ResolvedProvider
 from ._sanitize import safe_request_id, scrub
 
-__all__ = ["AsyncTransport", "RequestSpec", "Transport", "TransportResult"]
+__all__ = ["AsyncTransport", "DownloadPlan", "RequestSpec", "Transport", "TransportResult"]
 
 RetryPolicy = Literal["list", "generation"]
 ErrorTranslator = Callable[[int, Any], tuple[ErrorCode, bool, str]]
@@ -41,6 +42,10 @@ _RETRY_BACKOFF_SECONDS = (0.5, 1.5)
 _DEFAULT_CONNECT_TIMEOUT = 10.0
 _DEFAULT_READ_TIMEOUT = 60.0
 DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+# Finished-video downloads carry whole media files, so the ordinary
+# response cap would refuse legitimate results; a distinct bound keeps
+# downloads finite without loosening every other operation.
+DOWNLOAD_MAX_RESPONSE_BYTES = 256 * 1024 * 1024
 # One SSE event may not exceed this even when the cumulative cap has room:
 # a single unbounded data: line must not buffer arbitrarily.
 _SSE_MAX_EVENT_BYTES = 1024 * 1024
@@ -98,7 +103,40 @@ class RequestSpec:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class DownloadPlan:
+    """How to fetch a provider-hosted asset from the URL a finished job
+    reported. The adapter that parsed the job declares the mechanics it
+    live-verified for its provider; the transport enforces them:
+
+    - ``send_credential`` attaches the provider auth header — permitted
+      only when the URL's host is the provider's own catalog host, so the
+      credential can never be sent to a host outside the provider profile,
+      no matter what URL a response names.
+    - ``allow_same_origin_redirect`` follows at most one redirect, and
+      only to the same scheme and host. Gemini's file download answers a
+      302 to another path on its own host and needs the auth header on the
+      second hop (verified live 2026-08-13); everything else keeps the
+      package-wide refusal.
+    - ``allowed_hosts`` pins where the URL may point at all. xAI serves
+      finished videos from vidgen.x.ai as unsigned public URLs (verified
+      live 2026-08-13), so its adapter pins that host with no credential;
+      a response naming any other host is refused before a request."""
+
+    url: str
+    allowed_hosts: tuple[str, ...]
+    send_credential: bool = False
+    allow_same_origin_redirect: bool = False
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class TransportResult:
+    # A dict for every JSON-answering operation, which is most of them.
+    # `bytes` for the few whose successful response is not JSON
+    # (OpenAI's speech endpoint returns a raw audio file, not a JSON
+    # envelope, at 200 — verified live 2026-08-12). Which kind a given
+    # result carries is decided per response, from its own Content-Type
+    # header, in _classify_response below; an adapter that calls such a
+    # route already knows which shape to expect back.
     payload: Any
     headers: Mapping[str, str]
     status_code: int
@@ -216,6 +254,34 @@ class _TransportCore:
             retryable=True,
         )
 
+    def _realtime_url(self, path: str) -> str:
+        # Realtime paths are host-rooted: the base URL's own path prefix
+        # (/v1, /v1beta) does not apply to the WebSocket endpoints.
+        host = urlsplit(self._resolved.base_url).netloc
+        return f"wss://{host}{path}"
+
+    def _realtime_headers(self) -> dict[str, str]:
+        headers = _build_headers(self._resolved, self._credential)
+        # A WebSocket handshake carries no body.
+        headers.pop("Content-Type", None)
+        return headers
+
+    def _upgrade_error(self, exc: Exception) -> KeyCallError:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+        code = {
+            401: ErrorCode.INVALID_API_KEY,
+            403: ErrorCode.PERMISSION_DENIED,
+            429: ErrorCode.RATE_LIMITED,
+        }.get(status or 0, ErrorCode.PROVIDER_UNAVAILABLE)
+        return KeyCallError(
+            f"the provider refused the realtime connection (HTTP {status})",
+            code=code,
+            provider=self._resolved.provider,
+            operation="realtime",
+            retryable=code in (ErrorCode.RATE_LIMITED, ErrorCode.PROVIDER_UNAVAILABLE),
+        )
+
     def _classify_response(
         self,
         *,
@@ -226,7 +292,48 @@ class _TransportCore:
         operation: str,
         duration_ms: float,
     ) -> TransportResult | KeyCallError:
-        """Turn a fully-read response into a result or a typed error."""
+        """Turn a fully-read response into a result or a typed error.
+
+        Whether the body is JSON is read from the response's own
+        Content-Type, per response — never declared up front by the
+        caller. A per-request "this route returns binary" flag would be
+        one more fact to keep in sync with what a provider does;
+        the header already says it, on every single response, including
+        error ones. OpenAI's speech endpoint proves why the distinction
+        is needed: success is `audio/mpeg`, but a 404 from the very same
+        route is `application/json` (both verified live 2026-08-12) — a
+        flag fixed per route would have gotten the error case wrong.
+
+        Conservative on purpose: only a Content-Type that unambiguously
+        names a binary kind (audio/image/video/octet-stream/pdf) skips
+        JSON parsing. Anything else — a JSON type, a text type, or the
+        header missing entirely, which happens on some custom
+        OpenAI-compatible targets — keeps today's behavior. A new
+        binary-returning route only has to exist; it never has to be
+        registered here.
+        """
+        content_type = (headers.get("content-type") or headers.get("Content-Type") or "").lower()
+        is_declared_binary = any(
+            content_type.startswith(prefix)
+            for prefix in ("audio/", "image/", "video/", "application/octet-stream", "application/pdf")
+        )
+
+        if is_declared_binary and status_code < 300:
+            if not body:
+                return KeyCallError(
+                    "provider returned an empty response body",
+                    code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                    provider=self._resolved.provider,
+                    operation=operation,
+                    status_code=status_code,
+                )
+            return TransportResult(
+                payload=bytes(body),
+                headers=dict(headers),
+                status_code=status_code,
+                duration_ms=duration_ms,
+            )
+
         try:
             payload = json.loads(body) if body else None
         except ValueError:
@@ -279,6 +386,54 @@ class _TransportCore:
             retry_after=_parse_retry_after(headers),
         )
 
+    def _validate_download(self, plan: DownloadPlan, operation: str) -> None:
+        """Refuse a download before any request leaves. The URL comes out
+        of a provider response, so it is data, not something to trust: it
+        must be https, on a host the adapter pinned from live evidence,
+        and the credential may only ever be sent to the provider's own
+        catalog host."""
+        parts = urlsplit(plan.url)
+        host = parts.hostname or ""
+        if parts.scheme != "https" or not host:
+            raise KeyCallError(
+                "provider reported a download URL that is not https",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self._resolved.provider,
+                operation=operation,
+            )
+        if host not in plan.allowed_hosts:
+            raise KeyCallError(
+                f"provider reported a download URL on unexpected host {host!r}; "
+                "downloads are pinned to hosts verified for this provider",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self._resolved.provider,
+                operation=operation,
+            )
+        if plan.send_credential and host != (urlsplit(self._resolved.base_url).hostname or ""):
+            raise KeyCallError(
+                "refusing to send the credential to a host other than the provider's own",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self._resolved.provider,
+                operation=operation,
+            )
+
+    def _redirect_target(
+        self, *, current_url: str, location: str, operation: str
+    ) -> str:
+        """Resolve a Location header under the same-origin rule: one hop,
+        same scheme and host, or a typed refusal."""
+        target = urljoin(current_url, location)
+        t, o = urlsplit(target), urlsplit(current_url)
+        if t.scheme != "https" or t.hostname != o.hostname:
+            raise KeyCallError(
+                "provider redirected the download off its own host; KeyCall refuses "
+                "to follow cross-origin redirects",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self._resolved.provider,
+                operation=operation,
+            )
+        return target
+
     def _should_retry(
         self, policy: RetryPolicy, attempt: int, error: KeyCallError
     ) -> float | None:
@@ -326,15 +481,38 @@ class Transport(_TransportCore):
             follow_redirects=False,
             trust_env=trust_env,
         )
+        self._trust_env = trust_env
 
     def close(self) -> None:
         self._client.close()
 
-    def _read_capped(self, response: httpx.Response, operation: str) -> bytes:
+    @contextmanager
+    def realtime_connect(self, path: str) -> Iterator[RealtimeWire]:
+        from httpx_ws import WebSocketUpgradeError, connect_ws
+
+        headers = self._realtime_headers()
+        client = httpx.Client(
+            timeout=self._timeout, trust_env=self._trust_env, headers=headers
+        )
+        ws: Any
+        try:
+            with connect_ws(self._realtime_url(path), client) as ws:
+                yield RealtimeWire(ws, scrub=self._scrub)
+        except WebSocketUpgradeError as exc:
+            raise self._upgrade_error(exc) from None
+        except httpx.HTTPError as exc:
+            raise self._network_error(exc, "realtime") from None
+        finally:
+            client.close()
+
+    def _read_capped(
+        self, response: httpx.Response, operation: str, *, cap: int | None = None
+    ) -> bytes:
+        limit = cap if cap is not None else self._max_response_bytes
         body = bytearray()
         for chunk in response.iter_bytes():
             body.extend(chunk)
-            if len(body) > self._max_response_bytes:
+            if len(body) > limit:
                 raise self._size_error(operation)
         return bytes(body)
 
@@ -382,6 +560,72 @@ class Transport(_TransportCore):
             if isinstance(outcome, TransportResult):
                 return outcome
             delay = self._should_retry(retry_policy, attempt, outcome)
+            if delay is None:
+                raise outcome
+            attempt += 1
+            time.sleep(delay)
+
+    def download(
+        self,
+        plan: DownloadPlan,
+        *,
+        operation: str,
+        translate_error: ErrorTranslator | None = None,
+    ) -> TransportResult:
+        """Fetch a provider-hosted asset under the plan's rules. A plain
+        GET with the list retry budget — a download is an idempotent read,
+        unlike generation. The body cap is the download bound, not the
+        ordinary response cap, because the payload is a whole media file."""
+        self._validate_download(plan, operation)
+        url = plan.url
+        hops = 0
+        attempt = 0
+        while True:
+            started = time.monotonic()
+            try:
+                http_request = self._client.build_request(
+                    "GET",
+                    url,
+                    headers=_build_headers(self._resolved, self._credential)
+                    if plan.send_credential
+                    else None,
+                )
+                response = self._client.send(http_request, stream=True)
+                try:
+                    body = self._read_capped(
+                        response, operation, cap=DOWNLOAD_MAX_RESPONSE_BYTES
+                    )
+                finally:
+                    response.close()
+            except KeyCallError as exc:
+                outcome: TransportResult | KeyCallError = exc
+            except httpx.HTTPError as exc:
+                outcome = self._network_error(exc, operation)
+            else:
+                if (
+                    300 <= response.status_code < 400
+                    and plan.allow_same_origin_redirect
+                    and hops == 0
+                ):
+                    url = self._redirect_target(
+                        current_url=url,
+                        location=response.headers.get("location") or "",
+                        operation=operation,
+                    )
+                    hops = 1
+                    continue
+                outcome = self._classify_response(
+                    status_code=response.status_code,
+                    headers=response.headers,
+                    body=body,
+                    translate=translate_error,
+                    operation=operation,
+                    duration_ms=(time.monotonic() - started) * 1000.0,
+                )
+
+            if isinstance(outcome, TransportResult):
+                return outcome
+            delay = self._should_retry("list", attempt, outcome)
             if delay is None:
                 raise outcome
             attempt += 1
@@ -480,15 +724,38 @@ class AsyncTransport(_TransportCore):
             follow_redirects=False,
             trust_env=trust_env,
         )
+        self._trust_env = trust_env
 
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def _read_capped(self, response: httpx.Response, operation: str) -> bytes:
+    @asynccontextmanager
+    async def realtime_connect(self, path: str) -> AsyncIterator[AsyncRealtimeWire]:
+        from httpx_ws import WebSocketUpgradeError, aconnect_ws
+
+        headers = self._realtime_headers()
+        client = httpx.AsyncClient(
+            timeout=self._timeout, trust_env=self._trust_env, headers=headers
+        )
+        ws: Any
+        try:
+            async with aconnect_ws(self._realtime_url(path), client) as ws:
+                yield AsyncRealtimeWire(ws, scrub=self._scrub)
+        except WebSocketUpgradeError as exc:
+            raise self._upgrade_error(exc) from None
+        except httpx.HTTPError as exc:
+            raise self._network_error(exc, "realtime") from None
+        finally:
+            await client.aclose()
+
+    async def _read_capped(
+        self, response: httpx.Response, operation: str, *, cap: int | None = None
+    ) -> bytes:
+        limit = cap if cap is not None else self._max_response_bytes
         body = bytearray()
         async for chunk in response.aiter_bytes():
             body.extend(chunk)
-            if len(body) > self._max_response_bytes:
+            if len(body) > limit:
                 raise self._size_error(operation)
         return bytes(body)
 
@@ -535,6 +802,71 @@ class AsyncTransport(_TransportCore):
             if isinstance(outcome, TransportResult):
                 return outcome
             delay = self._should_retry(retry_policy, attempt, outcome)
+            if delay is None:
+                raise outcome
+            attempt += 1
+            await anyio.sleep(delay)
+
+    async def download(
+        self,
+        plan: DownloadPlan,
+        *,
+        operation: str,
+        translate_error: ErrorTranslator | None = None,
+    ) -> TransportResult:
+        """Async twin of Transport.download; same rules, same caps."""
+        import anyio
+
+        self._validate_download(plan, operation)
+        url = plan.url
+        hops = 0
+        attempt = 0
+        while True:
+            started = time.monotonic()
+            try:
+                http_request = self._client.build_request(
+                    "GET",
+                    url,
+                    headers=_build_headers(self._resolved, self._credential)
+                    if plan.send_credential
+                    else None,
+                )
+                response = await self._client.send(http_request, stream=True)
+                try:
+                    body = await self._read_capped(
+                        response, operation, cap=DOWNLOAD_MAX_RESPONSE_BYTES
+                    )
+                finally:
+                    await response.aclose()
+            except KeyCallError as exc:
+                outcome: TransportResult | KeyCallError = exc
+            except httpx.HTTPError as exc:
+                outcome = self._network_error(exc, operation)
+            else:
+                if (
+                    300 <= response.status_code < 400
+                    and plan.allow_same_origin_redirect
+                    and hops == 0
+                ):
+                    url = self._redirect_target(
+                        current_url=url,
+                        location=response.headers.get("location") or "",
+                        operation=operation,
+                    )
+                    hops = 1
+                    continue
+                outcome = self._classify_response(
+                    status_code=response.status_code,
+                    headers=response.headers,
+                    body=body,
+                    translate=translate_error,
+                    operation=operation,
+                    duration_ms=(time.monotonic() - started) * 1000.0,
+                )
+
+            if isinstance(outcome, TransportResult):
+                return outcome
+            delay = self._should_retry("list", attempt, outcome)
             if delay is None:
                 raise outcome
             attempt += 1
@@ -597,3 +929,80 @@ class AsyncTransport(_TransportCore):
                 yield final
         except httpx.HTTPError as exc:
             raise self._network_error(exc, operation) from None
+
+
+class RealtimeWire:
+    """One live realtime WebSocket, wrapped so nothing above the
+    transport touches httpx-ws types or the raw close reason. ``receive``
+    answers a frame payload, or None once the peer closed (with the
+    scrubbed close reason kept on ``close_reason``)."""
+
+    def __init__(self, ws: Any, *, scrub: Callable[[str], str]) -> None:
+        self._ws = ws
+        self._scrub = scrub
+        self.close_reason: str | None = None
+
+    def send(self, message: str) -> None:
+        self._ws.send_text(message)
+
+    def receive(self, timeout: float | None = None) -> str | bytes | None:
+        from httpx_ws import WebSocketDisconnect
+
+        try:
+            event = self._ws.receive(timeout=timeout)
+        except WebSocketDisconnect as exc:
+            reason = self._scrub(str(exc.reason or ""))[:300]
+            self.close_reason = f"{exc.code}: {reason}" if reason else str(exc.code)
+            return None
+        except TimeoutError:
+            raise KeyCallError(
+                "no realtime frame arrived within the timeout",
+                code=ErrorCode.TIMEOUT,
+                operation="realtime",
+                retryable=True,
+            ) from None
+        data = getattr(event, "data", None)
+        if not isinstance(data, (str, bytes)):
+            raise KeyCallError(
+                "realtime frame carried no payload",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                operation="realtime",
+            )
+        return data
+
+
+class AsyncRealtimeWire:
+    """Async twin of RealtimeWire."""
+
+    def __init__(self, ws: Any, *, scrub: Callable[[str], str]) -> None:
+        self._ws = ws
+        self._scrub = scrub
+        self.close_reason: str | None = None
+
+    async def send(self, message: str) -> None:
+        await self._ws.send_text(message)
+
+    async def receive(self, timeout: float | None = None) -> str | bytes | None:
+        from httpx_ws import WebSocketDisconnect
+
+        try:
+            event = await self._ws.receive(timeout=timeout)
+        except WebSocketDisconnect as exc:
+            reason = self._scrub(str(exc.reason or ""))[:300]
+            self.close_reason = f"{exc.code}: {reason}" if reason else str(exc.code)
+            return None
+        except TimeoutError:
+            raise KeyCallError(
+                "no realtime frame arrived within the timeout",
+                code=ErrorCode.TIMEOUT,
+                operation="realtime",
+                retryable=True,
+            ) from None
+        data = getattr(event, "data", None)
+        if not isinstance(data, (str, bytes)):
+            raise KeyCallError(
+                "realtime frame carried no payload",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                operation="realtime",
+            )
+        return data

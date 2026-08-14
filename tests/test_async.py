@@ -83,7 +83,21 @@ def test_public_surface_matches_between_the_clients():
     """A parameter added to one client and not the other is the drift this
     file exists to catch, and a signature check finds it without a live
     call."""
-    for name in ("list_models", "generate_text", "invoke", "stream_text", "close"):
+    for name in (
+        "list_models",
+        "generate_text",
+        "invoke",
+        "stream_text",
+        "generate_image",
+        "generate_speech",
+        "embed",
+        "start_video",
+        "check_video",
+        "fetch_video",
+        "generate_video",
+        "realtime",
+        "close",
+    ):
         sync_params = list(inspect.signature(getattr(KeyCall, name)).parameters)
         async_params = list(inspect.signature(getattr(AsyncKeyCall, name)).parameters)
         assert sync_params == async_params, f"{name} differs between the clients"

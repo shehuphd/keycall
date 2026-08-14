@@ -77,7 +77,16 @@ main { padding: 1.5rem; max-width: 1100px; }
   flex-wrap: wrap;
   margin-bottom: 1rem;
 }
-select, input[type=text], input[type=number], textarea, button {
+/* Every text-entry control the app uses. Listed by type rather than with a
+   bare `input` so checkboxes and file pickers keep their native look; a new
+   type added to a form has to be added here too, which is how the key
+   field arrived unstyled and half-width. */
+select,
+input[type=text],
+input[type=number],
+input[type=password],
+textarea,
+button {
   font: inherit;
   color: var(--fg);
   background: var(--bg);
@@ -86,7 +95,7 @@ select, input[type=text], input[type=number], textarea, button {
   padding: 0.4rem 0.6rem;
 }
 textarea { width: 100%; resize: vertical; }
-input[type=text] { flex: 1; min-width: 12rem; }
+input[type=text], input[type=password] { flex: 1; min-width: 12rem; }
 button {
   background: var(--accent);
   color: var(--accent-fg);
@@ -212,6 +221,11 @@ th.sort-desc::after { content: " ↓"; }
    no column. */
 #models-table.hide-context th:nth-child(4),
 #models-table.hide-context td:nth-child(4) { display: none; }
+
+/* Testing a one-off key, below the dashboard's own list. */
+.add-key { margin-top: 1.5rem; }
+.add-key .controls { margin-top: 0.75rem; }
+.add-key .hint { margin-top: 0.75rem; }
 
 .hidden { display: none !important; }
 #source-panel { padding: 3rem 1.5rem; max-width: 640px; }
@@ -571,3 +585,21 @@ a { color: var(--accent); }
 /* The run status is a caption for the results below it, so it needs room
    to read as one rather than crowding the first card. */
 #verify-status { margin: 0.75rem 0 1rem; }
+
+/* Transient notice for a state change the page made on the user's behalf. */
+#toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: var(--accent-fg);
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 14px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  z-index: 100;
+}
+#toast.show { opacity: 1; }

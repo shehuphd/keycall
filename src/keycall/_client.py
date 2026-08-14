@@ -18,13 +18,15 @@ from typing import TYPE_CHECKING, Any, NoReturn
 if TYPE_CHECKING:
     from typing_extensions import Self
 
+    from ._realtime import AsyncRealtimeSession, RealtimeSession
+
 import httpx
 
 from . import _cache, _capabilities, _tracing
 from ._cache import CachedModels
 from ._credential import Credential
 from ._enums import ModelCategory, ProviderProtocol
-from ._errors import ErrorCode, KeyCallError
+from ._errors import ErrorCode, KeyCallError, VideoJobTimeout
 from ._registry import (
     ResolvedProvider,
     catalog_age_days,
@@ -40,9 +42,14 @@ from ._types import (
     Message,
     Model,
     ModelDiscovery,
+    RealtimeConfig,
+    SpeechGenerationRequest,
     StreamEvent,
     TextGenerationRequest,
     Tool,
+    Usage,
+    VideoGenerationRequest,
+    VideoJob,
 )
 from .adapters import ProviderAdapter, adapter_for
 from .adapters._base import InbandStreamError, StreamAssembler
@@ -360,6 +367,73 @@ class _BaseClient:
         )
         return invocation
 
+    def _speech_spec(self, request: SpeechGenerationRequest) -> Any:
+        # The refusal lives in ProviderAdapter.build_speech_spec, whose
+        # default covers every adapter without an implementation.
+        return self._adapter.build_speech_spec(request)
+
+    def _parse_speech(
+        self, request: SpeechGenerationRequest, result: Any, trace: Any
+    ) -> InvocationResult:
+        invocation = self._adapter.parse_speech_response(
+            result.payload,
+            headers=result.headers,
+            round_trip_duration_ms=result.duration_ms,
+            model=request.model,
+        )
+        trace.event(
+            "model",
+            operation="speech_generation",
+            target=invocation.model,
+            duration_ms=invocation.round_trip_duration_ms,
+            result={"clips": len(invocation.parts)},
+        )
+        return invocation
+
+    def _require_video_job(self, job: VideoJob) -> None:
+        if not isinstance(job, VideoJob):
+            raise TypeError(f"expected a VideoJob, got {type(job).__name__}")
+        if job.provider != self.provider:
+            raise KeyCallError(
+                f"this job belongs to provider {job.provider!r}; this client is bound "
+                f"to {self.provider!r} and its credential must not poll another "
+                "provider's job",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.provider,
+                operation="video_generation",
+            )
+
+    def _raise_video_failure(self, job: VideoJob) -> NoReturn:
+        detail = job.error_message or "no detail from the provider"
+        state = f" ({job.provider_status})" if job.provider_status else ""
+        raise KeyCallError(
+            f"video generation failed{state}: {detail}",
+            code=ErrorCode.PROVIDER_UNAVAILABLE,
+            provider=self.provider,
+            operation="video_generation",
+        )
+
+    def _video_result_from_download(self, job: VideoJob, result: Any) -> InvocationResult:
+        import base64 as _b64
+
+        if not isinstance(result.payload, bytes) or not result.payload:
+            raise KeyCallError(
+                "video download did not return the file's bytes",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.provider,
+                operation="video_generation",
+            )
+        media_type = (
+            str(result.headers.get("content-type", "video/mp4")).split(";")[0].strip()
+        )
+        return self._adapter.video_result(
+            base64_data=_b64.b64encode(result.payload).decode("ascii"),
+            media_type=media_type,
+            url=job.video_url,
+            model=job.model,
+            round_trip_duration_ms=result.duration_ms,
+        )
+
     def _embedding_spec(self, request: EmbeddingRequest) -> Any:
         # The refusal lives in ProviderAdapter.build_embedding_spec, whose
         # default raises for every adapter that hasn't implemented one.
@@ -423,6 +497,48 @@ class _BaseClient:
         return invocation
 
 
+# A provider that keeps demanding server-tool echo rounds past this many
+# billable calls is broken; refusing beats an unbounded spend.
+_SERVER_TOOL_ROUND_BUDGET = 5
+
+
+def _added(a: int | None, b: int | None) -> int | None:
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a + b
+
+
+def _merged_usage(carried: Usage, current: Usage) -> Usage:
+    """Token spend across the rounds of one logical call (Moonshot's
+    web-search echo loop). Sums where both rounds report, keeps the
+    reporting side where only one does."""
+    return Usage(
+        input_tokens=_added(carried.input_tokens, current.input_tokens),
+        output_tokens=_added(carried.output_tokens, current.output_tokens),
+        cached_input_tokens=_added(carried.cached_input_tokens, current.cached_input_tokens),
+        reasoning_tokens=_added(carried.reasoning_tokens, current.reasoning_tokens),
+        total_tokens=_added(carried.total_tokens, current.total_tokens),
+        provider_units=current.provider_units or carried.provider_units,
+    )
+
+
+def _hide_server_tool_event(event: StreamEvent, hidden_ids: set[str]) -> bool:
+    """Whether a stream event belongs to a server-side builtin tool's echo
+    handshake rather than to the answer. Those calls are KeyCall's to
+    complete, and surfacing them would tell the caller to act on a call
+    that is not theirs."""
+    if event.kind == "tool_call_started" and event.name.startswith("$"):
+        hidden_ids.add(event.id)
+        return True
+    if event.kind == "tool_call_arguments_delta" and event.id in hidden_ids:
+        return True
+    return bool(
+        event.kind == "tool_call_complete" and event.tool_call.name.startswith("$")
+    )
+
+
 class _StreamCore:
     """State shared by the sync and async stream wrappers."""
 
@@ -434,6 +550,44 @@ class _StreamCore:
         self._started_at: float | None = None
         self._result: InvocationResult | None = None
         self._failed = False
+        # Server-tool echo rounds (Moonshot web search): usage carried
+        # from finished rounds, and how many rounds have run.
+        self._carry_usage: Usage | None = None
+        self._rounds = 1
+
+    def _continuation(self) -> TextGenerationRequest | None:
+        """After a round's terminal event: the follow-up request when the
+        provider still owes the answer (a server-side tool wants its echo),
+        None when this round's result is the answer. Advancing rebuilds the
+        assembler and spec for the next round and banks this round's
+        usage."""
+        interim = self._assembler.finalize(round_trip_duration_ms=0.0)
+        follow_up: TextGenerationRequest | None = (
+            self._client._adapter.server_tool_continuation(self._request, interim)
+        )
+        if follow_up is None:
+            return None
+        if self._rounds >= _SERVER_TOOL_ROUND_BUDGET:
+            self._failed = True
+            raise KeyCallError(
+                "the provider kept requesting server-side tool echoes beyond "
+                f"the {_SERVER_TOOL_ROUND_BUDGET}-round budget",
+                code=ErrorCode.PROVIDER_UNAVAILABLE,
+                provider=self._client.provider,
+                operation="text_generation",
+                retryable=True,
+            )
+        self._carry_usage = (
+            interim.usage
+            if self._carry_usage is None
+            else _merged_usage(self._carry_usage, interim.usage)
+        )
+        self._rounds += 1
+        self._request = follow_up
+        self._assembler = self._client._adapter.stream_assembler(follow_up)
+        self._assembler.response_headers = {}
+        self._spec = self._client._adapter.build_stream_spec(follow_up)
+        return follow_up
 
     def _feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
         try:
@@ -478,6 +632,11 @@ class _StreamCore:
                 (time.monotonic() - self._started_at) * 1000.0 if self._started_at else 0.0
             )
             invocation = self._assembler.finalize(round_trip_duration_ms=duration)
+            if self._carry_usage is not None:
+                # The clock spans every round already; only tokens carry.
+                invocation = dataclasses.replace(
+                    invocation, usage=_merged_usage(self._carry_usage, invocation.usage)
+                )
             invocation = _with_schema_warning(invocation, self._request, self._client.provider)
             invocation = _with_truncation_warning(invocation)
             self._result = _with_custom_tool_warning(
@@ -517,13 +676,43 @@ class TextStream(_StreamCore):
         self._ctx.__exit__(exc_type, exc, tb)
 
     def __iter__(self) -> Any:
-        for event_name, data in self._events:
-            yield from self._feed(event_name, data)
-            if self._assembler.saw_terminal:
-                break
-        if not self._assembler.saw_terminal:
-            yield from self._assembler.on_close()
-        self._check_terminal()
+        while True:
+            # The round's finish event is held back until it is known to be
+            # the last round: an echo round's finish is plumbing, not the
+            # end of the answer.
+            held: list[StreamEvent] = []
+            hidden_ids: set[str] = set()
+            for event_name, data in self._events:
+                for event in self._feed(event_name, data):
+                    if _hide_server_tool_event(event, hidden_ids):
+                        continue
+                    if event.kind == "stream_finish":
+                        held.append(event)
+                        continue
+                    yield event
+                if self._assembler.saw_terminal:
+                    break
+            if not self._assembler.saw_terminal:
+                for event in self._assembler.on_close():
+                    if _hide_server_tool_event(event, hidden_ids):
+                        continue
+                    if event.kind == "stream_finish":
+                        held.append(event)
+                        continue
+                    yield event
+            self._check_terminal()
+            if self._continuation() is None:
+                yield from held
+                return
+            self._ctx.__exit__(None, None, None)
+            self._ctx = self._client._transport.stream_request(
+                self._spec,
+                operation="text_generation",
+                translate_error=self._client._adapter.translate_error,
+            )
+            headers, events = self._ctx.__enter__()
+            self._assembler.response_headers = headers
+            self._events = events
 
     def result(self) -> InvocationResult:
         return self._build_result()
@@ -554,15 +743,42 @@ class AsyncTextStream(_StreamCore):
         await self._ctx.__aexit__(exc_type, exc, tb)
 
     async def __aiter__(self) -> Any:
-        async for event_name, data in self._events:
-            for event in self._feed(event_name, data):
-                yield event
-            if self._assembler.saw_terminal:
-                break
-        if not self._assembler.saw_terminal:
-            for event in self._assembler.on_close():
-                yield event
-        self._check_terminal()
+        while True:
+            # See TextStream.__iter__: echo rounds hold their finish back.
+            held: list[StreamEvent] = []
+            hidden_ids: set[str] = set()
+            async for event_name, data in self._events:
+                for event in self._feed(event_name, data):
+                    if _hide_server_tool_event(event, hidden_ids):
+                        continue
+                    if event.kind == "stream_finish":
+                        held.append(event)
+                        continue
+                    yield event
+                if self._assembler.saw_terminal:
+                    break
+            if not self._assembler.saw_terminal:
+                for event in self._assembler.on_close():
+                    if _hide_server_tool_event(event, hidden_ids):
+                        continue
+                    if event.kind == "stream_finish":
+                        held.append(event)
+                        continue
+                    yield event
+            self._check_terminal()
+            if self._continuation() is None:
+                for event in held:
+                    yield event
+                return
+            await self._ctx.__aexit__(None, None, None)
+            self._ctx = self._client._transport.stream_request(
+                self._spec,
+                operation="text_generation",
+                translate_error=self._client._adapter.translate_error,
+            )
+            headers, events = await self._ctx.__aenter__()
+            self._assembler.response_headers = headers
+            self._events = events
 
     def result(self) -> InvocationResult:
         return self._build_result()
@@ -668,17 +884,48 @@ class KeyCall(_BaseClient):
 
     def invoke(self, request: TextGenerationRequest) -> InvocationResult:
         self._require_open()
-        spec = self._generation_spec(request)
         with _tracing.span(
             "keycall.text_generation", provider=self.provider, model=request.model
         ) as trace:
-            result = self._transport.request(
-                spec,
+            carried: Usage | None = None
+            carried_ms = 0.0
+            for _round in range(_SERVER_TOOL_ROUND_BUDGET):
+                spec = self._generation_spec(request)
+                result = self._transport.request(
+                    spec,
+                    operation="text_generation",
+                    retry_policy="generation",
+                    translate_error=self._adapter.translate_error,
+                )
+                invocation = self._parse_invocation(request, result, trace)
+                follow_up = self._adapter.server_tool_continuation(request, invocation)
+                if follow_up is None:
+                    if carried is not None:
+                        invocation = dataclasses.replace(
+                            invocation,
+                            usage=_merged_usage(carried, invocation.usage),
+                            round_trip_duration_ms=carried_ms
+                            + invocation.round_trip_duration_ms,
+                        )
+                    return invocation
+                # A server-side tool wants its echo before the answer
+                # comes (Moonshot web search); the tokens and time spent
+                # this round belong to the one logical call.
+                carried = (
+                    invocation.usage
+                    if carried is None
+                    else _merged_usage(carried, invocation.usage)
+                )
+                carried_ms += invocation.round_trip_duration_ms
+                request = follow_up
+            raise KeyCallError(
+                "the provider kept requesting server-side tool echoes beyond "
+                f"the {_SERVER_TOOL_ROUND_BUDGET}-round budget",
+                code=ErrorCode.PROVIDER_UNAVAILABLE,
+                provider=self.provider,
                 operation="text_generation",
-                retry_policy="generation",
-                translate_error=self._adapter.translate_error,
+                retryable=True,
             )
-            return self._parse_invocation(request, result, trace)
 
     def generate_image(self, *, model: str, prompt: str) -> InvocationResult:
         """Generate a picture. The result's parts are ImageOutput values
@@ -712,6 +959,156 @@ class KeyCall(_BaseClient):
             )
             return self._parse_embedding(request, result, trace)
 
+    def generate_speech(
+        self, *, model: str, text: str, voice: str | None = None
+    ) -> InvocationResult:
+        """Speak text aloud. The result's one part is an AudioOutput
+        carrying base64 data and the media type the provider produced —
+        not necessarily a playable container; Gemini answers with raw PCM
+        and says so in the media type."""
+        self._require_open()
+        request = SpeechGenerationRequest(model=model, text=text, voice=voice)
+        spec = self._speech_spec(request)
+        with _tracing.span(
+            "keycall.speech_generation", provider=self.provider, model=model
+        ) as trace:
+            result = self._transport.request(
+                spec,
+                operation="speech_generation",
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            return self._parse_speech(request, result, trace)
+
+    def start_video(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        duration_seconds: int | None = None,
+        aspect_ratio: str | None = None,
+    ) -> VideoJob:
+        """Start a video render and return its job handle immediately.
+        Rendering takes anywhere from seconds to many minutes depending on
+        provider load; poll with check_video(), then fetch_video() once
+        the job reports succeeded — or let generate_video() do all three
+        against a waiting budget."""
+        self._require_open()
+        request = VideoGenerationRequest(
+            model=model,
+            prompt=prompt,
+            duration_seconds=duration_seconds,
+            aspect_ratio=aspect_ratio,
+        )
+        spec = self._adapter.build_video_start_spec(request)
+        with _tracing.span(
+            "keycall.video_generation.start", provider=self.provider, model=model
+        ) as trace:
+            result = self._transport.request(
+                spec,
+                operation="video_generation",
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            job = self._adapter.parse_video_start(result.payload, model=request.model)
+            trace.event(
+                "model",
+                operation="video_generation",
+                target=model,
+                duration_ms=result.duration_ms,
+                result={"job": "started"},
+            )
+            return job
+
+    def check_video(self, job: VideoJob) -> VideoJob:
+        """Ask the provider where a render stands. Returns a new VideoJob
+        rather than mutating; a job that already finished is returned
+        as-is without a network call."""
+        self._require_open()
+        self._require_video_job(job)
+        if job.status != "running":
+            return job
+        spec = self._adapter.build_video_status_spec(job)
+        result = self._transport.request(
+            spec,
+            operation="video_generation",
+            retry_policy="list",
+            translate_error=self._adapter.translate_error,
+        )
+        return self._adapter.parse_video_status(result.payload, job=job)
+
+    def fetch_video(self, job: VideoJob) -> InvocationResult:
+        """Download a finished render. The result's one part is a
+        VideoOutput carrying base64 data, the media type the provider
+        served, and the provider's own download URL for as long as the
+        provider keeps the file alive."""
+        self._require_open()
+        self._require_video_job(job)
+        if job.status == "failed":
+            self._raise_video_failure(job)
+        if job.status != "succeeded" or not job.video_url:
+            raise ValueError(
+                "this job has not succeeded yet; call check_video() until it does"
+            )
+        plan = self._adapter.video_download_plan(job)
+        with _tracing.span(
+            "keycall.video_generation.fetch", provider=self.provider, model=job.model
+        ) as trace:
+            result = self._transport.download(
+                plan,
+                operation="video_generation",
+                translate_error=self._adapter.translate_error,
+            )
+            invocation = self._video_result_from_download(job, result)
+            trace.event(
+                "model",
+                operation="video_generation",
+                target=job.model,
+                duration_ms=result.duration_ms,
+                result={"videos": len(invocation.parts)},
+            )
+            return invocation
+
+    def generate_video(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        timeout: float,
+        duration_seconds: int | None = None,
+        aspect_ratio: str | None = None,
+        poll_interval: float = 10.0,
+    ) -> InvocationResult:
+        """Start, poll, and download in one call. ``timeout`` is the
+        caller's waiting budget in seconds and has no default: render
+        times observed live range from 10 seconds to over 11 minutes, so
+        only the caller can say how long is too long. When the budget
+        runs out the raised VideoJobTimeout carries the still-valid job —
+        the render keeps going provider-side and check_video() resumes
+        where the wait left off."""
+        job = self.start_video(
+            model=model,
+            prompt=prompt,
+            duration_seconds=duration_seconds,
+            aspect_ratio=aspect_ratio,
+        )
+        deadline = time.monotonic() + timeout
+        while True:
+            job = self.check_video(job)
+            if job.status == "succeeded":
+                return self.fetch_video(job)
+            if job.status == "failed":
+                self._raise_video_failure(job)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise VideoJobTimeout(
+                    f"video render still going after {timeout:g}s; the job remains "
+                    "valid — poll it with check_video(error.job)",
+                    provider=self.provider,
+                    job=job,
+                )
+            time.sleep(min(poll_interval, remaining))
+
     def generate_text(
         self,
         *,
@@ -721,6 +1118,7 @@ class KeyCall(_BaseClient):
         temperature: float | None = None,
         top_p: float | None = None,
         web_search: bool = False,
+        reasoning_effort: str | None = None,
         response_schema: Mapping[str, Any] | None = None,
         tools: Sequence[Tool] = (),
         tool_choice: str | None = None,
@@ -733,6 +1131,7 @@ class KeyCall(_BaseClient):
                 temperature=temperature,
                 top_p=top_p,
                 web_search=web_search,
+                reasoning_effort=reasoning_effort,
                 response_schema=response_schema,
                 tools=tools,
                 tool_choice=tool_choice,
@@ -748,6 +1147,7 @@ class KeyCall(_BaseClient):
         temperature: float | None = None,
         top_p: float | None = None,
         web_search: bool = False,
+        reasoning_effort: str | None = None,
         response_schema: Mapping[str, Any] | None = None,
         tools: Sequence[Tool] = (),
         tool_choice: str | None = None,
@@ -764,10 +1164,40 @@ class KeyCall(_BaseClient):
                 temperature=temperature,
                 top_p=top_p,
                 web_search=web_search,
+                reasoning_effort=reasoning_effort,
                 response_schema=response_schema,
                 tools=tools,
                 tool_choice=tool_choice,
             ),
+        )
+
+    def realtime(
+        self,
+        *,
+        model: str,
+        voice: str | None = None,
+        instructions: str | None = None,
+        provider_config: Mapping[str, Any] | None = None,
+    ) -> RealtimeSession:
+        """A live WebSocket session with a realtime model. Use as a
+        context manager; push turns with send_text/send_audio and read
+        normalized events from events()."""
+        self._require_open()
+        config = RealtimeConfig(
+            model=model,
+            voice=voice,
+            instructions=instructions,
+            provider_config=provider_config,
+        )
+        path, translator = self._adapter.realtime_plan(config)
+        from ._realtime import RealtimeSession
+
+        return RealtimeSession(
+            self._transport,
+            path=path,
+            translator=translator,
+            provider=self.provider,
+            config=config,
         )
 
 
@@ -870,17 +1300,46 @@ class AsyncKeyCall(_BaseClient):
 
     async def invoke(self, request: TextGenerationRequest) -> InvocationResult:
         self._require_open()
-        spec = self._generation_spec(request)
         with _tracing.span(
             "keycall.text_generation", provider=self.provider, model=request.model
         ) as trace:
-            result = await self._transport.request(
-                spec,
+            carried: Usage | None = None
+            carried_ms = 0.0
+            for _round in range(_SERVER_TOOL_ROUND_BUDGET):
+                spec = self._generation_spec(request)
+                result = await self._transport.request(
+                    spec,
+                    operation="text_generation",
+                    retry_policy="generation",
+                    translate_error=self._adapter.translate_error,
+                )
+                invocation = self._parse_invocation(request, result, trace)
+                follow_up = self._adapter.server_tool_continuation(request, invocation)
+                if follow_up is None:
+                    if carried is not None:
+                        invocation = dataclasses.replace(
+                            invocation,
+                            usage=_merged_usage(carried, invocation.usage),
+                            round_trip_duration_ms=carried_ms
+                            + invocation.round_trip_duration_ms,
+                        )
+                    return invocation
+                # See KeyCall.invoke: the echo rounds are one logical call.
+                carried = (
+                    invocation.usage
+                    if carried is None
+                    else _merged_usage(carried, invocation.usage)
+                )
+                carried_ms += invocation.round_trip_duration_ms
+                request = follow_up
+            raise KeyCallError(
+                "the provider kept requesting server-side tool echoes beyond "
+                f"the {_SERVER_TOOL_ROUND_BUDGET}-round budget",
+                code=ErrorCode.PROVIDER_UNAVAILABLE,
+                provider=self.provider,
                 operation="text_generation",
-                retry_policy="generation",
-                translate_error=self._adapter.translate_error,
+                retryable=True,
             )
-            return self._parse_invocation(request, result, trace)
 
     async def generate_image(self, *, model: str, prompt: str) -> InvocationResult:
         """Async twin of KeyCall.generate_image()."""
@@ -912,6 +1371,140 @@ class AsyncKeyCall(_BaseClient):
             )
             return self._parse_embedding(request, result, trace)
 
+    async def generate_speech(
+        self, *, model: str, text: str, voice: str | None = None
+    ) -> InvocationResult:
+        """Async twin of KeyCall.generate_speech()."""
+        self._require_open()
+        request = SpeechGenerationRequest(model=model, text=text, voice=voice)
+        spec = self._speech_spec(request)
+        with _tracing.span(
+            "keycall.speech_generation", provider=self.provider, model=model
+        ) as trace:
+            result = await self._transport.request(
+                spec,
+                operation="speech_generation",
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            return self._parse_speech(request, result, trace)
+
+    async def start_video(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        duration_seconds: int | None = None,
+        aspect_ratio: str | None = None,
+    ) -> VideoJob:
+        """Async twin of KeyCall.start_video()."""
+        self._require_open()
+        request = VideoGenerationRequest(
+            model=model,
+            prompt=prompt,
+            duration_seconds=duration_seconds,
+            aspect_ratio=aspect_ratio,
+        )
+        spec = self._adapter.build_video_start_spec(request)
+        with _tracing.span(
+            "keycall.video_generation.start", provider=self.provider, model=model
+        ) as trace:
+            result = await self._transport.request(
+                spec,
+                operation="video_generation",
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            job = self._adapter.parse_video_start(result.payload, model=request.model)
+            trace.event(
+                "model",
+                operation="video_generation",
+                target=model,
+                duration_ms=result.duration_ms,
+                result={"job": "started"},
+            )
+            return job
+
+    async def check_video(self, job: VideoJob) -> VideoJob:
+        """Async twin of KeyCall.check_video()."""
+        self._require_open()
+        self._require_video_job(job)
+        if job.status != "running":
+            return job
+        spec = self._adapter.build_video_status_spec(job)
+        result = await self._transport.request(
+            spec,
+            operation="video_generation",
+            retry_policy="list",
+            translate_error=self._adapter.translate_error,
+        )
+        return self._adapter.parse_video_status(result.payload, job=job)
+
+    async def fetch_video(self, job: VideoJob) -> InvocationResult:
+        """Async twin of KeyCall.fetch_video()."""
+        self._require_open()
+        self._require_video_job(job)
+        if job.status == "failed":
+            self._raise_video_failure(job)
+        if job.status != "succeeded" or not job.video_url:
+            raise ValueError(
+                "this job has not succeeded yet; call check_video() until it does"
+            )
+        plan = self._adapter.video_download_plan(job)
+        with _tracing.span(
+            "keycall.video_generation.fetch", provider=self.provider, model=job.model
+        ) as trace:
+            result = await self._transport.download(
+                plan,
+                operation="video_generation",
+                translate_error=self._adapter.translate_error,
+            )
+            invocation = self._video_result_from_download(job, result)
+            trace.event(
+                "model",
+                operation="video_generation",
+                target=job.model,
+                duration_ms=result.duration_ms,
+                result={"videos": len(invocation.parts)},
+            )
+            return invocation
+
+    async def generate_video(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        timeout: float,
+        duration_seconds: int | None = None,
+        aspect_ratio: str | None = None,
+        poll_interval: float = 10.0,
+    ) -> InvocationResult:
+        """Async twin of KeyCall.generate_video()."""
+        import anyio
+
+        job = await self.start_video(
+            model=model,
+            prompt=prompt,
+            duration_seconds=duration_seconds,
+            aspect_ratio=aspect_ratio,
+        )
+        deadline = time.monotonic() + timeout
+        while True:
+            job = await self.check_video(job)
+            if job.status == "succeeded":
+                return await self.fetch_video(job)
+            if job.status == "failed":
+                self._raise_video_failure(job)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise VideoJobTimeout(
+                    f"video render still going after {timeout:g}s; the job remains "
+                    "valid — poll it with check_video(error.job)",
+                    provider=self.provider,
+                    job=job,
+                )
+            await anyio.sleep(min(poll_interval, remaining))
+
     async def generate_text(
         self,
         *,
@@ -921,6 +1514,7 @@ class AsyncKeyCall(_BaseClient):
         temperature: float | None = None,
         top_p: float | None = None,
         web_search: bool = False,
+        reasoning_effort: str | None = None,
         response_schema: Mapping[str, Any] | None = None,
         tools: Sequence[Tool] = (),
         tool_choice: str | None = None,
@@ -933,6 +1527,7 @@ class AsyncKeyCall(_BaseClient):
                 temperature=temperature,
                 top_p=top_p,
                 web_search=web_search,
+                reasoning_effort=reasoning_effort,
                 response_schema=response_schema,
                 tools=tools,
                 tool_choice=tool_choice,
@@ -948,6 +1543,7 @@ class AsyncKeyCall(_BaseClient):
         temperature: float | None = None,
         top_p: float | None = None,
         web_search: bool = False,
+        reasoning_effort: str | None = None,
         response_schema: Mapping[str, Any] | None = None,
         tools: Sequence[Tool] = (),
         tool_choice: str | None = None,
@@ -964,8 +1560,38 @@ class AsyncKeyCall(_BaseClient):
                 temperature=temperature,
                 top_p=top_p,
                 web_search=web_search,
+                reasoning_effort=reasoning_effort,
                 response_schema=response_schema,
                 tools=tools,
                 tool_choice=tool_choice,
             ),
+        )
+
+    def realtime(
+        self,
+        *,
+        model: str,
+        voice: str | None = None,
+        instructions: str | None = None,
+        provider_config: Mapping[str, Any] | None = None,
+    ) -> AsyncRealtimeSession:
+        """A live WebSocket session with a realtime model. Use as an
+        async context manager; push turns with send_text/send_audio and
+        read normalized events with `async for`."""
+        self._require_open()
+        config = RealtimeConfig(
+            model=model,
+            voice=voice,
+            instructions=instructions,
+            provider_config=provider_config,
+        )
+        path, translator = self._adapter.realtime_plan(config)
+        from ._realtime import AsyncRealtimeSession
+
+        return AsyncRealtimeSession(
+            self._transport,
+            path=path,
+            translator=translator,
+            provider=self.provider,
+            config=config,
         )

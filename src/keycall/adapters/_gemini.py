@@ -12,14 +12,14 @@ import base64
 import json
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from .._classify import classify_model_id
 from .._enums import ModelCategory, Operation
 from .._errors import ErrorCode, KeyCallError
 from .._registry import ResolvedProvider
 from .._sanitize import safe_request_id
-from .._transport import RequestSpec
+from .._transport import DownloadPlan, RequestSpec
 from .._types import (
     AudioInput,
     Citation,
@@ -41,6 +41,7 @@ from .._types import (
     UnknownOutput,
     UnknownStreamEvent,
     Usage,
+    VideoJob,
 )
 from ._base import (
     ProviderAdapter,
@@ -342,6 +343,178 @@ class GeminiAdapter(ProviderAdapter):
             warnings=warnings,
         )
 
+    def build_speech_spec(self, request: Any) -> RequestSpec:
+        # Same generateContent path as text and image generation, telling
+        # the model to answer in audio instead of text (verified live
+        # 2026-08-12). No separate speech endpoint exists.
+        op = self.resolved.operations["speech_generation"]
+        generation_config: dict[str, Any] = {"responseModalities": ["AUDIO"]}
+        if request.voice:
+            generation_config["speechConfig"] = {
+                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": request.voice}}
+            }
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"].replace("{model}", quote(_strip_prefix(request.model), safe="")),
+            json_body={
+                "contents": [{"role": "user", "parts": [{"text": request.text}]}],
+                "generationConfig": generation_config,
+            },
+        )
+
+    def parse_speech_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        model: str,
+    ) -> InvocationResult:
+        candidates = payload.get("candidates") if isinstance(payload, dict) else None
+        candidate = candidates[0] if isinstance(candidates, list) and candidates else {}
+        parts = candidate.get("content", {}).get("parts", []) if isinstance(candidate, dict) else []
+        audio: tuple[str, str] | None = None
+        commentary = []
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            inline = part.get("inlineData")
+            if audio is None and isinstance(inline, dict) and inline.get("data"):
+                # Raw PCM, not a playable container (audio/L16;codec=pcm;
+                # rate=24000 as of 2026-08-12) — a caller that wants a
+                # standard file has to wrap it in a header themselves.
+                # KeyCall passes the provider's bytes and its own stated
+                # media type through unchanged rather than guessing a
+                # format the provider didn't send.
+                audio = (str(inline["data"]), str(inline.get("mimeType", "audio/L16")))
+            elif part.get("text"):
+                commentary.append(str(part["text"]))
+        usage_raw = payload.get("usageMetadata") or {} if isinstance(payload, dict) else {}
+        if audio is None:
+            # The model answered in words instead of speaking, which is how
+            # a refusal or a clarifying question arrives — same posture as
+            # the image-generation path.
+            raise KeyCallError(
+                "model returned no audio, only text: " + " ".join(commentary)[:300]
+                if commentary
+                else "model returned no audio",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.SPEECH_GENERATION.value,
+            )
+        warnings: tuple[str, ...] = ()
+        if commentary:
+            warnings = (f"model also returned text: {' '.join(commentary)[:200]}",)
+        data, media_type = audio
+        return self.speech_result(
+            base64_data=data,
+            media_type=media_type,
+            usage=Usage(
+                input_tokens=usage_raw.get("promptTokenCount"),
+                output_tokens=usage_raw.get("candidatesTokenCount"),
+                total_tokens=usage_raw.get("totalTokenCount"),
+            ),
+            model=_strip_prefix(str(payload.get("modelVersion", model))),
+            round_trip_duration_ms=round_trip_duration_ms,
+            provider_request_id=safe_request_id(payload.get("responseId")),
+            warnings=warnings,
+        )
+
+    def build_video_start_spec(self, request: Any) -> RequestSpec:
+        # Veo renders through :predictLongRunning — a job-starting verb,
+        # not generateContent. The immediate answer is only an operation
+        # name; everything else arrives by polling it (verified live
+        # 2026-08-13).
+        op = self.resolved.operations["video_generation"]
+        parameters: dict[str, Any] = {}
+        if request.duration_seconds is not None:
+            parameters["durationSeconds"] = request.duration_seconds
+        if request.aspect_ratio:
+            parameters["aspectRatio"] = request.aspect_ratio
+        body: dict[str, Any] = {"instances": [{"prompt": request.prompt}]}
+        if parameters:
+            body["parameters"] = parameters
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"].replace("{model}", quote(_strip_prefix(request.model), safe="")),
+            json_body=body,
+        )
+
+    def parse_video_start(self, payload: Any, *, model: str) -> VideoJob:
+        name = payload.get("name") if isinstance(payload, dict) else None
+        if not isinstance(name, str) or not name:
+            raise KeyCallError(
+                "provider did not return an operation name for the video job",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.VIDEO_GENERATION.value,
+            )
+        return VideoJob(provider=self.resolved.provider, model=model, job_id=name)
+
+    def build_video_status_spec(self, job: VideoJob) -> RequestSpec:
+        op = self.resolved.operations["video_status"]
+        # The job id is the operation resource path the provider returned
+        # (models/{model}/operations/{id}); slashes are structure, the
+        # rest is escaped so a hostile id can't rewrite the URL.
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"].replace("{operation_name}", quote(job.job_id, safe="/")),
+        )
+
+    def parse_video_status(self, payload: Any, *, job: VideoJob) -> VideoJob:
+        data = payload if isinstance(payload, dict) else {}
+        if not data.get("done"):
+            # A running operation answers with no `done` field at all,
+            # not `done: false` (observed live 2026-08-13).
+            return job
+        error = data.get("error")
+        if isinstance(error, dict):
+            # Job failure is an HTTP 200: the operation finished, the
+            # render did not. High-demand refusals (code 14) and internal
+            # errors (code 13) both arrive here, observed live 2026-08-13.
+            message = str(error.get("message", "video generation failed"))[:300]
+            return VideoJob(
+                provider=job.provider,
+                model=job.model,
+                job_id=job.job_id,
+                status="failed",
+                provider_status=f"error code {error.get('code')}",
+                error_message=message,
+            )
+        samples = (
+            data.get("response", {}).get("generateVideoResponse", {}).get("generatedSamples")
+        )
+        sample = samples[0] if isinstance(samples, list) and samples else {}
+        uri = sample.get("video", {}).get("uri") if isinstance(sample, dict) else None
+        if not isinstance(uri, str) or not uri:
+            raise KeyCallError(
+                "video operation finished without an error or a video URI",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.VIDEO_GENERATION.value,
+            )
+        return VideoJob(
+            provider=job.provider,
+            model=job.model,
+            job_id=job.job_id,
+            status="succeeded",
+            provider_status="done",
+            video_url=uri,
+        )
+
+    def video_download_plan(self, job: VideoJob) -> DownloadPlan:
+        # The finished file lives on the provider's own API host and needs
+        # the API key header; the first request answers a same-origin 302
+        # whose target also needs the header (both verified live
+        # 2026-08-13). Files are kept about two days.
+        host = urlsplit(self.resolved.base_url).hostname or ""
+        return DownloadPlan(
+            url=job.video_url or "",
+            allowed_hosts=(host,),
+            send_credential=True,
+            allow_same_origin_redirect=True,
+        )
+
     def build_embedding_spec(self, request: Any) -> RequestSpec:
         op = self.resolved.operations["embeddings"]
         model = request.model if request.model.startswith("models/") else f"models/{request.model}"
@@ -384,6 +557,17 @@ class GeminiAdapter(ProviderAdapter):
             round_trip_duration_ms=round_trip_duration_ms,
             expected=expected,
         )
+
+    def realtime_plan(self, config: Any) -> tuple[str, Any]:
+        if not self.resolved.capabilities.realtime or "realtime" not in self.resolved.operations:
+            return super().realtime_plan(config)
+        from ._realtime import GeminiRealtimeTranslator
+
+        # BidiGenerateContent's path carries no model; the setup frame
+        # names it. The API key rides the x-goog-api-key header on the
+        # handshake (verified live 2026-08-14), so it never enters a URL.
+        path = self.resolved.operations["realtime"]["path"]
+        return path, GeminiRealtimeTranslator(config, provider=self.resolved.provider)
 
     def build_generation_spec(self, request: TextGenerationRequest) -> RequestSpec:
         self.validate_generation_request(request)
@@ -470,6 +654,13 @@ class GeminiAdapter(ProviderAdapter):
             generation_config["temperature"] = request.temperature
         if request.top_p is not None:
             generation_config["topP"] = request.top_p
+        if request.reasoning_effort is not None:
+            # Gemini's control is thinkingLevel, an uppercase enum
+            # (live-verified 2026-08-14: LOW and HIGH accepted, and
+            # thought-token counts follow the level).
+            generation_config["thinkingConfig"] = {
+                "thinkingLevel": request.reasoning_effort.upper()
+            }
         if request.response_schema is not None:
             # Live-verified 2026-08-06: standard lowercase JSON Schema type
             # names ("object", "string", ...) work directly, no dialect

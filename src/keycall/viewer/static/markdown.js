@@ -42,7 +42,9 @@ const INLINE = [
   { re: /\*([^*\n]+)\*/y, make: (m) => ({ type: "em", raw: m[1] }) },
   { re: /_([^_\n]+)_/y, make: (m) => ({ type: "em", raw: m[1] }) },
   {
-    re: /\[([^\]\n]*)\]\(([^)\s]*)\)/y,
+    // The label may itself contain one bracketed span: Grok cites as
+    // [[1]](url), where the visible label is "[1]".
+    re: /\[((?:[^[\]\n]|\[[^\]\n]*\])*)\]\(([^)\s]*)\)/y,
     make: (m) => ({ type: "link", raw: m[1], href: m[2] }),
   },
 ];

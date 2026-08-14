@@ -5,9 +5,11 @@ from .._registry import ResolvedProvider
 from ._anthropic import AnthropicAdapter
 from ._base import ProviderAdapter
 from ._gemini import GeminiAdapter
+from ._moonshot import MoonshotAdapter
 from ._openai import OpenAIAdapter
 from ._openai_compat import OpenAICompatibleAdapter
 from ._perplexity import PerplexityAdapter
+from ._xai import XAIAdapter
 
 __all__ = ["ProviderAdapter", "adapter_for"]
 
@@ -21,7 +23,9 @@ _BY_PROTOCOL: dict[ProviderProtocol, type[ProviderAdapter]] = {
 # A provider whose behavior diverges from its protocol's conventions gets a
 # named override. Custom targets never match: they can't claim a name here.
 _BY_PROVIDER: dict[str, type[ProviderAdapter]] = {
+    "moonshot": MoonshotAdapter,
     "perplexity": PerplexityAdapter,
+    "xai": XAIAdapter,
 }
 
 

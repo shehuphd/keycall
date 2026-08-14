@@ -17,8 +17,9 @@ from .._enums import Operation
 from .._errors import ErrorCode, KeyCallError
 from .._registry import ResolvedProvider, providers_with
 from .._sanitize import safe_request_id
-from .._transport import RequestSpec
+from .._transport import DownloadPlan, RequestSpec
 from .._types import (
+    AudioOutput,
     Citation,
     EmbeddingOutput,
     ImageOutput,
@@ -33,6 +34,8 @@ from .._types import (
     ToolCallComplete,
     ToolCallStarted,
     Usage,
+    VideoJob,
+    VideoOutput,
 )
 
 
@@ -525,6 +528,143 @@ class ProviderAdapter(ABC):
             warnings=warnings,
         )
 
+    # --- speech generation ---
+
+    def build_speech_spec(self, request: Any) -> RequestSpec:
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} cannot generate speech; "
+            "speech generation is supported on: "
+            + ", ".join(sorted(providers_with("speech_generation"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.SPEECH_GENERATION.value,
+        )
+
+    def parse_speech_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        model: str,
+    ) -> InvocationResult:
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} cannot generate speech",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.SPEECH_GENERATION.value,
+        )
+
+    def speech_result(
+        self,
+        *,
+        base64_data: str,
+        media_type: str,
+        usage: Usage,
+        model: str,
+        round_trip_duration_ms: float,
+        provider_request_id: str | None = None,
+        warnings: tuple[str, ...] = (),
+    ) -> InvocationResult:
+        """One AudioOutput. Unlike images, no provider offers an `n` for
+        this operation — a TTS call always produces one clip, so
+        the parameter list takes a single clip rather than a list of
+        them, matching what the operation returns."""
+        return InvocationResult(
+            provider=self.resolved.provider,
+            model=model,
+            operation=Operation.SPEECH_GENERATION,
+            parts=(AudioOutput(base64_data=base64_data, media_type=media_type),),
+            usage=usage,
+            round_trip_duration_ms=round_trip_duration_ms,
+            provider_request_id=provider_request_id,
+            warnings=warnings,
+        )
+
+    # --- video generation ---
+    #
+    # Three-phase job lifecycle, unlike every synchronous operation above:
+    # start a render, poll its status, download the finished file. Both
+    # supporting providers (Gemini's Veo, xAI's Grok Imagine) converged on
+    # this shape independently, so the adapter interface mirrors it
+    # directly rather than pretending video answers in one round trip.
+
+    def _video_gate(self) -> KeyCallError:
+        return KeyCallError(
+            f"provider {self.resolved.provider!r} cannot generate video; "
+            "video generation is supported on: "
+            + ", ".join(sorted(providers_with("video_generation"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.VIDEO_GENERATION.value,
+        )
+
+    def build_video_start_spec(self, request: Any) -> RequestSpec:
+        raise self._video_gate()
+
+    def parse_video_start(self, payload: Any, *, model: str) -> VideoJob:
+        raise self._video_gate()
+
+    def build_video_status_spec(self, job: VideoJob) -> RequestSpec:
+        raise self._video_gate()
+
+    def parse_video_status(self, payload: Any, *, job: VideoJob) -> VideoJob:
+        raise self._video_gate()
+
+    def video_download_plan(self, job: VideoJob) -> DownloadPlan:
+        raise self._video_gate()
+
+    def server_tool_continuation(
+        self, request: Any, result: Any
+    ) -> Any | None:
+        """When a provider executes a tool server-side but still requires
+        the caller to echo the call back before it will answer (Moonshot's
+        $web_search), the follow-up request that performs the echo. None
+        everywhere else, which is every other provider."""
+        return None
+
+    def realtime_plan(self, config: Any) -> tuple[str, Any]:
+        """The WebSocket path (host-rooted, unlike request paths, which
+        stack on the base URL's own prefix) and the frame translator for
+        a realtime session. Providers without a realtime API refuse here,
+        before any connection."""
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} has no realtime API; "
+            "realtime is supported on: "
+            + ", ".join(sorted(providers_with("realtime"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation="realtime",
+        )
+
+    def video_result(
+        self,
+        *,
+        base64_data: str,
+        media_type: str,
+        url: str | None,
+        model: str,
+        round_trip_duration_ms: float,
+        usage: Usage | None = None,
+        warnings: tuple[str, ...] = (),
+    ) -> InvocationResult:
+        """One VideoOutput per render: neither provider offers an `n` for
+        video the way image generation does. ``url`` is the provider's
+        own download location, carried so a caller who prefers streaming
+        the file elsewhere can, for as long as the provider keeps it
+        alive."""
+        return InvocationResult(
+            provider=self.resolved.provider,
+            model=model,
+            operation=Operation.VIDEO_GENERATION,
+            parts=(
+                VideoOutput(base64_data=base64_data, media_type=media_type, url=url),
+            ),
+            usage=usage or Usage(),
+            round_trip_duration_ms=round_trip_duration_ms,
+            warnings=warnings,
+        )
+
     # --- error translation (transport calls this, then scrubs) ---
 
     def translate_error(self, status_code: int, payload: Any) -> tuple[ErrorCode, bool, str]:
@@ -664,6 +804,18 @@ class ProviderAdapter(ABC):
                     f"provider {self.resolved.provider!r} has no native web search "
                     "tool; web_search is supported on: "
                     + ", ".join(sorted(WEB_SEARCH_PROVIDERS)),
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    provider=self.resolved.provider,
+                    operation=Operation.TEXT_GENERATION.value,
+                )
+        if request.reasoning_effort is not None:
+            from .._registry import providers_with
+
+            if not self.resolved.capabilities.reasoning_effort:
+                raise KeyCallError(
+                    f"provider {self.resolved.provider!r} has no live-verified native "
+                    "reasoning-effort control; reasoning_effort is supported on: "
+                    + ", ".join(sorted(providers_with("reasoning_effort"))),
                     code=ErrorCode.UNSUPPORTED_OPERATION,
                     provider=self.resolved.provider,
                     operation=Operation.TEXT_GENERATION.value,

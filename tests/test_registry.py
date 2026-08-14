@@ -91,9 +91,11 @@ def test_capability_facts_come_from_the_catalog():
     from keycall._registry import resolve_provider
 
     assert sorted(TOOL_CALLING_PROVIDERS) == [
-        "anthropic", "deepseek", "gemini", "moonshot", "openai"
+        "anthropic", "deepseek", "gemini", "moonshot", "openai", "xai"
     ]
-    assert sorted(WEB_SEARCH_PROVIDERS) == ["anthropic", "gemini", "openai", "perplexity"]
+    assert sorted(WEB_SEARCH_PROVIDERS) == [
+        "anthropic", "gemini", "moonshot", "openai", "perplexity", "xai"
+    ]
     assert "deepseek" not in SCHEMA_ENFORCING_PROVIDERS
 
     for name in TOOL_CALLING_PROVIDERS:

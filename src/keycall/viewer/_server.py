@@ -8,6 +8,7 @@ Routes (all under the base "/"):
   GET  /api/targets              keyless list of loaded targets
   GET  /api/models?target=&category=&refresh=   list/filter a target's models
   POST /api/source               {path} -> load a key file server-side
+  POST /api/key                  {provider, key, ...} -> load one typed key
   POST /api/verify               {target, generate, attempts} -> VerifyResult
   POST /api/generate             {target, model, prompt, ...} -> InvocationResult
   POST /api/generate/stream      same body -> SSE events ending in a result or error
@@ -46,10 +47,13 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
+import time
 import webbrowser
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -57,6 +61,7 @@ from .. import __version__
 from .._sources import Target
 from . import _api
 from ._registry import Registry
+from ._traces import TraceLog
 from .auth import Token
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -190,6 +195,71 @@ class _Handler(BaseHTTPRequestHandler):
         names = {host, "127.0.0.1", "localhost", "[::1]"}
         return {f"http://{name}:{port}" for name in names}
 
+    def _provider_of(self, target_id: Any) -> str | None:
+        if not isinstance(target_id, int):
+            return None
+        try:
+            return self._registry.client(target_id).provider
+        except Exception:  # noqa: BLE001 — a nameless trace row beats a lost one
+            return None
+
+    def _record(
+        self,
+        *,
+        route: str,
+        method: str,
+        started: float,
+        body: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+        events: int | None = None,
+        status: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        error = result.get("error") if isinstance(result, dict) else None
+        if status is None:
+            status = f"error: {error.get('code', '?')}" if isinstance(error, dict) else "ok"
+        if detail is None and isinstance(error, dict):
+            detail = str(error.get("message", ""))
+        target = (body or {}).get("target")
+        self.server.trace_log.record(
+            route=route,
+            method=method,
+            duration_ms=(time.monotonic() - started) * 1000.0,
+            status=status,
+            target=target if isinstance(target, int) else None,
+            provider=self._provider_of(target),
+            model=(body or {}).get("model") if isinstance((body or {}).get("model"), str) else None,
+            detail=detail,
+            events=events,
+        )
+
+    def _traced_stream(self, route: str, body: dict[str, Any], events: Any) -> Any:
+        """Pass stream events through while counting them, and write one
+        trace row when the stream ends — however it ends. A browser
+        navigating away closes the generator, and the row still records
+        what happened up to that point."""
+        started = time.monotonic()
+        count = 0
+        status = "ok"
+        detail: str | None = None
+        try:
+            for event in events:
+                count += 1
+                if isinstance(event, dict) and isinstance(event.get("error"), dict):
+                    status = f"error: {event['error'].get('code', '?')}"
+                    detail = str(event["error"].get("message", ""))
+                yield event
+        finally:
+            self._record(
+                route=route,
+                method="POST",
+                started=started,
+                body=body,
+                events=count,
+                status=status,
+                detail=detail,
+            )
+
     def _send_json(self, body: dict[str, Any], status: int = 200) -> None:
         payload = json.dumps(body).encode("utf-8")
         self.send_response(status)
@@ -218,6 +288,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
+        finally:
+            # Close the generator deterministically so a wrapper's trace
+            # row is written now, not whenever collection happens.
+            close = getattr(events, "close", None)
+            if callable(close):
+                close()
 
     def _send_static(self, name: str) -> None:
         safe = os.path.normpath(name).lstrip(os.sep)
@@ -313,6 +389,8 @@ class _Handler(BaseHTTPRequestHandler):
             )
         elif route == "/api/targets":
             self._send_json(_api.list_targets(self._registry))
+        elif route == "/api/traces":
+            self._send_json({"traces": self.server.trace_log.entries()})
         elif route == "/api/models":
             params = parse_qs(parsed.query)
             target_id = self._target_id(params)
@@ -321,11 +399,18 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             category = params.get("category", [None])[0]
             refresh = params.get("refresh", ["0"])[0] in ("1", "true")
-            self._send_json(
-                _api.browse_models(
-                    self._registry, target_id, category=category, refresh=refresh
-                )
+            started = time.monotonic()
+            result = _api.browse_models(
+                self._registry, target_id, category=category, refresh=refresh
             )
+            self._record(
+                route=route,
+                method="GET",
+                started=started,
+                body={"target": target_id},
+                result=result,
+            )
+            self._send_json(result)
         else:
             self.send_error(404, "Not found")
 
@@ -364,6 +449,15 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(_api.add_source(self._registry, body))
             return
 
+        if route == "/api/key":
+            self._send_json(_api.add_key(self._registry, body))
+            return
+
+        if route == "/api/traces/clear":
+            self.server.trace_log.clear()
+            self._send_json({"cleared": True})
+            return
+
         target_id = body.get("target")
         if not isinstance(target_id, int):
             self._send_json({"error": {"code": "bad_request", "message": "target required"}}, 400)
@@ -384,16 +478,20 @@ class _Handler(BaseHTTPRequestHandler):
                     400,
                 )
                 return
-            self._send_json(
-                _api.verify_target(
-                    self._registry,
-                    target_id,
-                    generate=bool(body.get("generate", False)),
-                    attempts=attempts,
-                )
+            started = time.monotonic()
+            result = _api.verify_target(
+                self._registry,
+                target_id,
+                generate=bool(body.get("generate", False)),
+                attempts=attempts,
             )
+            self._record(route=route, method="POST", started=started, body=body, result=result)
+            self._send_json(result)
         elif route == "/api/generate":
-            self._send_json(_api.generate(self._registry, target_id, body))
+            started = time.monotonic()
+            result = _api.generate(self._registry, target_id, body)
+            self._record(route=route, method="POST", started=started, body=body, result=result)
+            self._send_json(result)
         elif route == "/api/generate/image":
             target_id = body.get("target")
             if not isinstance(target_id, int):
@@ -401,9 +499,16 @@ class _Handler(BaseHTTPRequestHandler):
                     {"error": {"code": "bad_request", "message": "target required"}}, 400
                 )
                 return
-            self._send_json(_api.generate_image(self._registry, target_id, body))
+            started = time.monotonic()
+            result = _api.generate_image(self._registry, target_id, body)
+            self._record(route=route, method="POST", started=started, body=body, result=result)
+            self._send_json(result)
         elif route == "/api/generate/stream":
-            self._send_sse(_api.generate_stream_events(self._registry, target_id, body))
+            self._send_sse(
+                self._traced_stream(
+                    route, body, _api.generate_stream_events(self._registry, target_id, body)
+                )
+            )
         else:
             self.send_error(404, "Not found")
 
@@ -415,6 +520,46 @@ class _Server(ThreadingHTTPServer):
         super().__init__(address, _Handler)
         self.registry = registry
         self.token = token
+        self.trace_log = TraceLog()
+        self.reload_requested = False
+
+
+# Dev reload passes the token and bound port to the restarted process
+# through the environment, never argv: argv shows in `ps` for every user
+# on the machine, the environment only for the process owner.
+_RELOAD_TOKEN_ENV = "KEYCALL_VIEWER_RELOAD_TOKEN"
+_RELOAD_PORT_ENV = "KEYCALL_VIEWER_RELOAD_PORT"
+
+
+def _source_mtimes(root: Path) -> dict[str, float]:
+    """Modification times for every file whose change needs a process
+    restart: Python loads once, so an edited module is invisible to a
+    running server. Static assets are excluded because the handler
+    re-reads them from disk on every request already."""
+    files = [*root.rglob("*.py"), root / "_catalog" / "catalog.json"]
+    out: dict[str, float] = {}
+    for path in files:
+        try:
+            out[str(path)] = path.stat().st_mtime
+        except OSError:
+            # A file mid-save can vanish between rglob and stat; the next
+            # poll sees the settled state.
+            continue
+    return out
+
+
+def _watch_sources(server: _Server, root: Path, interval: float = 0.5) -> None:
+    baseline = _source_mtimes(root)
+    while True:
+        time.sleep(interval)
+        current = _source_mtimes(root)
+        if current != baseline:
+            # Let a multi-file save settle before restarting once for all
+            # of it.
+            time.sleep(0.3)
+            server.reload_requested = True
+            server.shutdown()
+            return
 
 
 def run(
@@ -423,19 +568,48 @@ def run(
     host: str = "127.0.0.1",
     port: int = 0,
     open_browser: bool = True,
+    reload: bool = False,
 ) -> int:
     registry = Registry(targets)
-    token = Token()
-    server = _Server((host, port), registry, token)
+    resumed = os.environ.get(_RELOAD_TOKEN_ENV) if reload else None
+    if resumed:
+        token = Token(value=resumed)
+        port = int(os.environ[_RELOAD_PORT_ENV])
+        open_browser = False
+    else:
+        token = Token()
+
+    server: _Server | None = None
+    for attempt in range(20):
+        try:
+            server = _Server((host, port), registry, token)
+            break
+        except OSError:
+            # On a reload restart the old process's port can linger for a
+            # moment; a fresh start gets no such grace.
+            if not resumed or attempt == 19:
+                registry.close()
+                raise
+            time.sleep(0.1)
+    assert server is not None
     actual_port = server.server_address[1]
     url = f"http://{host}:{actual_port}/?token={token.value}"
 
-    print(f"KeyCall viewer running for {len(targets)} target(s)")
+    if resumed:
+        print("KeyCall viewer reloaded: same address, same token")
+    else:
+        print(f"KeyCall viewer running for {len(targets)} target(s)")
     print(f"  {url}")
     print("  (token required; Ctrl-C to stop)")
 
     if open_browser:
         threading.Thread(target=lambda: webbrowser.open(url), daemon=True).start()
+
+    if reload:
+        package_root = Path(__file__).resolve().parents[1]
+        threading.Thread(
+            target=_watch_sources, args=(server, package_root), daemon=True
+        ).start()
 
     try:
         server.serve_forever()
@@ -444,4 +618,10 @@ def run(
     finally:
         server.shutdown()
         registry.close()
+
+    if reload and server.reload_requested:
+        print("source changed, restarting…")
+        os.environ[_RELOAD_TOKEN_ENV] = token.value
+        os.environ[_RELOAD_PORT_ENV] = str(actual_port)
+        os.execv(sys.executable, [sys.executable, "-m", "keycall._cli", *sys.argv[1:]])
     return 0

@@ -1,7 +1,9 @@
 """Viewer: API layer, HTTP server, auth, and the credential-leak canary."""
 
 import json
+import os
 import threading
+import time
 import urllib.request
 
 import httpx
@@ -19,7 +21,7 @@ from keycall.viewer._api import (
     verify_target,
 )
 from keycall.viewer._registry import Registry
-from keycall.viewer._server import _Server
+from keycall.viewer._server import _Server, _watch_sources
 
 CANARY = "sk-canary-viewer-key-do-not-leak"
 
@@ -198,6 +200,50 @@ def _post(url, body, token=None):
             return resp.status, json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read())
+
+
+def test_token_accepts_a_fixed_value_for_dev_reload():
+    """The dev-reload restart hands the child process the running token so
+    the open browser tab keeps working; everything else generates fresh."""
+    resumed = Token(value="carried-across-restart")
+    assert resumed.matches("carried-across-restart")
+    assert not resumed.matches("something-else")
+    assert not Token().matches(Token().value)
+
+
+def test_source_watch_requests_reload_on_change(tmp_path):
+    """Editing a Python file under the watched root must stop the server
+    with the reload flag set; an untouched tree must not."""
+    (tmp_path / "_catalog").mkdir()
+    (tmp_path / "_catalog" / "catalog.json").write_text("{}")
+    module = tmp_path / "module.py"
+    module.write_text("x = 1\n")
+
+    class FakeServer:
+        def __init__(self):
+            self.reload_requested = False
+            self.stopped = threading.Event()
+
+        def shutdown(self):
+            self.stopped.set()
+
+    quiet = FakeServer()
+    threading.Thread(
+        target=_watch_sources, args=(quiet, tmp_path, 0.02), daemon=True
+    ).start()
+    assert not quiet.stopped.wait(0.2)
+
+    watched = FakeServer()
+    threading.Thread(
+        target=_watch_sources, args=(watched, tmp_path, 0.02), daemon=True
+    ).start()
+    # Let the watcher take its baseline before the edit, or the changed
+    # mtime is the baseline and nothing looks different.
+    time.sleep(0.2)
+    later = time.time() + 10
+    os.utime(module, (later, later))
+    assert watched.stopped.wait(3)
+    assert watched.reload_requested
 
 
 def test_api_requires_token(server):
@@ -663,6 +709,56 @@ def test_generate_continues_from_replayed_history():
         replay = seen[1]["input"]
         assert any(item.get("type") == "function_call" for item in replay)
         assert any(item.get("type") == "function_call_output" for item in replay)
+    finally:
+        reg.close()
+
+
+def test_generate_sends_history_before_the_current_prompt():
+    """A multi-turn conversation must reach the provider in the order it
+    happened: prior turns first, then the turn being asked now. The reverse
+    order once made every follow-up read as the opening question."""
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-4o-mini",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "ok"}]}
+                ],
+                "usage": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
+            },
+        )
+
+    targets = [Target(provider="openai", key=CANARY, name="my-openai")]
+    reg = Registry(targets, httpx_transport=httpx.MockTransport(handler))
+    try:
+        body = generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "gpt-4o-mini",
+                "prompt": "How old is he?",
+                "system": "Be brief.",
+                "history": [
+                    {"role": "user", "parts": [{"kind": "text", "text": "Who plays Indiana Jones?"}]},
+                    {"role": "assistant", "parts": [{"kind": "text", "text": "Harrison Ford."}]},
+                ],
+            },
+        )
+        assert body["text"] == "ok"
+        wire = seen[0]["input"]
+        roles = [item.get("role") for item in wire]
+        assert roles == ["system", "user", "assistant", "user"]
+        # The current question is the last turn on the wire, not the first.
+        assert "How old is he?" in json.dumps(wire[-1])
+        assert "Indiana Jones" in json.dumps(wire[1])
     finally:
         reg.close()
 
@@ -1147,6 +1243,14 @@ def test_targets_tell_the_browser_what_each_key_can_accept():
     # And the suggestion of where to turn instead names valid providers.
     assert body["providers_accepting"]["audio"] == ["gemini"]
     assert "deepseek" not in body["providers_accepting"]["image"]
+    # The Playground toggles gate on these flags; a flag off here is one
+    # whose gate would refuse the request after a billable round trip.
+    caps = body["provider_capabilities"]
+    assert caps["moonshot"]["web_search"] is True
+    assert caps["deepseek"]["web_search"] is False
+    assert caps["perplexity"]["tool_calling"] is False
+    assert caps["anthropic"]["image_generation"] is False
+    assert caps["openai"]["image_generation"] is True
     assert CANARY not in json.dumps(body)
 
 
@@ -1288,3 +1392,186 @@ def test_the_page_shell_never_carries_the_token(server):
     assert token.encode() not in script
     # And the script no longer has any token machinery to leak through.
     assert b"sessionStorage" not in script
+
+
+# --- adding a key from the browser ------------------------------------------
+
+
+def test_a_typed_key_becomes_a_target_and_is_never_echoed():
+    """The viewer could only load a file path, so anyone holding a key had
+    to write a TOML file before they could click anything. A typed key now
+    goes into the same in-memory registry — and, like every other viewer
+    response, the reply carries no credential."""
+    from keycall.viewer._api import add_key
+
+    reg = Registry([], httpx_transport=httpx.MockTransport(openai_handler))
+    try:
+        body = add_key(reg, {"provider": "openai", "key": CANARY, "name": "typed"})
+        assert "error" not in body, body
+        assert [t["provider"] for t in body["targets"]] == ["openai"]
+        assert body["targets"][0]["name"] == "typed"
+        assert CANARY not in json.dumps(body)
+        # And it is usable immediately, not merely recorded.
+        assert generate(reg, 0, {"target": 0, "model": "gpt-4o-mini", "prompt": "hi"})[
+            "text"
+        ] == "hello"
+    finally:
+        reg.close()
+
+
+def test_a_typed_key_joins_the_targets_already_loaded():
+    from keycall.viewer._api import add_key
+
+    reg = make_registry()  # two targets from a file
+    try:
+        body = add_key(reg, {"provider": "gemini", "key": CANARY + "-3"})
+        assert len(body["targets"]) == 3
+        assert body["targets"][2]["provider"] == "gemini"
+        assert CANARY not in json.dumps(body)
+    finally:
+        reg.close()
+
+
+def test_a_bad_typed_key_is_refused_with_a_readable_reason():
+    from keycall.viewer._api import add_key
+
+    reg = Registry([], httpx_transport=httpx.MockTransport(openai_handler))
+    try:
+        for payload, expected in [
+            ({}, "provider"),
+            ({"provider": "openai"}, "key"),
+            ({"provider": "openai", "key": "   "}, "key"),
+            ({"provider": "   ", "key": "sk-x"}, "provider"),
+            ({"provider": "openai", "key": 42}, "key"),
+        ]:
+            body = add_key(reg, payload)
+            assert "error" in body, payload
+            assert expected in body["error"]["message"], payload
+        # An unknown provider needs a protocol and base URL; without them
+        # this is a configuration mistake, reported rather than raised.
+        body = add_key(reg, {"provider": "not-a-provider", "key": "sk-x"})
+        assert "error" in body
+        assert not reg.views(), "a refused key must not leave a target behind"
+    finally:
+        reg.close()
+
+
+def test_typed_keys_go_through_the_same_csrf_gate(server):
+    """/api/key accepts a credential, so it must be no easier to reach from
+    another site than the routes that spend money."""
+    base, token = server
+    payload = json.dumps({"provider": "openai", "key": "sk-x"}).encode()
+
+    status, _, _ = _raw(
+        f"{base}/api/key",
+        method="POST",
+        body=payload,
+        headers={"Cookie": f"keycall_viewer_token={token}", "Content-Type": "text/plain"},
+    )
+    assert status == 403, "a simple cross-site POST reached /api/key"
+
+    status, _, _ = _raw(
+        f"{base}/api/key",
+        method="POST",
+        body=payload,
+        headers={
+            "Cookie": f"keycall_viewer_token={token}",
+            "Content-Type": "application/json",
+            "Origin": "https://evil.example",
+        },
+    )
+    assert status == 403, "a foreign origin reached /api/key"
+
+    # And unauthenticated, as with everything else under /api.
+    status, _, _ = _raw(
+        f"{base}/api/key", method="POST", body=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    assert status == 403
+
+
+def test_the_provider_list_comes_from_the_catalog():
+    """The key form's dropdown is filled from this, so a provider added to
+    the catalog appears without a second edit in the frontend."""
+    from keycall._registry import supported_providers
+
+    reg = make_registry()
+    try:
+        body = list_targets(reg)
+    finally:
+        reg.close()
+    assert body["providers"] == list(supported_providers())
+    assert "openai" in body["providers"] and "moonshot" in body["providers"]
+
+
+def test_traces_record_calls_without_recording_prompts(server):
+    """The Traces tab answers "why was that slow" from timing and
+    outcomes alone: a row per API call, and never the prompt text."""
+    base, token = server
+
+    status, body = _get(f"{base}/api/traces", token=token)
+    assert status == 200
+    assert body["traces"] == []
+
+    marker = "the-secret-prompt-text-that-must-not-be-recorded"
+    status, _ = _post(
+        f"{base}/api/generate",
+        {"target": 0, "model": "gpt-4o-mini", "prompt": marker, "max_output_tokens": 32},
+        token=token,
+    )
+    assert status == 200
+
+    status, body = _get(f"{base}/api/traces", token=token)
+    assert status == 200
+    rows = body["traces"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["route"] == "/api/generate"
+    assert row["model"] == "gpt-4o-mini"
+    assert row["provider"] == "openai"
+    assert row["target"] == 0
+    assert row["status"] == "ok"
+    assert row["duration_ms"] >= 0
+    assert marker not in json.dumps(body), "prompt text must never enter a trace"
+
+
+def test_traces_capture_the_error_outcome(server):
+    base, token = server
+    _post(
+        f"{base}/api/generate",
+        {"target": 99, "model": "gpt-4o-mini", "prompt": "hi"},
+        token=token,
+    )
+    _, body = _get(f"{base}/api/traces", token=token)
+    rows = body["traces"]
+    assert rows, "a failed call still writes a trace row"
+    assert rows[0]["status"].startswith("error")
+
+
+def test_traces_require_the_token(server):
+    base, _ = server
+    status, _ = _get(f"{base}/api/traces")
+    assert status == 403
+
+
+def test_traces_clear_wipes_the_log(server):
+    base, token = server
+    _post(
+        f"{base}/api/generate",
+        {"target": 99, "model": "gpt-4o-mini", "prompt": "hi"},
+        token=token,
+    )
+    _, body = _get(f"{base}/api/traces", token=token)
+    assert body["traces"], "the failed call should have written a row to clear"
+
+    status, body = _post(f"{base}/api/traces/clear", {}, token=token)
+    assert status == 200
+    assert body["cleared"] is True
+    _, body = _get(f"{base}/api/traces", token=token)
+    assert body["traces"] == []
+
+
+def test_traces_clear_requires_the_token(server):
+    base, _ = server
+    status, _ = _post(f"{base}/api/traces/clear", {})
+    assert status == 403

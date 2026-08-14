@@ -17,24 +17,47 @@
     <button data-tab="models">Models</button>
     <button data-tab="playground">Playground</button>
     <button data-tab="verify">Verify</button>
+    <button data-tab="traces">Traces</button>
   </nav>
 
   <div id="fatal" class="hidden"></div>
 
   <section id="source-panel" class="hidden">
     <div class="card">
-      <h2>No key targets loaded</h2>
-      <p class="muted">Enter the path to a key file on this machine (TOML, JSON,
-      or TXT — see
-      <a href="https://github.com/shehuphd/keycall/blob/main/keycall-test-keys.example.toml"
-         target="_blank" rel="noopener noreferrer"><code>keycall-test-keys.example.toml</code></a>
-      for the format). The file is read by the local server; keys never enter
-      the browser.</p>
+      <h2>Add an API key to get started</h2>
+      <p class="muted">Paste a key from any supported provider. It goes to the
+      KeyCall process running on your own machine, is held in memory for as
+      long as that process runs, and is never written to disk. Closing
+      KeyCall forgets it.</p>
       <div class="controls">
-        <input id="source-path" type="text" placeholder="./keycall-keys.toml">
-        <button id="source-load">Load</button>
+        <!-- Options are filled from the catalog at boot, so this list can't
+             drift from the providers the library accepts. -->
+        <select id="key-provider" aria-label="Provider"></select>
+        <!-- type=password so it isn't readable over a shoulder or in a
+             screen share; autocomplete off so no browser offers to save a
+             credential the tool deliberately doesn't persist. -->
+        <input id="key-value" type="password" autocomplete="off"
+               spellcheck="false" placeholder="Paste your API key">
+        <button id="key-add">Add key</button>
       </div>
-      <div id="source-status" class="muted"></div>
+      <div id="key-status" class="muted"></div>
+
+      <p class="hint" id="source-toggle-line">
+        Got several keys already in a file?
+        <a href="#" id="source-toggle">Load a key file instead</a>.
+      </p>
+      <div id="source-file" hidden>
+        <p class="muted">Path to a TOML, JSON, or TXT file on this machine — see
+        <a href="https://github.com/shehuphd/keycall/blob/main/keycall-test-keys.example.toml"
+           target="_blank" rel="noopener noreferrer"><code>keycall-test-keys.example.toml</code></a>
+        for the format. The file is read by the local server; its keys never
+        enter the browser.</p>
+        <div class="controls">
+          <input id="source-path" type="text" placeholder="./keycall-keys.toml">
+          <button id="source-load" class="secondary">Load file</button>
+        </div>
+        <div id="source-status" class="muted"></div>
+      </div>
     </div>
   </section>
 
@@ -53,6 +76,26 @@
           <th id="dash-models-header">Models</th></tr></thead>
         <tbody></tbody>
       </table>
+
+      <!-- Trying a one-off key shouldn't mean editing a file first, even
+           when a key file is already loaded. -->
+      <div class="add-key">
+        <button id="dash-key-toggle" class="secondary" type="button">Test another key</button>
+        <div id="dash-key-form" hidden>
+          <p class="hint">
+            A one-off key for trying something out. It is held in memory
+            for as long as KeyCall is running, written nowhere, and gone
+            when you stop the process. Usable straight away.
+          </p>
+          <div class="controls">
+            <select id="dash-key-provider" aria-label="Provider"></select>
+            <input id="dash-key-value" type="password" autocomplete="off"
+                   spellcheck="false" placeholder="Paste your API key">
+            <button id="dash-key-add" type="button">Test key</button>
+          </div>
+          <div id="dash-key-status" class="meta"></div>
+        </div>
+      </div>
     </section>
 
     <section id="models" class="tab">
@@ -119,11 +162,12 @@
               Support varies by model as well as provider. If one is refused,
               the reply names the model that turned it down.
             </p>
-            <label class="pg-toggle">
+            <label class="pg-toggle" id="pg-search-toggle">
               <span>Search the web</span>
               <input id="pg-search" type="checkbox">
               <span class="switch" aria-hidden="true"></span>
             </label>
+            <p class="hint" id="pg-search-unavailable" hidden></p>
             <label class="pg-toggle" id="pg-image-toggle">
               <span>Show a picture</span>
               <input id="pg-image-on" type="checkbox">
@@ -179,11 +223,12 @@
               </div>
               <div id="pg-file-status" class="meta"></div>
             </div>
-            <label class="pg-toggle">
+            <label class="pg-toggle" id="pg-tools-toggle">
               <span>Offer a tool</span>
               <input id="pg-tools-on" type="checkbox">
               <span class="switch" aria-hidden="true"></span>
             </label>
+            <p class="hint" id="pg-tools-unavailable" hidden></p>
             <div id="pg-tools-panel" hidden>
               <p class="hint">
                 The model asks, you answer, and the conversation carries on.
@@ -228,6 +273,8 @@
               </svg>
             </button>
             <button id="pg-run">Send</button>
+            <button id="pg-new" type="button" class="secondary"
+                    title="Clear the transcript and start a new conversation">New chat</button>
           </div>
           <!-- Replaces the composer while recording, so there is one place to
                look and one obvious way to finish. -->
@@ -258,10 +305,10 @@
     <section id="verify" class="tab">
       <h2>Check every key at once</h2>
       <p class="intro">
-        Tests all of your keys in one go and shows what each one can actually
-        do. A key can look fine and still fail in practice, because providers
+        Tests all of your keys in one go and shows what each one can do.
+        A key can look fine and still fail in practice, because providers
         list models that they then refuse to run. Verify tries them in order
-        and reports every attempt, so you can see exactly where a key stands.
+        and reports every attempt, so you can see where a key stands.
       </p>
       <p class="intro">
         Leave the box below unticked to check the keys only. Tick it to also
@@ -276,6 +323,26 @@
       <div id="verify-status" class="muted"></div>
       <div id="verify-results"></div>
       <div id="verify-empty"></div>
+    </section>
+
+    <section id="traces" class="tab">
+      <h2>What this viewer has been doing</h2>
+      <p class="intro">
+        Every request this page has made to providers in this run, newest
+        first: where it went, how long it took, and how it ended. When a
+        button seems slow or silent, the answer is here. Prompts and
+        replies are never recorded — only timing and outcomes.
+      </p>
+      <div class="controls">
+        <button id="traces-refresh">Refresh</button>
+        <button id="traces-clear">Clear traces</button>
+        <label><input id="traces-auto" type="checkbox" checked> Refresh automatically while this tab is open</label>
+      </div>
+      <div id="traces-status" class="muted"></div>
+      <table id="traces-table">
+        <thead><tr><th>Time</th><th>What</th><th>Key</th><th>Model</th><th>Took</th><th>Outcome</th></tr></thead>
+        <tbody></tbody>
+      </table>
     </section>
   </main>
 

@@ -335,6 +335,191 @@ def test_live_perplexity_tools_gate_still_correct():
     print("perplexity: tools still rejected (gate evidence current)")
 
 
+def test_live_moonshot_search_still_returns_no_citations():
+    """Capability-drift probe for an absence claim: Moonshot's $web_search
+    injects results without any citation structure in the response
+    (verified 2026-08-14), so result.citations is documented as always
+    empty there. If citation-shaped fields ever appear, that documentation
+    and the adapter are stale — normalize the citations and update the
+    catalog note, USAGE.md, and this test. Probed raw so it verifies the
+    provider, not KeyCall's own parsing."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+
+    import httpx
+
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider == "moonshot"), None)
+    if target is None:
+        pytest.skip("no moonshot target in the live source")
+
+    tools = [{"type": "builtin_function", "function": {"name": "$web_search"}}]
+    messages: list[dict] = [
+        {
+            "role": "user",
+            "content": "Search the web for one tech news headline from this week "
+            "and name it with its outlet in one sentence.",
+        }
+    ]
+    searched = False
+    final = None
+    with httpx.Client(timeout=180) as client:
+        for _ in range(4):
+            response = client.post(
+                "https://api.moonshot.ai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {target.key}"},
+                json={
+                    "model": "kimi-k2.6",
+                    "messages": messages,
+                    "tools": tools,
+                    "max_tokens": 3000,
+                },
+            )
+            assert response.status_code == 200, (
+                f"capability drift: the $web_search round answered HTTP "
+                f"{response.status_code} — re-probe the builtin flow"
+            )
+            body = response.json()
+            choice = body["choices"][0]
+            if choice.get("finish_reason") != "tool_calls":
+                final = body
+                break
+            searched = True
+            message = choice["message"]
+            messages.append(message)
+            for call in message.get("tool_calls", []):
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call["id"],
+                        "name": call["function"]["name"],
+                        "content": call["function"]["arguments"],
+                    }
+                )
+    if not searched:
+        pytest.skip("the model declined to search this run; nothing to conclude")
+    assert final is not None, "the echo loop never reached a final answer"
+
+    citation_shaped = {
+        "citations", "references", "search_results", "annotations",
+        "grounding", "groundingMetadata", "sources",
+    }
+    found = sorted(
+        key
+        for scope in (final, final["choices"][0], final["choices"][0].get("message", {}))
+        for key in scope
+        if key in citation_shaped
+    )
+    assert not found, (
+        f"capability drift: a searched Moonshot response now carries {found} — "
+        "normalize the citations and update the catalog note, USAGE.md, and "
+        "this probe"
+    )
+    print("moonshot: searched answer still carries no citation structure (evidence current)")
+
+
+def test_live_grok_voice_dialect_evidence_still_holds():
+    """Capability-drift probe for the three pieces of live evidence the
+    xAI realtime support rests on (captured 2026-08-14). Probed raw, not
+    through KeyCall's translator, so it verifies the provider rather
+    than our own code:
+
+    1. The session object speaks the pre-GA shape (`modalities`, not
+       `output_modalities`) — this is why XAIAdapter passes
+       ga_session=False and puts `voice` at the session top level.
+    2. Grok Voice is voice-only: a text-modality update is echoed as
+       accepted, yet the answer still arrives as audio plus transcript
+       with no output_text deltas — this is why the docs say the words
+       arrive as the transcript.
+    3. response.done reports no usage — recorded in the catalog note,
+       USAGE.md, and RealtimeTurnComplete's docstring.
+
+    Any assertion failing means the dialect moved: re-probe, update
+    XAIAdapter.realtime_plan, the catalog realtime_note, and the docs —
+    this test failing IS the notification."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import json
+
+    import httpx
+    from httpx_ws import connect_ws
+
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider == "xai"), None)
+    if target is None:
+        pytest.skip("no xai target in the live source")
+
+    client = httpx.Client(headers={"Authorization": f"Bearer {target.key}"})
+    try:
+        with connect_ws("wss://api.x.ai/v1/realtime?model=grok-voice-latest", client) as ws:
+            created = json.loads(ws.receive_text(timeout=30))
+            assert created["type"] == "session.created"
+            session = created.get("session", {})
+            assert "modalities" in session and "output_modalities" not in session, (
+                "capability drift: the Grok Voice session object no longer speaks "
+                f"the pre-GA shape (keys: {sorted(session.keys())}) — revisit "
+                "ga_session=False in XAIAdapter.realtime_plan"
+            )
+
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "session.update",
+                        "session": {
+                            "modalities": ["text"],
+                            "instructions": "Answer in five words or fewer.",
+                        },
+                    }
+                )
+            )
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "Why is the sky blue?"}],
+                        },
+                    }
+                )
+            )
+            ws.send_text(json.dumps({"type": "response.create"}))
+
+            kinds: set[str] = set()
+            usage: dict = {}
+            for _ in range(120):
+                frame = json.loads(ws.receive_text(timeout=45))
+                kinds.add(frame["type"])
+                assert frame["type"] != "error", f"grok voice answered an error frame: {frame}"
+                if frame["type"] == "response.done":
+                    usage = frame.get("response", {}).get("usage") or {}
+                    break
+            else:
+                pytest.fail("grok voice never sent response.done within the frame budget")
+
+            assert "response.output_text.delta" not in kinds, (
+                "capability drift: Grok Voice emitted text deltas — it is no longer "
+                "voice-only, and a text output modality may now be exposable"
+            )
+            assert "response.output_audio.delta" in kinds, (
+                f"capability drift: no audio deltas in a Grok Voice response ({sorted(kinds)})"
+            )
+            assert "response.output_audio_transcript.delta" in kinds, (
+                "capability drift: no transcript deltas — the words no longer arrive "
+                "as the audio transcript"
+            )
+            assert not usage.get("total_tokens"), (
+                f"capability drift: Grok Voice now reports usage ({usage}) — update the "
+                "catalog realtime_note, USAGE.md, and RealtimeTurnComplete's docstring"
+            )
+    finally:
+        client.close()
+    print("xai: grok voice still pre-GA, voice-only, and usage-free (evidence current)")
+
+
 # Solid blue 8x8 PNG, built inline so the suite carries no binary fixture.
 def _blue_png() -> bytes:
     import struct

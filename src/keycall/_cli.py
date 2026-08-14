@@ -132,7 +132,13 @@ def _run_view(args: argparse.Namespace) -> int:
         print("keycall view is under construction and not functional yet", file=sys.stderr)
         return 2
 
-    return run_viewer(targets, host=args.host, port=args.port, open_browser=not args.no_open)
+    return run_viewer(
+        targets,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_open,
+        reload=args.reload,
+    )
 
 
 def _add_source_args(parser: argparse.ArgumentParser) -> None:
@@ -171,6 +177,12 @@ def main(argv: list[str] | None = None) -> int:
     view.add_argument("--port", type=int, default=0, help="port (default: pick a free one)")
     view.add_argument(
         "--no-open", action="store_true", help="don't open a browser tab automatically"
+    )
+    view.add_argument(
+        "--reload",
+        action="store_true",
+        help="restart when keycall's source changes, keeping the address and "
+        "token, so a hard reload in the browser picks up server-side edits",
     )
 
     args = parser.parse_args(argv)

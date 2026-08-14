@@ -5,6 +5,191 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] — 2026-08-14
+
+### Added
+
+- **Realtime voice sessions.** `client.realtime(model=..., voice=...,
+  instructions=...)` opens a live WebSocket conversation, sync and
+  async, on the three providers with a realtime API — OpenAI (the GA
+  Realtime API), xAI (Grok Voice, which speaks the pre-GA dialect and is
+  voice-only), and Gemini (BidiGenerateContent, whose API key rides the
+  handshake header so it never enters a URL, and whose binary frames and
+  `thought` parts are handled — reasoning text stays out of the
+  transcript). Turns go up as typed text or streamed PCM audio; events
+  come back normalized (`session_started`, `audio_delta`,
+  `transcript_delta`, `turn_complete`, `interrupted`, `session_ended`),
+  with usage per turn where the provider reports it. Unmodeled session
+  options pass through via `provider_config`, reported with a warning.
+  Providers without a realtime API refuse before any connection. All
+  three verified live 2026-08-14; adds the `httpx-ws` dependency.
+- **Reasoning effort control.** `generate_text()` and `stream_text()`
+  take `reasoning_effort` ("low" / "medium" / "high", plus OpenAI's
+  "minimal"), mapped to each provider's native control: OpenAI's
+  Responses `reasoning.effort`, Anthropic's `output_config.effort`,
+  Gemini's `thinkingConfig.thinkingLevel`, Perplexity's
+  `reasoning_effort`, and on xAI the `/v1/responses` route's
+  `reasoning.effort` (naming an effort switches Grok to that route the
+  same way `web_search=True` does, because its chat completions accepts
+  the field without honoring it). Every mapping was verified live to
+  move reasoning-token counts with the level (2026-08-14). DeepSeek
+  answers 200 and ignores the value, and Moonshot's thinking model
+  wasn't available to verify, so both refuse with
+  `UNSUPPORTED_OPERATION` before any network call instead of shipping a
+  knob that does nothing.
+- **Grok web search.** `web_search=True` now works on xAI, streamed or
+  not, with normalized citations. xAI serves search from its agentic
+  route (`POST /v1/responses`, the OpenAI Responses shape — its old Live
+  Search answers 410), so the flag switches route, body, and parser
+  together; the call you write stays the same. Verified live 2026-08-14,
+  including the streamed event vocabulary matching OpenAI's.
+- **Visible reasoning progress.** A new `ReasoningDelta` stream event
+  carries the visible reasoning trace on providers that stream one
+  (DeepSeek, Moonshot, xAI). Before this, a reasoning model looked hung:
+  grok-4.6 was observed thinking for 40 seconds before its first answer
+  token, with nothing to show for it. The viewer's Playground now shows
+  "thinking…" with a live character count during that stretch, and xAI
+  streams also report token usage (they previously ended unreported).
+- **Kimi web search.** `web_search=True` now works on Moonshot, streamed
+  or not. Moonshot serves search as the `$web_search` builtin function:
+  the search runs server-side, but the model answers with a tool call
+  the caller must echo back before the answer arrives (verified live
+  2026-08-14 on kimi-k2.6 — the earlier no-search claim was stale).
+  KeyCall runs that echo loop internally, bounded at five rounds, with
+  usage summed across rounds and the handshake's tool events kept out of
+  the caller's stream, so the flag behaves like every other provider.
+  Moonshot returns no citation structure, so `result.citations` stays
+  empty there. DeepSeek and custom targets still refuse before any
+  network call.
+- **The Playground gates every capability per key.** Switching keys
+  re-gates all of it in one pass — web search, tool offering, the
+  make-a-picture task, and the attachment toggles: controls the new
+  provider can't honour are disabled with an inline note naming the
+  providers that can, anything that was switched on is turned off with
+  one toast listing what changed, and a selected image task falls back
+  to text when the provider can't draw. Read from the same catalog data
+  the adapters gate on, so the page and the library can't disagree, and
+  nothing is discovered by failing a billable round trip.
+- **Playground conversations carry across turns and models.** Every
+  settled exchange is recorded and replayed with the next request, so a
+  follow-up question keeps its context, including when the key or model
+  changes between turns (verified live: gpt-4o-mini answered the first
+  question, grok-4.6 resolved the pronoun in the second). Two defects
+  made the page single-turn before: the browser dropped the recorded
+  turns on every send, and the server placed replayed history after the
+  current question, so the provider read the conversation out of order.
+  A New chat button resets the transcript and the recorded turns.
+  Attachments are not replayed on later turns (each replay would be
+  billed again); a short label stands in for the media.
+- **Playground progress during long requests.** The status line now
+  carries a ticking elapsed time from the moment a request goes out
+  ("Waiting for the model… · 24s"), and a server-side web search names
+  itself ("searching the web… · 41s") instead of reading as a hang —
+  xAI was measured spending 80 of 86 seconds searching before its first
+  answer token, all previously shown as silence. Server-side tool
+  activity reaches the page as a new bounded `provider_event` stream
+  kind (the provider's event name only, never a payload). Finished
+  durations render in seconds once they take one ("75.65 s", not
+  "75649 ms") in the Playground, Verify, and Traces views.
+- **Inline citation links render.** Grok cites sources as `[[1]](url)`,
+  a markdown link whose label is itself bracketed; the renderer's link
+  pattern didn't accept that shape, so citations appeared as bare
+  brackets and raw URLs. The label may now contain one bracketed span,
+  and the same scheme allowlist still gates every href.
+- **`keycall view --reload` restarts on source changes.** The viewer's
+  static files are re-read per request, but Python loads once, so a
+  server-side edit was invisible until a manual restart, and a restart
+  minted a new token that broke the open tab. With the flag, saving a
+  `.py` file (or the catalog) restarts the server in place with the same
+  port and the same token, carried through the environment rather than
+  argv, so a hard reload in the browser is all it takes. For working on
+  KeyCall itself; an installed package never changes, so the watcher
+  stays idle there.
+- **A Traces tab in the viewer.** Every request the viewer run has made,
+  newest first — which key and model, how long it took, how it ended —
+  so "why was that slow" is answerable from the page itself. Prompts and
+  replies are never recorded, only timing and outcomes; the log lives in
+  the server process's memory and dies with it, and a Clear traces
+  button wipes it on demand. A page served by an
+  older server process says so plainly instead of failing on the missing
+  endpoint.
+
+- **xAI (Grok) is the seventh named provider.** `provider="xai"` (aliases
+  `grok`, `x-ai`) speaks the openai-compatible protocol against
+  `api.x.ai`: model listing, text generation, streaming (Grok streams
+  reasoning deltas, which KeyCall already understands from DeepSeek),
+  tool calling, native `json_schema` enforcement, image input by bytes
+  and by URL, and image generation, all live-verified 2026-08-13. Grok's
+  own model metadata publishes input and output modalities per model, and
+  the `grok-imagine-*` families classify as image and video generators
+  rather than entering the text picker. Two verified refusals are
+  recorded in the catalog rather than guessed around: Live Search
+  answers 410 (xAI moved search to its Agent Tools API, a different
+  surface), and the embeddings route offers no embedding model.
+- **Video generation** (`start_video()` / `check_video()` /
+  `fetch_video()`, plus `generate_video()` to run all three against a
+  waiting budget), on Gemini's Veo and xAI's Grok Imagine — sync and
+  async. Video is the package's first job-shaped operation: both
+  providers answer a render request with a job handle and expect polling,
+  so KeyCall says so instead of pretending video answers in one round
+  trip. `VideoJob` is plain picklable data with no credential inside;
+  KeyCall's status set is a closed three (`running` / `succeeded` /
+  `failed`) with the provider's own word carried alongside, so xAI's
+  `expired` maps to `failed` without growing the set one vendor
+  vocabulary at a time. A render that outlives `generate_video`'s
+  timeout raises `VideoJobTimeout` carrying the still-valid job — the
+  caller never loses a render they already paid to start. Observed live:
+  render times swing from 10 seconds (Grok) to 11+ minutes (Veo under
+  its recurring high-demand refusals, which arrive as job failures with
+  the provider's message intact, not HTTP errors).
+
+  Downloads follow per-provider rules pinned from live evidence, and the
+  URL a job reports is treated as data, never trusted: Gemini serves the
+  file from its own API host behind a same-origin redirect with the key
+  header on both hops, so KeyCall follows a single same-origin hop
+  there and nowhere else; xAI serves an unsigned public URL on
+  `vidgen.x.ai`, so the credential is never sent to that host and the
+  URL itself should be treated as a secret. A URL pointing anywhere else
+  is refused before any request leaves, and video downloads get their
+  own 256 MB cap instead of loosening the ordinary 10 MB response
+  bound.
+
+- **The viewer accepts a pasted key**, not only a file path. A provider
+  dropdown and a password field on the empty-state panel add one target
+  the same way a file line would — held in memory for the run, never
+  written to disk. A **Test another key** control on the dashboard opens
+  the same form for a one-off key even when a file is already loaded, so
+  trying a key someone just handed you never means writing it into a TOML
+  file first. The provider list is read from the catalog rather than
+  hardcoded in the page twice, and a client running against an older
+  server (the static assets reload per request; the server doesn't) falls
+  back to a working list instead of rendering an empty dropdown.
+- **`generate_speech()` (sync and async).** Speaks text aloud on OpenAI and
+  Gemini, the only two of the six providers with a public speech-generation
+  API — confirmed by reading each provider's own docs and, for Anthropic,
+  by finding that its "voice mode" runs on a third-party TTS subcontractor
+  behind a consumer app, not an endpoint this library can call. The result
+  carries one `AudioOutput` with base64 data and the media type the
+  provider reported: `audio/mpeg` on OpenAI, and on Gemini raw PCM
+  (`audio/L16;codec=pcm;rate=24000`) — reported honestly rather than
+  wrapped in a container the provider never produced, so a caller who
+  wants a playable file knows to add a WAV header itself. `voice` is
+  optional: Gemini and OpenAI's `gpt-4o-mini-tts` default one, but
+  `tts-1` and `tts-1-hd` require it and refuse the call otherwise; KeyCall
+  does not choose a voice on a caller's behalf; the provider's own
+  refusal already names what to add.
+
+  Behind this is a transport change: OpenAI's speech endpoint answers
+  with the audio file itself, not a JSON envelope — the first operation in
+  the package where that's true. Rather than a per-request flag declaring
+  "this route returns binary," which would be one more fact to keep in
+  sync with what a provider does, the transport reads each response's own
+  Content-Type and classifies it from that — including error responses,
+  which come back as ordinary JSON from the same route. Every other
+  operation's behavior is unchanged: only a Content-Type that unambiguously
+  names a binary kind skips JSON parsing, so a missing or JSON-shaped
+  header keeps working as before.
+
 ## [0.10.0] — 2026-08-10
 
 ### Added

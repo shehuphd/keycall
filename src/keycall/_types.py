@@ -34,6 +34,8 @@ __all__ = [
     "Model",
     "ModelDiscovery",
     "OutputPart",
+    "ReasoningDelta",
+    "SpeechGenerationRequest",
     "StreamEvent",
     "StreamFinish",
     "StreamStart",
@@ -51,6 +53,9 @@ __all__ = [
     "UnknownOutput",
     "UnknownStreamEvent",
     "Usage",
+    "VideoGenerationRequest",
+    "VideoJob",
+    "VideoJobStatus",
     "VideoOutput",
 ]
 
@@ -218,6 +223,7 @@ class EmbeddingOutput:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class VideoOutput:
     url: str | None = None
+    base64_data: str | None = None
     media_type: str | None = None
     kind: Literal["video"] = "video"
 
@@ -311,6 +317,15 @@ class TextGenerationRequest:
     result warning, rather than claiming enforcement it can't deliver.
     result.text carries the JSON as a string on every provider, so callers
     parse the same way regardless of which mechanism produced it."""
+    reasoning_effort: str | None = None
+    """How hard a reasoning-capable model should think, in the provider's
+    own vocabulary (commonly "low" / "medium" / "high"; OpenAI also takes
+    "minimal"). Mapped to each provider's native control — KeyCall never
+    converts the value, so a word the provider rejects comes back as the
+    provider's own error naming what it takes. Reasoning spend was
+    measured at 20x the answer's tokens on some models, which is what
+    this exists to rein in. Providers without a live-verified native
+    control refuse rather than silently ignoring the request."""
 
     def __post_init__(self) -> None:
         if not self.model or not isinstance(self.model, str):
@@ -385,6 +400,82 @@ class ImageGenerationRequest:
             raise ValueError("ImageGenerationRequest.prompt must not be empty")
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SpeechGenerationRequest:
+    """Carries no provider and no credential — those are client identity.
+
+    `voice` is included, unlike `size`/`count` on `ImageGenerationRequest`:
+    both providers that support this operation (OpenAI, Gemini) take a
+    named voice as a plain string, so it is not a parameter that goes
+    unused on half the providers — it is either honored or the whole
+    operation is refused before the network, same as everything else here.
+
+    Typed as optional because it is optional on most of these models, but
+    not all: on OpenAI, `gpt-4o-mini-tts` defaults a voice when it's
+    omitted, while `tts-1` and `tts-1-hd` reject the call outright with
+    "voice field required" (both live-verified 2026-08-12 — the passing
+    case on one model does not generalize to the family, which is
+    precisely what happened writing this docstring the first time).
+    Gemini defaults a voice on every model checked. KeyCall does not pick
+    a voice on a caller's behalf when a provider requires one: that would
+    be a value the caller never asked for, and the provider's own refusal
+    already names what is missing."""
+
+    model: str
+    text: str
+    voice: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.text or not self.text.strip():
+            raise ValueError("SpeechGenerationRequest.text must not be empty")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class VideoGenerationRequest:
+    """Carries no provider and no credential — those are client identity.
+
+    `duration_seconds` and `aspect_ratio` are sent when given and omitted
+    when not, so each provider applies its own default rather than one
+    KeyCall invented; both providers that support this operation take both
+    parameters. A value the provider refuses comes back as the provider's
+    own error, naming its accepted range."""
+
+    model: str
+    prompt: str
+    duration_seconds: int | None = None
+    aspect_ratio: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.prompt or not self.prompt.strip():
+            raise ValueError("VideoGenerationRequest.prompt must not be empty")
+
+
+VideoJobStatus = Literal["running", "succeeded", "failed"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class VideoJob:
+    """A handle to a video render in progress. Plain data with no
+    credential inside, so it can be stored and polled later, from another
+    process if needed, through a client bound to the same provider.
+
+    ``status`` is a closed three-value set; ``provider_status`` carries
+    the provider's own word for the state verbatim (xAI's ``expired``
+    becomes ``failed`` here, with the original preserved). ``job_id`` is
+    the provider's identifier in whatever form it uses — a bare UUID on
+    xAI, an operation path on Gemini. On success ``video_url`` holds the
+    provider's download location; on failure ``error_message`` holds the
+    provider's own explanation, sanitized."""
+
+    provider: str
+    model: str
+    job_id: str
+    status: VideoJobStatus = "running"
+    provider_status: str | None = None
+    video_url: str | None = None
+    error_message: str | None = None
+
+
 # --- stream events ---------------------------------------------------------
 
 
@@ -403,6 +494,20 @@ class TextDelta:
 
     text: str
     kind: Literal["text_delta"] = "text_delta"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReasoningDelta:
+    """An increment of a visible reasoning trace, on providers that stream
+    one before the answer (DeepSeek, Moonshot, xAI). Exists so a reasoning
+    model doesn't look hung: grok-4.6 was observed reasoning for 40
+    seconds before its first answer token, and a consumer that renders
+    only TextDelta shows nothing that whole time. The text is the
+    provider's own visible trace, passed through as sent — display it,
+    count it, or ignore it, but never mistake it for the answer."""
+
+    text: str
+    kind: Literal["reasoning_delta"] = "reasoning_delta"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -425,7 +530,7 @@ class ToolCallStarted:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ToolCallArgumentsDelta:
-    """A fragment of a tool call's argument JSON, exactly as the provider
+    """A fragment of a tool call's argument JSON, verbatim as the provider
     sent it. Fragments are individually meaningless: they split mid-token
     and only the concatenation is valid JSON. Useful for showing progress,
     not for parsing. Providers that send arguments whole (Gemini) emit
@@ -468,6 +573,7 @@ class UnknownStreamEvent:
 StreamEvent = (
     StreamStart
     | TextDelta
+    | ReasoningDelta
     | CitationFound
     | ToolCallStarted
     | ToolCallArgumentsDelta
@@ -475,6 +581,104 @@ StreamEvent = (
     | StreamFinish
     | UnknownStreamEvent
 )
+
+
+# --- realtime events --------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RealtimeSessionStarted:
+    """The provider accepted the session. On OpenAI and xAI this carries
+    the provider's session id; Gemini's setup acknowledgement has none."""
+
+    provider_session_id: str | None = None
+    kind: Literal["session_started"] = "session_started"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RealtimeAudioDelta:
+    """A chunk of generated audio, decoded to raw bytes. The encoding is
+    the session's output format: 16-bit PCM unless the session was
+    configured otherwise (OpenAI and xAI at 24 kHz, Gemini at 24 kHz)."""
+
+    data: bytes
+    kind: Literal["audio_delta"] = "audio_delta"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RealtimeTranscriptDelta:
+    """An increment of the words being spoken (or, in a text-modality
+    session, the text answer itself). On voice-first providers this is the
+    provider's own transcript of its audio; it can trail the audio deltas
+    it describes."""
+
+    text: str
+    kind: Literal["transcript_delta"] = "transcript_delta"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RealtimeTurnComplete:
+    """The model finished a response turn. Token usage is reported where
+    the provider reports it (OpenAI and Gemini; xAI answers none)."""
+
+    usage: Usage
+    kind: Literal["turn_complete"] = "turn_complete"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RealtimeInterrupted:
+    """The turn in progress was cut off — the caller (or the provider's
+    own voice-activity detection) started a new turn before this one
+    finished. Audio already emitted is not retracted."""
+
+    kind: Literal["interrupted"] = "interrupted"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RealtimeSessionEnded:
+    """The connection closed. ``reason`` is the provider's scrubbed close
+    message when it gave one."""
+
+    reason: str | None = None
+    kind: Literal["session_ended"] = "session_ended"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UnknownRealtimeEvent:
+    """A realtime frame KeyCall doesn't recognize yet. Bounded provider
+    kind only — never a raw provider payload."""
+
+    provider_kind: str
+    kind: Literal["unknown"] = "unknown"
+
+
+RealtimeEvent = (
+    RealtimeSessionStarted
+    | RealtimeAudioDelta
+    | RealtimeTranscriptDelta
+    | RealtimeTurnComplete
+    | RealtimeInterrupted
+    | RealtimeSessionEnded
+    | UnknownRealtimeEvent
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RealtimeConfig:
+    """What a realtime session asks of the provider. The common core is
+    normalized; ``provider_config`` is passed through verbatim into the
+    provider's session-configuration message for everything KeyCall does
+    not model, and its use is reported with a warning so a portability
+    seam is never silent."""
+
+    model: str
+    voice: str | None = None
+    instructions: str | None = None
+    provider_config: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if not self.model:
+            raise ValueError("model must be a non-empty string")
 
 
 # --- results ---------------------------------------------------------------

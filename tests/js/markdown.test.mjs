@@ -218,3 +218,18 @@ test("a fenced block does not have its contents parsed", () => {
   assert.equal(root.find("strong").length, 0);
   assert.equal(root.find("a").length, 0);
 });
+
+test("a bracketed label still links: Grok cites as [[1]](url)", () => {
+  const nodes = parseInline("as of 2026.[[1]](https://en.wikipedia.org/wiki/Zendaya) more");
+  const link = nodes.find((n) => n.type === "link");
+  assert.ok(link, "the citation must parse as a link, not stay bare text");
+  assert.equal(link.href, "https://en.wikipedia.org/wiki/Zendaya");
+  assert.equal(link.children[0].text, "[1]");
+  assert.equal(nodes[0].text, "as of 2026.");
+  assert.equal(nodes.at(-1).text, " more");
+});
+
+test("an unclosed bracket stays plain text", () => {
+  const nodes = parseInline("not a link [dangling");
+  assert.deepEqual(nodes, [{ type: "text", text: "not a link [dangling" }]);
+});

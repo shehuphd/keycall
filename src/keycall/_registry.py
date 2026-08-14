@@ -56,6 +56,10 @@ class ProviderCapabilities:
     web_search: bool = False
     embeddings: bool = False
     image_generation: bool = False
+    speech_generation: bool = False
+    video_generation: bool = False
+    reasoning_effort: bool = False
+    realtime: bool = False
     # None: no provider-side enforcement, KeyCall falls back to JSON mode.
     schema_enforcement: str | None = None
     sampling_constraints: tuple[SamplingConstraint, ...] = ()
@@ -86,6 +90,9 @@ class ResolvedProvider:
     # Providers whose model list is not API-discoverable supply it here.
     catalog_models: tuple[dict[str, Any], ...] = ()
     min_max_output_tokens: int | None = None
+    # Hosts a finished video download may point at when they differ from
+    # the provider's own API host, pinned from live evidence.
+    video_download_hosts: tuple[str, ...] = ()
     capabilities: ProviderCapabilities = ProviderCapabilities()
 
 
@@ -132,6 +139,10 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
         tool_calling=bool(raw.get("tool_calling", False)),
         embeddings=bool(raw.get("embeddings", False)),
         image_generation=bool(raw.get("image_generation", False)),
+        speech_generation=bool(raw.get("speech_generation", False)),
+        video_generation=bool(raw.get("video_generation", False)),
+        reasoning_effort=bool(raw.get("reasoning_effort", False)),
+        realtime=bool(raw.get("realtime", False)),
         web_search=bool(raw.get("web_search", False)),
         schema_enforcement=raw.get("schema_enforcement"),
         sampling_constraints=tuple(
@@ -151,6 +162,17 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
         file_input_url=bool((raw.get("file_input") or {}).get("url", False)),
         verified=str(raw.get("verified", "")),
     )
+
+
+def supported_providers() -> tuple[str, ...]:
+    """Every provider the bundled catalog knows, in catalog order.
+
+    Read from the catalog rather than listed anywhere else, so a provider
+    added there appears in the viewer's key form without a second edit.
+    Custom targets aren't here by definition: they need a protocol and a
+    base URL, which the catalog cannot supply.
+    """
+    return tuple(_load_catalog()["providers"])
 
 
 def providers_with(capability: str) -> frozenset[str]:
@@ -315,6 +337,7 @@ def resolve_provider(
             provider_request_id_header=profile.get("provider_request_id_header"),
             catalog_models=tuple(profile.get("models", ())),
             min_max_output_tokens=profile.get("min_max_output_tokens"),
+            video_download_hosts=tuple(profile.get("video_download_hosts", ())),
             capabilities=_parse_capabilities(profile),
         )
 

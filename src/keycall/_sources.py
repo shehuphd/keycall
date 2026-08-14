@@ -161,7 +161,7 @@ def _file_warnings(path: Path) -> list[SourceWarning]:
         if (parent / ".git").exists():
             warnings.append(
                 SourceWarning(
-                    message=f"{path.name} sits inside a git repository; "
+                    message=f"{path.name} is inside a git repository; "
                     "keep credential files out of version control"
                 )
             )

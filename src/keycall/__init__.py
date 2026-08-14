@@ -3,7 +3,8 @@ listing and filtering their models, and making normalized calls."""
 
 from ._client import AsyncKeyCall, AsyncTextStream, KeyCall, TextStream
 from ._enums import ModelCategory, Operation, ProviderProtocol
-from ._errors import ErrorCode, KeyCallError
+from ._errors import ErrorCode, KeyCallError, VideoJobTimeout
+from ._realtime import AsyncRealtimeSession, RealtimeSession
 from ._types import (
     AudioInput,
     AudioOutput,
@@ -23,6 +24,16 @@ from ._types import (
     Model,
     ModelDiscovery,
     OutputPart,
+    RealtimeAudioDelta,
+    RealtimeConfig,
+    RealtimeEvent,
+    RealtimeInterrupted,
+    RealtimeSessionEnded,
+    RealtimeSessionStarted,
+    RealtimeTranscriptDelta,
+    RealtimeTurnComplete,
+    ReasoningDelta,
+    SpeechGenerationRequest,
     StreamEvent,
     StreamFinish,
     StreamStart,
@@ -38,15 +49,20 @@ from ._types import (
     ToolResult,
     TranscriptOutput,
     UnknownOutput,
+    UnknownRealtimeEvent,
     UnknownStreamEvent,
     Usage,
+    VideoGenerationRequest,
+    VideoJob,
+    VideoJobStatus,
     VideoOutput,
 )
 
-__version__ = "0.10.0"
+__version__ = "1.0.0"
 
 __all__ = [
     "AsyncKeyCall",
+    "AsyncRealtimeSession",
     "AsyncTextStream",
     "AudioInput",
     "AudioOutput",
@@ -72,6 +88,17 @@ __all__ = [
     "Operation",
     "OutputPart",
     "ProviderProtocol",
+    "RealtimeAudioDelta",
+    "RealtimeConfig",
+    "RealtimeEvent",
+    "RealtimeInterrupted",
+    "RealtimeSession",
+    "RealtimeSessionEnded",
+    "RealtimeSessionStarted",
+    "RealtimeTranscriptDelta",
+    "RealtimeTurnComplete",
+    "ReasoningDelta",
+    "SpeechGenerationRequest",
     "StreamEvent",
     "StreamFinish",
     "StreamStart",
@@ -88,8 +115,13 @@ __all__ = [
     "ToolResult",
     "TranscriptOutput",
     "UnknownOutput",
+    "UnknownRealtimeEvent",
     "UnknownStreamEvent",
     "Usage",
+    "VideoGenerationRequest",
+    "VideoJob",
+    "VideoJobStatus",
+    "VideoJobTimeout",
     "VideoOutput",
     "__version__",
 ]

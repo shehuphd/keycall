@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.08.10.1",
+  "catalog_version": "2026.08.14.4",
   "verified_at": "2026-08-10T00:00:00Z",
   "providers": {
     "openai": {
@@ -27,12 +27,22 @@
         "image_generation": {
           "method": "POST",
           "path": "/images/generations"
+        },
+        "speech_generation": {
+          "method": "POST",
+          "path": "/audio/speech"
+        },
+        "realtime": {
+          "method": "WS",
+          "path": "/v1/realtime?model={model}"
         }
       },
       "provider_request_id_header": "x-request-id",
       "capabilities": {
         "tool_calling": true,
         "web_search": true,
+        "reasoning_effort": true,
+        "reasoning_effort_note": "Maps to the Responses reasoning.effort field. Verified live 2026-08-14 on gpt-5-nano.",
         "schema_enforcement": "native",
         "sampling_constraints": [
           {
@@ -46,7 +56,7 @@
             "note": "gpt-5 family on the Responses API accepts only the default"
           }
         ],
-        "verified": "2026-08-09",
+        "verified": "2026-08-12",
         "image_input": {
           "bytes": true,
           "url": true
@@ -60,7 +70,11 @@
           "url": false
         },
         "embeddings": true,
-        "image_generation": true
+        "image_generation": true,
+        "speech_generation": true,
+        "video_generation": false,
+        "realtime": true,
+        "realtime_note": "The Realtime API (GA session shape). Text and audio output modalities both verified live 2026-08-14; usage arrives in response.done."
       }
     },
     "anthropic": {
@@ -91,6 +105,8 @@
       "capabilities": {
         "tool_calling": true,
         "web_search": true,
+        "reasoning_effort": true,
+        "reasoning_effort_note": "Maps to output_config.effort; a top-level effort field is refused. Verified live 2026-08-14 on claude-opus-4-5.",
         "schema_enforcement": "native",
         "sampling_constraints": [
           {
@@ -123,7 +139,10 @@
           "url": false
         },
         "embeddings": false,
-        "image_generation": false
+        "image_generation": false,
+        "speech_generation": false,
+        "video_generation": false,
+        "realtime": false
       }
     },
     "gemini": {
@@ -153,12 +172,30 @@
         "image_generation": {
           "method": "POST",
           "path": "/models/{model}:generateContent"
+        },
+        "speech_generation": {
+          "method": "POST",
+          "path": "/models/{model}:generateContent"
+        },
+        "video_generation": {
+          "method": "POST",
+          "path": "/models/{model}:predictLongRunning"
+        },
+        "video_status": {
+          "method": "GET",
+          "path": "/{operation_name}"
+        },
+        "realtime": {
+          "method": "WS",
+          "path": "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
         }
       },
       "provider_request_id_header": null,
       "capabilities": {
         "tool_calling": true,
         "web_search": true,
+        "reasoning_effort": true,
+        "reasoning_effort_note": "Maps to generationConfig.thinkingConfig.thinkingLevel, uppercased. Thought-token counts follow the level (verified live 2026-08-14 on gemini-flash-latest).",
         "schema_enforcement": "native",
         "sampling_constraints": [],
         "non_text_model_families": [
@@ -168,7 +205,7 @@
           "lyria",
           "omni"
         ],
-        "verified": "2026-08-09",
+        "verified": "2026-08-13",
         "image_input": {
           "bytes": true,
           "url": false
@@ -182,7 +219,11 @@
           "url": false
         },
         "embeddings": true,
-        "image_generation": true
+        "image_generation": true,
+        "speech_generation": true,
+        "video_generation": true,
+        "realtime": true,
+        "realtime_note": "BidiGenerateContent over WebSocket; the API key is accepted as an x-goog-api-key header, so it never enters the URL. Current bidi models are audio-only (a TEXT response modality is refused); the words come from outputAudioTranscription. Some frames arrive binary. Verified live 2026-08-14 on gemini-2.5-flash-native-audio-latest."
       }
     },
     "deepseek": {
@@ -207,6 +248,8 @@
       "capabilities": {
         "tool_calling": true,
         "web_search": false,
+        "reasoning_effort": false,
+        "reasoning_effort_note": "reasoning_effort is accepted with HTTP 200 but reasoning token counts do not follow the value (measured 2026-08-14), so the request is refused rather than silently ignored.",
         "schema_enforcement": null,
         "sampling_constraints": [],
         "verified": "2026-08-09",
@@ -223,7 +266,10 @@
           "url": false
         },
         "embeddings": false,
-        "image_generation": false
+        "image_generation": false,
+        "speech_generation": false,
+        "video_generation": false,
+        "realtime": false
       }
     },
     "perplexity": {
@@ -273,6 +319,8 @@
       "capabilities": {
         "tool_calling": false,
         "web_search": true,
+        "reasoning_effort": true,
+        "reasoning_effort_note": "Maps to the reasoning_effort field. Verified live 2026-08-14 on sonar-reasoning-pro.",
         "schema_enforcement": "json_schema",
         "sampling_constraints": [],
         "verified": "2026-08-09",
@@ -289,7 +337,10 @@
           "url": false
         },
         "embeddings": false,
-        "image_generation": false
+        "image_generation": false,
+        "speech_generation": false,
+        "video_generation": false,
+        "realtime": false
       }
     },
     "moonshot": {
@@ -315,7 +366,9 @@
       "provider_request_id_header": null,
       "capabilities": {
         "tool_calling": true,
-        "web_search": false,
+        "web_search": true,
+        "reasoning_effort": false,
+        "reasoning_effort_note": "No effort control could be verified: kimi-thinking-preview answered 404 on the test account (2026-08-14).",
         "schema_enforcement": "json_schema",
         "sampling_constraints": [
           {
@@ -341,8 +394,89 @@
           "url": false
         },
         "embeddings": false,
-        "image_generation": false
+        "image_generation": false,
+        "speech_generation": false,
+        "video_generation": false,
+        "realtime": false,
+        "web_search_note": "Served by the $web_search builtin_function on chat completions: the search runs server-side, but the model answers finish_reason tool_calls and the caller must echo the call's arguments back as a tool message before the answer arrives. KeyCall runs that echo loop internally, so web_search=True behaves like every other provider. No structured citations are returned. Verified live 2026-08-14 on kimi-k2.6."
       }
+    },
+    "xai": {
+      "aliases": [
+        "grok",
+        "x-ai"
+      ],
+      "protocol": "openai-compatible",
+      "base_url": "https://api.x.ai",
+      "auth": {
+        "scheme": "bearer",
+        "header": "Authorization"
+      },
+      "operations": {
+        "list_models": {
+          "method": "GET",
+          "path": "/v1/models"
+        },
+        "text_generation": {
+          "method": "POST",
+          "path": "/v1/chat/completions"
+        },
+        "image_generation": {
+          "method": "POST",
+          "path": "/v1/images/generations"
+        },
+        "video_generation": {
+          "method": "POST",
+          "path": "/v1/videos/generations"
+        },
+        "video_status": {
+          "method": "GET",
+          "path": "/v1/videos/{request_id}"
+        },
+        "responses_generation": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "realtime": {
+          "method": "WS",
+          "path": "/v1/realtime?model={model}"
+        }
+      },
+      "provider_request_id_header": "x-request-id",
+      "capabilities": {
+        "tool_calling": true,
+        "web_search": true,
+        "web_search_note": "Server-side web search rides POST /v1/responses (the OpenAI Responses shape), with url_citation annotations and the same streaming event names as OpenAI, not chat completions. The old Live Search (search_parameters) answers 410 deprecated. Both verified live 2026-08-14.",
+        "reasoning_effort": true,
+        "reasoning_effort_note": "Rides POST /v1/responses as reasoning.effort, which binds (reasoning token counts follow the level, measured 2026-08-14); the chat-completions reasoning_effort field answers 200 without binding, so requests naming an effort are routed to the responses surface.",
+        "schema_enforcement": "native",
+        "sampling_constraints": [],
+        "verified": "2026-08-14",
+        "image_input": {
+          "bytes": true,
+          "url": true
+        },
+        "image_input_note": "Inputs below 512 total pixels are refused with code invalid_image.",
+        "audio_input": {
+          "bytes": false,
+          "url": false
+        },
+        "file_input": {
+          "bytes": false,
+          "url": false
+        },
+        "embeddings": false,
+        "embeddings_note": "POST /v1/embeddings exists but no embedding model is offered; language models are refused by name. Verified live 2026-08-13.",
+        "image_generation": true,
+        "speech_generation": false,
+        "video_generation": true,
+        "video_download_note": "Finished videos are served from vidgen.x.ai as unauthenticated, unsigned URLs: the URL itself is the only secret, and no credential is ever sent to that host.",
+        "realtime": true,
+        "realtime_note": "Grok Voice speaks the Realtime API with the pre-GA session shape (modalities, not output_modalities) and is voice-only: a text-modality update is echoed as accepted but the answer still arrives as audio plus transcript, and no usage is reported. Verified live 2026-08-14."
+      },
+      "video_download_hosts": [
+        "vidgen.x.ai"
+      ]
     }
   }
 }

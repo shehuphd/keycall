@@ -546,3 +546,175 @@ def test_gemini_close_without_finish_reason_is_truncation():
     ):
         list(stream)
     assert excinfo.value.code is ErrorCode.NETWORK_ERROR
+
+
+def test_reasoning_deltas_surface_as_events_not_silence():
+    """grok-4.6 reasoned for 40 seconds before its first answer token
+    (observed 2026-08-14); a consumer rendering only TextDelta sees a
+    hang. The trace streams as ReasoningDelta events instead."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            (None, {"object": "chat.completion.chunk", "model": "grok-4.6",
+                    "choices": [{"index": 0, "delta": {"role": "assistant", "reasoning_content": "Thinking about"}}]}),
+            (None, {"object": "chat.completion.chunk", "model": "grok-4.6",
+                    "choices": [{"index": 0, "delta": {"reasoning_content": " the question."}}]}),
+            (None, {"object": "chat.completion.chunk", "model": "grok-4.6",
+                    "choices": [{"index": 0, "delta": {"content": "Hi."}, "finish_reason": None}]}),
+            (None, {"object": "chat.completion.chunk", "model": "grok-4.6",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}}),
+            (None, "[DONE]"),
+        ]
+        return httpx.Response(200, content=sse(*chunks), headers={"content-type": "text/event-stream"})
+
+    client = make_client("xai", handler)
+    kinds = []
+    reasoning = []
+    with client.stream_text(model="grok-4.6", messages=[Message(role="user", content=[TextInput(text="Hi")])]) as stream:
+        for event in stream:
+            kinds.append(event.kind)
+            if event.kind == "reasoning_delta":
+                reasoning.append(event.text)
+        result = stream.result()
+    client.close()
+
+    assert "reasoning_delta" in kinds
+    assert "".join(reasoning) == "Thinking about the question."
+    assert result.text == "Hi."
+    assert kinds.index("reasoning_delta") < kinds.index("text_delta"), (
+        "reasoning precedes the answer, which is why surfacing it prevents a perceived hang"
+    )
+
+
+def test_xai_stream_requests_usage_in_the_final_chunk():
+    """stream_options.include_usage makes xAI report usage on the last
+    chunk (verified live 2026-08-14); without it the stream ends with
+    usage unreported."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        chunks = [
+            (None, {"object": "chat.completion.chunk", "model": "grok-4.6",
+                    "choices": [{"index": 0, "delta": {"content": "Hi."}, "finish_reason": "stop"}]}),
+            (None, {"object": "chat.completion.chunk", "model": "grok-4.6", "choices": [],
+                    "usage": {"prompt_tokens": 209, "completion_tokens": 7, "total_tokens": 380}}),
+            (None, "[DONE]"),
+        ]
+        return httpx.Response(200, content=sse(*chunks), headers={"content-type": "text/event-stream"})
+
+    client = make_client("xai", handler)
+    with client.stream_text(model="grok-4.6", messages=[Message(role="user", content=[TextInput(text="Hi")])]) as stream:
+        for _ in stream:
+            pass
+        result = stream.result()
+    client.close()
+    assert captured["body"]["stream_options"] == {"include_usage": True}
+    assert result.usage.total_tokens == 380
+
+
+def test_xai_web_search_streams_through_the_responses_assembler():
+    """With web_search on, the stream is OpenAI Responses events — same
+    names as OpenAI's own, verified live 2026-08-14 — including reasoning
+    summary deltas, which surface as ReasoningDelta."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/responses"
+        body = json.loads(request.content)
+        assert body["stream"] is True
+        assert {"type": "web_search"} in body["tools"]
+        final = {
+            "id": "resp-1",
+            "model": "grok-4.6",
+            "status": "completed",
+            "output": [
+                {"type": "message", "content": [{
+                    "type": "output_text",
+                    "text": "stream test ok",
+                    "annotations": [{"type": "url_citation", "url": "https://example.com/", "title": "Example"}],
+                }]},
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        }
+        chunks = [
+            (None, {"type": "response.created", "response": {"model": "grok-4.6"}}),
+            (None, {"type": "response.reasoning_summary_text.delta", "delta": "Checking."}),
+            (None, {"type": "response.output_text.delta", "delta": "stream test ok"}),
+            (None, {"type": "response.completed", "response": final}),
+        ]
+        return httpx.Response(200, content=sse(*chunks), headers={"content-type": "text/event-stream"})
+
+    client = make_client("xai", handler)
+    kinds = []
+    with client.stream_text(
+        model="grok-4.6",
+        messages=[Message(role="user", content=[TextInput(text="Hi")])],
+        web_search=True,
+    ) as stream:
+        for event in stream:
+            kinds.append(event.kind)
+        result = stream.result()
+    client.close()
+
+    assert "reasoning_delta" in kinds
+    assert "unknown" not in kinds, "reasoning summary events must not surface as unknown"
+    assert result.text == "stream test ok"
+    assert [c.url for c in result.citations] == ["https://example.com/"]
+    assert result.usage.total_tokens == 15
+
+
+def test_moonshot_searched_stream_chains_rounds_into_one_stream():
+    """Moonshot's $web_search echo happens mid-stream: round one ends
+    finish_reason tool_calls, KeyCall opens the echo round on the same
+    logical stream, and the caller sees one stream — no builtin tool
+    events, one finish, text from the answering round, usage summed."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        if len(calls) == 1:
+            body = sse(
+                (None, {
+                    "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [
+                        {"index": 0, "id": "ws_1", "type": "function",
+                         "function": {"name": "$web_search", "arguments": ""}}]}}],
+                }),
+                (None, {
+                    "choices": [{"index": 0, "delta": {"tool_calls": [
+                        {"index": 0, "function": {"arguments": "{\"search_result\": {\"search_id\": \"s-9\"}}"}}]},
+                        "finish_reason": "tool_calls"}],
+                }),
+                (None, {"choices": [], "usage": {"prompt_tokens": 27, "completion_tokens": 1, "total_tokens": 28}}),
+                (None, "[DONE]"),
+            )
+        else:
+            body = sse(
+                (None, {"choices": [{"index": 0, "delta": {"content": "August "}}]}),
+                (None, {"choices": [{"index": 0, "delta": {"content": "14, 2026."}, "finish_reason": "stop"}]}),
+                (None, {"choices": [], "usage": {"prompt_tokens": 8279, "completion_tokens": 40, "total_tokens": 8319}}),
+                (None, "[DONE]"),
+            )
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+
+    client = make_client("moonshot", handler)
+    with client.stream_text(
+        model="kimi-k2.6",
+        messages=[Message(role="user", content=[TextInput(text="date?")])],
+        web_search=True,
+    ) as stream:
+        events = list(stream)
+        result = stream.result()
+    client.close()
+
+    assert len(calls) == 2, "the echo round must ride the same logical stream"
+    tool_message = next(m for m in calls[1]["messages"] if m["role"] == "tool")
+    assert json.loads(tool_message["content"])["search_result"] == {"search_id": "s-9"}
+
+    kinds = [e.kind for e in events]
+    assert "tool_call_started" not in kinds, "the builtin handshake is not the caller's"
+    assert "tool_call_complete" not in kinds
+    assert kinds.count("stream_finish") == 1
+    assert "".join(e.text for e in events if e.kind == "text_delta") == "August 14, 2026."
+    assert result.text == "August 14, 2026."
+    assert result.usage.total_tokens == 28 + 8319

@@ -296,6 +296,11 @@ class AnthropicAdapter(ProviderAdapter):
         if system_texts:
             body["system"] = "\n\n".join(system_texts)
         body.update(self.sampling_fields(request))
+        if request.reasoning_effort is not None:
+            # Anthropic's control is output_config.effort; a top-level
+            # `effort` field is refused with "Extra inputs are not
+            # permitted" (live-verified 2026-08-14 on claude-opus-4-5).
+            body["output_config"] = {"effort": request.reasoning_effort}
         tools: list[dict[str, Any]] = [
             {
                 "name": tool.name,
