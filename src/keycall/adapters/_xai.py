@@ -16,6 +16,9 @@ compat assembler already handles for DeepSeek). What needs an override:
   takes the same detour: chat completions answers 200 to the field but
   reasoning token counts do not follow the value, while the responses
   route's ``reasoning.effort`` binds (both measured live 2026-08-14).
+- Model listing appends Grok Voice from the catalog: GET /v1/models
+  doesn't list it (checked live 2026-08-15), so a key with realtime
+  access would otherwise show none.
 - Video generation is the three-phase job lifecycle:
   ``POST /v1/videos/generations`` answers ``{"request_id": ...}``
   immediately, ``GET /v1/videos/{request_id}`` reports ``pending`` /
@@ -32,11 +35,11 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import quote
 
-from .._enums import Operation
+from .._enums import ModelCategory, Operation
 from .._errors import ErrorCode, KeyCallError
 from .._sanitize import safe_request_id
 from .._transport import DownloadPlan, RequestSpec
-from .._types import InvocationResult, TextGenerationRequest, Usage, VideoJob
+from .._types import InvocationResult, Model, TextGenerationRequest, Usage, VideoJob
 from ._base import StreamAssembler
 from ._openai import OpenAIAdapter
 from ._openai_compat import OpenAICompatibleAdapter
@@ -100,6 +103,34 @@ class XAIAdapter(OpenAICompatibleAdapter):
             round_trip_duration_ms=round_trip_duration_ms,
             model=model,
         )
+
+    # --- model listing ---
+
+    def parse_model_page(self, payload: Any) -> tuple[list[Model], RequestSpec | None]:
+        # Grok Voice is absent from GET /v1/models (checked live
+        # 2026-08-15, missing from a 12-model response) despite being a
+        # documented, live-verified model, so it never surfaces from
+        # discovery alone. Appended from the catalog instead, the same
+        # way Perplexity's fully undiscoverable list is built, except
+        # here only to cover the one model live discovery misses.
+        models, next_spec = super().parse_model_page(payload)
+        seen = {model.id for model in models}
+        for entry in self.resolved.catalog_models:
+            model_id = str(entry["id"])
+            if model_id in seen:
+                continue
+            models.append(
+                Model(
+                    id=model_id,
+                    provider=self.resolved.provider,
+                    categories=frozenset(
+                        ModelCategory(category) for category in entry.get("categories", [])
+                    ),
+                    classification_source="keycall_catalog",
+                    warnings=("not listed by this key's model endpoint; carried from KeyCall's catalog",),
+                )
+            )
+        return models, next_spec
 
     # --- realtime ---
 

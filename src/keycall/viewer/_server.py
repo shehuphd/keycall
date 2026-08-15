@@ -13,6 +13,8 @@ Routes (all under the base "/"):
   POST /api/generate             {target, model, prompt, ...} -> InvocationResult
   POST /api/generate/stream      same body -> SSE events ending in a result or error
   POST /api/generate/image       {target, model, prompt} -> InvocationResult
+  GET  /api/realtime?target=&model=&voice=&instructions=   WebSocket upgrade;
+                                  bridges the browser to a realtime session
 
 Auth: a token is required on every /api/* request. Unlike TraceAct's opt-in
 token, it is mandatory here: this server holds live credentials and can make
@@ -59,9 +61,10 @@ from urllib.parse import parse_qs, urlparse
 
 from .. import __version__
 from .._sources import Target
-from . import _api
+from . import _api, _realtime_bridge
 from ._registry import Registry
 from ._traces import TraceLog
+from ._ws import WebSocketConnection, accept_key
 from .auth import Token
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -101,6 +104,10 @@ _COOKIE_NAME = "keycall_viewer_token"
 _MAX_BODY_BYTES = 8 * 1024 * 1024
 _MAX_VERIFY_ATTEMPTS_DEFAULT = 8
 _MAX_VERIFY_ATTEMPTS = 32
+# Standing instructions for a realtime session; generous enough for a
+# full system prompt, bounded so a malformed query string can't be used
+# to push an unbounded string through a single request line.
+_MAX_REALTIME_INSTRUCTIONS = 4000
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -200,7 +207,7 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         try:
             return self._registry.client(target_id).provider
-        except Exception:  # noqa: BLE001 — a nameless trace row beats a lost one
+        except Exception:  # noqa: BLE001, a nameless trace row beats a lost one
             return None
 
     def _record(
@@ -366,6 +373,79 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         return True
 
+    def _handle_realtime(self, parsed: Any) -> None:
+        """Upgrade to a WebSocket and bridge it to a realtime session for
+        as long as the browser tab keeps it open. Token auth already ran
+        in do_GET, same as every other /api/ route; this adds an Origin
+        check on top because unlike a plain GET, this opens a live,
+        billable connection that stays open until something closes it,
+        the same reasoning _csrf_safe applies to a state-changing POST.
+        """
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in self._self_origins():
+            self._send_json({"error": {"code": "forbidden", "message": "origin rejected"}}, 403)
+            return
+
+        if (self.headers.get("Upgrade") or "").lower() != "websocket":
+            self._send_json(
+                {"error": {"code": "bad_request", "message": "expected a WebSocket upgrade"}}, 400
+            )
+            return
+        sec_key = self.headers.get("Sec-WebSocket-Key")
+        if not sec_key:
+            self._send_json(
+                {"error": {"code": "bad_request", "message": "missing Sec-WebSocket-Key"}}, 400
+            )
+            return
+
+        params = parse_qs(parsed.query)
+        target_id = self._target_id(params)
+        model = (params.get("model") or [None])[0]
+        if target_id is None or not model:
+            self._send_json(
+                {"error": {"code": "bad_request", "message": "target and model required"}}, 400
+            )
+            return
+        voice = (params.get("voice") or [None])[0]
+        instructions = (params.get("instructions") or [None])[0]
+        if instructions is not None and len(instructions) > _MAX_REALTIME_INSTRUCTIONS:
+            self._send_json(
+                {"error": {"code": "bad_request", "message": "instructions too long"}}, 400
+            )
+            return
+        try:
+            client = self._registry.client(target_id)
+        except KeyError:
+            self._send_json({"error": {"code": "bad_request", "message": "unknown target"}}, 400)
+            return
+
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept_key(sec_key))
+        self.end_headers()
+        # The base class must not try to read another HTTP request off
+        # this socket once we start speaking WebSocket frames over it.
+        self.close_connection = True
+
+        wire = WebSocketConnection(self.rfile, self.wfile)
+        started = time.monotonic()
+        try:
+            _realtime_bridge.run_bridge(
+                client, wire, model=model, voice=voice, instructions=instructions
+            )
+            status = "ok"
+        except Exception:  # noqa: BLE001, a nameless trace row beats a lost one
+            status = "error: internal"
+        finally:
+            self._record(
+                route="/api/realtime",
+                method="GET",
+                started=started,
+                body={"target": target_id, "model": model},
+                status=status,
+            )
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         route = parsed.path
@@ -391,6 +471,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(_api.list_targets(self._registry))
         elif route == "/api/traces":
             self._send_json({"traces": self.server.trace_log.entries()})
+        elif route == "/api/realtime":
+            self._handle_realtime(parsed)
         elif route == "/api/models":
             params = parse_qs(parsed.query)
             target_id = self._target_id(params)
@@ -456,6 +538,10 @@ class _Handler(BaseHTTPRequestHandler):
         if route == "/api/traces/clear":
             self.server.trace_log.clear()
             self._send_json({"cleared": True})
+            return
+
+        if route == "/api/settings":
+            self._send_json(_api.set_settings(self._registry, body))
             return
 
         target_id = body.get("target")

@@ -46,6 +46,52 @@ def test_reasoning_effort_refused_where_no_binding_control_exists(provider):
         assert supported in excinfo.value.message
 
 
+@pytest.mark.parametrize("provider", ["anthropic", "gemini", "perplexity", "xai"])
+def test_minimal_effort_refused_on_every_provider_but_openai(provider):
+    """'minimal' is narrower than the reasoning_effort capability flag:
+    OpenAI's Responses API is the only place it's live-verified. A
+    provider that supports 'low'/'medium'/'high' must still refuse
+    'minimal' rather than mapping it to a level its own control doesn't
+    define."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must fail before any network call")
+
+    client = make_client(provider, handler)
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(
+            model="some-model", messages=simple_messages(), reasoning_effort="minimal"
+        )
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+    assert "minimal" in excinfo.value.message
+    assert "openai" in excinfo.value.message
+
+
+def test_minimal_effort_accepted_on_openai():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-5-nano",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "ok"}]}
+                ],
+                "usage": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
+            },
+        )
+
+    client = make_client("openai", handler)
+    result = client.generate_text(
+        model="gpt-5-nano", messages=simple_messages(), reasoning_effort="minimal"
+    )
+    assert result.text == "ok"
+    assert seen[0]["reasoning"] == {"effort": "minimal"}
+
+
 def test_reasoning_effort_refused_for_custom_targets():
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("must fail before any network call")

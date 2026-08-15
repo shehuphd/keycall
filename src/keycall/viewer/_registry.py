@@ -62,6 +62,17 @@ class _Entry:
     fetch_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
+# The provider read timeout the viewer starts with, and the range the
+# settings endpoint accepts. Longer than the library's 60s default because
+# the Playground sends image generation, which can run past a minute with
+# nothing on the wire until the finished picture (xAI's grok-imagine
+# crossed 60s live, 2026-08-15); the page shows elapsed time, so the wait
+# is visible rather than silent.
+DEFAULT_READ_TIMEOUT = 180
+MIN_READ_TIMEOUT = 60
+MAX_READ_TIMEOUT = 300
+
+
 class Registry:
     """Owns every loaded credential for the life of the viewer process."""
 
@@ -72,7 +83,19 @@ class Registry:
         self._entries: dict[int, _Entry] = {}
         self._next_id = 0
         self._httpx_transport = httpx_transport
+        self._read_timeout = DEFAULT_READ_TIMEOUT
+        self._retired: list[KeyCall] = []
         self.add_targets(targets)
+
+    def _open_client(self, target: Target) -> KeyCall:
+        return KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+            read_timeout=float(self._read_timeout),
+            httpx_transport=self._httpx_transport,
+        )
 
     def add_targets(self, targets: list[Target]) -> None:
         """Open a client per target and register it. Raises KeyCallError if
@@ -83,18 +106,7 @@ class Registry:
         clients: list[tuple[Target, KeyCall]] = []
         try:
             for target in targets:
-                clients.append(
-                    (
-                        target,
-                        KeyCall(
-                            provider=target.provider,
-                            api_key=target.key,
-                            protocol=target.protocol,
-                            base_url=target.base_url,
-                            httpx_transport=self._httpx_transport,
-                        ),
-                    )
-                )
+                clients.append((target, self._open_client(target)))
         except BaseException:
             for _, client in clients:
                 client.close()
@@ -103,6 +115,28 @@ class Registry:
             for target, client in clients:
                 self._entries[self._next_id] = _Entry(target=target, client=client)
                 self._next_id += 1
+
+    @property
+    def read_timeout(self) -> int:
+        return self._read_timeout
+
+    def set_read_timeout(self, seconds: int) -> None:
+        """Apply a new provider read timeout to every loaded key. The
+        timeout is fixed per client at construction, so each entry's client
+        is rebuilt with the new value; ids, targets, and cached model
+        discovery all stay, only the HTTP client is replaced. A request
+        already in flight keeps the timeout it started with: the replaced
+        client is retired, not closed, precisely because the natural moment
+        to raise this setting is while a slow draw is still running, and
+        closing would abort it. Retired clients are closed on shutdown."""
+        with self._lock:
+            self._read_timeout = seconds
+            entries = list(self._entries.values())
+        for entry in entries:
+            fresh = self._open_client(entry.target)
+            with self._lock:
+                self._retired.append(entry.client)
+                entry.client = fresh
 
     def views(self) -> list[TargetView]:
         with self._lock:
@@ -166,5 +200,9 @@ class Registry:
     def close(self) -> None:
         with self._lock:
             entries = list(self._entries.values())
+            retired = self._retired
+            self._retired = []
         for entry in entries:
             entry.client.close()
+        for client in retired:
+            client.close()

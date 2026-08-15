@@ -2,12 +2,12 @@
 
 One consistent interface for validating AI-provider API keys, listing and filtering the models available to them, and making normalized calls, so every product stops rebuilding the same model-picker filters and provider wrappers.
 
-**Status: 1.0.** Key validation, model listing and filtering, text
-generation, streaming, tool calling, native web search with normalized
-citations, structured JSON output, embeddings, image, speech, realtime
-voice, and video generation, and image, audio, and document input all
-work and are live-verified against every provider that supports them.
-The API is stable.
+Key validation, model listing and filtering, text generation, streaming,
+tool calling, native web search with normalized citations, structured
+JSON output, embeddings, image, speech, realtime voice, and video
+generation, and image, audio, and document input all work and are
+live-verified against every provider that supports them. The API is
+stable.
 
 Docs: [USAGE.md](https://github.com/shehuphd/keycall/blob/main/USAGE.md) for the full API and CLI reference · [ARCHITECTURE.md](https://github.com/shehuphd/keycall/blob/main/ARCHITECTURE.md) for the layer diagram and component contracts · [CHANGELOG.md](https://github.com/shehuphd/keycall/blob/main/CHANGELOG.md) for version history.
 
@@ -50,9 +50,9 @@ keycall view --provider openai --source env:OPENAI_API_KEY
 That opens a local web app in your browser with your key already loaded: a
 dashboard that checks it live, a browsable model list with category filters,
 and a Playground where you can chat, show a model a picture, record a voice
-message straight from the page, attach a PDF, offer it a tool, or have it draw
-you something. Keys stay in the local server process and never reach the
-browser.
+message straight from the page, hold a live voice conversation, attach a
+PDF, offer it a tool, or have it draw you something. Keys stay in the local
+server process and never reach the browser.
 
 Got several keys? Put them in a file and load them all at once — see
 [`keycall-test-keys.example.toml`](https://github.com/shehuphd/keycall/blob/main/keycall-test-keys.example.toml)
@@ -206,9 +206,11 @@ it from the address bar, so the secret never reaches page script or browser
 history, and state-changing requests are CSRF-checked. Inside: a dashboard
 with live key
 checks, a sortable model browser, a Playground (text, pictures in and out,
-recordings, documents, tool calling, web search), and a verify report that
-walks every key. An attachment the selected key can't send is turned off with
-a line naming a key that can.
+recordings, live voice conversations, documents, tool calling, web search),
+a verify report that walks every key, and a Traces tab logging every
+request this run has made (timing and outcome only, never prompts or
+replies), searchable and sortable by column. An attachment the selected
+key can't send is turned off with a line naming a key that can.
 
 `keycall verify` takes the same sources as the viewer — TXT, JSON, or TOML
 files, an `env:VAR_NAME` reference, or an interactive prompt — and `--generate`

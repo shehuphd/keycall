@@ -85,6 +85,7 @@ select,
 input[type=text],
 input[type=number],
 input[type=password],
+input[type=search],
 textarea,
 button {
   font: inherit;
@@ -96,6 +97,7 @@ button {
 }
 textarea { width: 100%; resize: vertical; }
 input[type=text], input[type=password] { flex: 1; min-width: 12rem; }
+input[type=search] { min-width: 14rem; }
 button {
   background: var(--accent);
   color: var(--accent-fg);
@@ -124,6 +126,11 @@ label { font-size: 0.9rem; display: inline-flex; gap: 0.35rem; align-items: cent
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
 th { color: var(--muted); font-weight: 500; }
+/* A header that sorts says so on hover and wears the direction it holds. */
+th[data-sort] { cursor: pointer; user-select: none; }
+th[data-sort]:hover { color: var(--fg); }
+th.sorted-asc::after { content: " ↑"; }
+th.sorted-desc::after { content: " ↓"; }
 tbody tr.clickable { cursor: pointer; }
 tbody tr.clickable:hover { background: var(--card); }
 
@@ -335,6 +342,16 @@ a { color: var(--accent); }
 .pg-row.stacked { grid-template-columns: 1fr; gap: 0.35rem; }
 .pg-row label { color: var(--muted); font-size: 0.85rem; }
 .pg-row select, .pg-row input { width: 100%; }
+/* The timeout slider row carries a third column: the live value readout. */
+#pg-timeout-row { grid-template-columns: 8.5rem minmax(0, 1fr) auto; }
+#pg-timeout { accent-color: var(--accent); }
+#pg-timeout-value {
+  color: var(--muted);
+  font-size: 0.85rem;
+  min-width: 2.8rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 .pg-row-end { display: flex; justify-content: flex-end; margin-top: 0.5rem; }
 
 /* Recording */
@@ -367,6 +384,36 @@ a { color: var(--accent); }
 }
 .pg-rec-time { font-variant-numeric: tabular-nums; font-size: 0.9rem; min-width: 2.5rem; }
 .pg-wave { flex: 1; height: 36px; color: var(--accent); }
+
+/* Wraps the composer during a voice conversation: same row shape as the
+   ordinary composer (textarea, then the mic and Send trailing to the
+   right, mic on the left of Send), so this reads as the same kind of
+   control the rest of the Playground already uses, not a separate
+   language for this one task. */
+.pg-voice-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+.pg-voice-status { font-size: 0.85rem; color: var(--muted); }
+#pg-voice-composer { margin-top: 0; }
+#pg-voice-composer .icon-btn {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* An active session, not a button being held: filled and glowing for as
+   long as the session is open, since a tap starts it and a tap ends it. */
+#pg-voice-composer .icon-btn.live {
+  background: var(--accent);
+  color: var(--accent-fg);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+/* Mic level while talking, playback level while the model answers, or
+   whichever is louder when both are live at once: one canvas, so the
+   panel shows whether audio is moving instead of asking you to trust a
+   status line. */
+#pg-voice-wave { color: var(--accent); }
 
 /* What is about to be sent, shown above the box that sends it. */
 .pg-attached {
@@ -499,6 +546,7 @@ a { color: var(--accent); }
 .bubble .result-text { white-space: pre-wrap; }
 
 .pg-composer {
+  position: relative;
   display: flex;
   gap: 0.75rem;
   align-items: flex-end;
@@ -586,20 +634,27 @@ a { color: var(--accent); }
    to read as one rather than crowding the first card. */
 #verify-status { margin: 0.75rem 0 1rem; }
 
-/* Transient notice for a state change the page made on the user's behalf. */
+/* Transient notice for a state change the page made on the user's behalf.
+   Anchored to the composer, not the viewport: a viewport-fixed corner
+   only stays empty when the window happens to be wide enough that the
+   page's own max-width leaves a gutter there, which isn't every window.
+   Floating just above the composer clears the Send/New chat buttons and
+   the input at any width, because it's positioned relative to them
+   rather than guessing where they'll be. */
 #toast {
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
+  position: absolute;
+  bottom: calc(100% + 12px);
+  right: 0;
+  max-width: 360px;
   background: var(--accent);
   color: var(--accent-fg);
   padding: 10px 18px;
   border-radius: 8px;
   font-size: 14px;
   opacity: 0;
+  transform: translateY(8px);
   pointer-events: none;
-  transition: opacity 0.3s ease;
+  transition: opacity 0.3s ease, transform 0.3s ease;
   z-index: 100;
 }
-#toast.show { opacity: 1; }
+#toast.show { opacity: 1; transform: translateY(0); }

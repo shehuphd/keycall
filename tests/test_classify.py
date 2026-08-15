@@ -19,6 +19,7 @@ CASES = [
     ("tts-1-hd", ModelCategory.SPEECH_GENERATION),
     ("gpt-4o-mini-tts", ModelCategory.SPEECH_GENERATION),
     ("gpt-4o-realtime-preview", ModelCategory.REALTIME),
+    ("grok-voice-latest", ModelCategory.REALTIME),
     ("dall-e-3", ModelCategory.IMAGE_GENERATION),
     ("gpt-image-1", ModelCategory.IMAGE_GENERATION),
     ("imagen-3.0-generate-002", ModelCategory.IMAGE_GENERATION),

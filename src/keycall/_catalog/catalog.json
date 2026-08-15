@@ -476,6 +476,12 @@
       },
       "video_download_hosts": [
         "vidgen.x.ai"
+      ],
+      "models": [
+        {
+          "id": "grok-voice-latest",
+          "categories": ["realtime"]
+        }
       ]
     }
   }

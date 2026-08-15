@@ -479,10 +479,14 @@ result = client.generate_text(
 ```
 
 The value is passed in the provider's own vocabulary (commonly `"low"` /
-`"medium"` / `"high"`; OpenAI also takes `"minimal"`) and is never
-converted, so an unsupported value gets the provider's own typed error.
-Each mapping was verified live to bind — reasoning-token counts follow
-the requested level:
+`"medium"` / `"high"`) and is never converted, so a value the provider
+itself rejects surfaces as that provider's own typed error. `"minimal"`
+is the one
+exception: it's live-verified on OpenAI's Responses API alone, so
+KeyCall refuses it with `UNSUPPORTED_OPERATION` before any network call
+on every other provider, rather than letting it reach a native control
+that doesn't define that level. Each supported mapping was verified live
+to bind: reasoning-token counts follow the requested level.
 
 | Provider | Native control |
 |---|---|
@@ -1006,16 +1010,38 @@ Five tabs:
   attachment kind the selected key can't send is disabled with a line
   naming which of your keys to use instead, read from the same catalog the
   adapters gate on. Switch the task to **Make a picture** to call an image
-  model instead.
+  model instead. A Reasoning effort select sends `reasoning_effort`,
+  gated per key the same way as the other Extras. The reply budget field
+  starts at a suggestion computed from what's selected: reasoning effort,
+  web search, tool offering, and attachments all tend to spend more
+  tokens than a bare reply, so the suggestion rises with them and drops
+  back to a low floor when nothing token-intensive is on. Typing a value
+  in by hand replaces the suggestion for the rest of the conversation;
+  New chat resumes suggesting. A Timeout slider sets how many seconds
+  the viewer waits on a provider before giving up (60 to 300, default
+  180); pictures routinely need more than a text reply.
+  The task drives the Key select: picking
+  a task narrows the list to keys whose own model list has at least one
+  model for it, so a key that can't serve the task is never offered.
+  Switch the task to **Have a voice conversation** for a live session
+  on a realtime-capable key (OpenAI, xAI, Gemini): the viewer's server
+  bridges a WebSocket in the browser
+  to a `realtime()` session, so tapping the microphone once starts
+  streaming caller audio and a second tap ends the session; the model's
+  reply plays back as it arrives either way. Standing instructions above
+  become the session's system prompt, set once when the session starts;
+  ending the session or leaving voice mode closes the connection.
 - **Verify** — run the same walk as `keycall verify` (optionally with
   generation) across every target and read the per-model attempt report.
 - **Traces** — every request this viewer run has made, newest first: which
   key and model, how long it took, and how it ended. When a button seems
   slow or silent, the answer is here — a reasoning model can think for
   most of a minute before its first visible token, and the trace shows
-  that time. Prompts and replies are never recorded, only timing and
-  outcomes, and the log lives in the server process's memory for the run;
-  Clear traces wipes it without a restart.
+  that time. A search box filters rows as you type, and clicking a
+  column header sorts by it, in either direction. Prompts and replies
+  are never recorded, only timing and outcomes, and the log lives in the
+  server process's memory for the run; Clear traces wipes it without a
+  restart.
 
 Options: `--host` (default `127.0.0.1`), `--port` (default: pick a free one),
 `--no-open` to skip the browser launch, `--reload` to restart the server

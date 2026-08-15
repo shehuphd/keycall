@@ -18,7 +18,10 @@ _RULES: tuple[tuple[tuple[str, ...], ModelCategory], ...] = (
     (("embed",), ModelCategory.EMBEDDING),
     (("whisper", "transcribe"), ModelCategory.TRANSCRIPTION),
     (("tts", "speech"), ModelCategory.SPEECH_GENERATION),
-    (("realtime",), ModelCategory.REALTIME),
+    # xAI's realtime model is "grok-voice-latest", with no "realtime" substring
+    # and no provider metadata to fall back on (its /v1/models lists bare
+    # ids), so the identifier is the only signal available for it.
+    (("realtime", "voice"), ModelCategory.REALTIME),
     (("dall-e", "image", "imagen", "flux"), ModelCategory.IMAGE_GENERATION),
     (("sora", "veo", "imagine-video"), ModelCategory.VIDEO_GENERATION),
     # Ambiguous or out-of-taxonomy families stay unknown rather than

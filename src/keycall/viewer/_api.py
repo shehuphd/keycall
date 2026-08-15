@@ -33,7 +33,7 @@ from .._types import (
     ToolResult,
 )
 from .._verify_core import DEFAULT_ATTEMPTS, order_candidates, run_verify
-from ._registry import Registry
+from ._registry import MAX_READ_TIMEOUT, MIN_READ_TIMEOUT, Registry
 
 __all__ = [
     "add_key",
@@ -45,6 +45,7 @@ __all__ = [
     "generate_image",
     "generate_stream_events",
     "list_targets",
+    "set_settings",
     "verify_target",
 ]
 
@@ -79,6 +80,8 @@ def list_targets(registry: Registry) -> dict[str, Any]:
                 "web_search": caps.web_search,
                 "tool_calling": caps.tool_calling,
                 "image_generation": caps.image_generation,
+                "reasoning_effort": caps.reasoning_effort,
+                "realtime": caps.realtime,
             }
             for name in supported_providers()
             for caps in (resolve_provider(name).capabilities,)
@@ -86,7 +89,30 @@ def list_targets(registry: Registry) -> dict[str, Any]:
         # Every provider a key can be added for, straight from the catalog,
         # so the form's dropdown can't drift from what the library accepts.
         "providers": list(supported_providers()),
+        # The current provider read timeout, so the settings control shows
+        # what the server is holding rather than assuming its own default.
+        "read_timeout": registry.read_timeout,
     }
+
+
+def set_settings(registry: Registry, body: dict[str, Any]) -> dict[str, Any]:
+    """Apply viewer settings. Currently one: the provider read timeout,
+    an integer number of seconds within the accepted range."""
+    seconds = body.get("read_timeout")
+    if not isinstance(seconds, int) or isinstance(seconds, bool) or not (
+        MIN_READ_TIMEOUT <= seconds <= MAX_READ_TIMEOUT
+    ):
+        return {
+            "error": {
+                "code": "bad_request",
+                "message": (
+                    "read_timeout must be an integer number of seconds from "
+                    f"{MIN_READ_TIMEOUT} to {MAX_READ_TIMEOUT}"
+                ),
+            }
+        }
+    registry.set_read_timeout(seconds)
+    return {"read_timeout": seconds}
 
 
 def _model_dict(model: Any) -> dict[str, Any]:
@@ -354,6 +380,7 @@ def _generation_fields(body: dict[str, Any]) -> dict[str, Any] | None:
         "web_search": bool(body.get("web_search", False)),
         "tools": _parse_tools(body.get("tools")),
         "tool_choice": tool_choice,
+        "reasoning_effort": body.get("reasoning_effort") or None,
     }
 
 

@@ -5,6 +5,74 @@ All notable changes to KeyCall are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The Playground can hold a live voice conversation.** A new "Have a
+  voice conversation" task opens a WebSocket session against any
+  realtime-capable key (OpenAI, xAI, Gemini) through a bridge the
+  viewer's local server runs: tap the microphone once to start talking,
+  tap it again to end the session, or type a line instead and hear the
+  model's reply as it streams back. A waveform shows whichever of mic
+  and playback level is louder at the moment, a chime marks the moment
+  a session goes live, and (where the browser's own speech recognition
+  is available) a caption of what you're saying appears as you talk,
+  independent of what the provider itself hears. A status line explains
+  a barge-in as what it is, rather than leaving "interrupted" to read as
+  a failure. Standing instructions become the session's system prompt,
+  set once when the session starts. The task decides which keys the Key
+  select offers at all: only keys whose own model list has at least one
+  model for the task appear, checked per key rather than assumed from
+  the provider, and a task no loaded key can serve greys out. Ending the
+  session or switching away from voice mode closes the connection rather
+  than leaving one open behind a panel nothing points at.
+- **The Playground controls reasoning effort, and suggests a reply
+  budget to match.** A new Reasoning effort select (gated per key, like
+  every other Extra) sends `reasoning_effort` on the request. The reply
+  budget field now starts at a suggestion computed from what's selected:
+  reasoning effort, web search, tool offering, and attachments all spend
+  more hidden or synthesized tokens than a bare reply, so the suggestion
+  rises with them and settles back to a low floor when nothing
+  token-intensive is on. Typing into the field by hand turns the
+  suggestion off for the rest of the conversation; New chat turns it
+  back on. This exists because a reasoning-capable model can spend its
+  entire budget on invisible thinking before any answer text appears,
+  observed on gemini-3.5-flash, cut off at the old flat 2048 default
+  with no visible reply at all. The `minimal` level is OpenAI-only and
+  greys out on every other key, so the select never offers a value a
+  provider would refuse.
+- **The Traces table searches and sorts.** A search box filters rows as
+  you type, across every column, and each column header sorts on click,
+  ascending or descending. Time orders by request order and Took by the
+  raw milliseconds, so "1.29 s" sorts above "330 ms" instead of after it
+  alphabetically. Search and sort survive the tab's auto-refresh.
+
+### Fixed
+
+- **`reasoning_effort="minimal"` is refused before the network call on
+  every provider but OpenAI.** It was previously passed straight
+  through like every other level, so a caller targeting Gemini,
+  Anthropic, Perplexity, or xAI got that provider's own raw error
+  instead of a typed `UNSUPPORTED_OPERATION` naming the one provider
+  that accepts it.
+- **A realtime-capable Gemini or xAI key listed no models under the
+  `realtime` category.** Gemini's `bidiGenerateContent` method wasn't
+  mapped to a category, so its live-audio models fell back to the
+  identifier rule and read as ordinary text models instead. xAI's Grok
+  Voice isn't listed by `GET /v1/models` at all (checked live
+  2026-08-15), so no identifier rule could ever have found it; it's now
+  carried from the catalog, the same way Perplexity's fully
+  undiscoverable list already is.
+- **A slow picture could time out in the Playground.** The viewer's
+  clients used the library's 60-second read timeout, and an xAI
+  grok-imagine draw crossed it (56–70 s measured live 2026-08-15).
+  Viewer clients now default to 180 seconds, adjustable with a Timeout
+  slider in the Playground's left pane (60 to 300 seconds, applied to
+  every loaded key, validated server-side as well), and the drawing
+  bubble shows the same ticking elapsed clock the text stream already
+  had, so a long draw reads as in progress rather than stuck.
+
 ## [1.0.1] — 2026-08-14
 
 ### Fixed

@@ -174,6 +174,73 @@ def test_gemini_list_uses_provider_metadata_over_rules():
     assert model.context_limit == 1000000
 
 
+def test_gemini_list_classifies_a_bidi_only_model_as_realtime():
+    """A realtime-only model reports no generateContent at all, only the
+    bidi method, so this is provider metadata's own signal, not the
+    identifier-rule override path other non-text modalities take."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "name": "models/gemini-2.5-flash-native-audio-latest",
+                        "supportedGenerationMethods": ["bidiGenerateContent"],
+                    },
+                ]
+            },
+        )
+
+    from keycall import ModelCategory
+
+    client = KeyCall(
+        provider="gemini", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    discovery = client.list_models(categories={ModelCategory.REALTIME}, refresh=True)
+    client.close()
+    assert [m.id for m in discovery.models] == ["gemini-2.5-flash-native-audio-latest"]
+    assert discovery.models[0].classification_source == "provider_metadata"
+
+
+def test_xai_list_appends_grok_voice_from_the_catalog():
+    """Grok Voice is absent from GET /v1/models (checked live 2026-08-15),
+    so it has to be carried from the catalog or a realtime-capable key
+    would show no models at all under that category."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "grok-4"}, {"id": "grok-4-fast"}]},
+        )
+
+    from keycall import ModelCategory
+
+    client = KeyCall(provider="xai", api_key=CANARY, httpx_transport=httpx.MockTransport(handler))
+    discovery = client.list_models(categories=set(ModelCategory), refresh=True)
+    client.close()
+    voice = next(m for m in discovery.models if m.id == "grok-voice-latest")
+    assert ModelCategory.REALTIME in voice.categories
+    assert voice.classification_source == "keycall_catalog"
+    assert voice.warnings
+    # The two discovered models are untouched by the merge.
+    assert {m.id for m in discovery.models} == {"grok-4", "grok-4-fast", "grok-voice-latest"}
+
+
+def test_xai_list_does_not_duplicate_grok_voice_if_discovery_starts_listing_it():
+    from keycall import ModelCategory
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": "grok-voice-latest"}]})
+
+    client = KeyCall(provider="xai", api_key=CANARY, httpx_transport=httpx.MockTransport(handler))
+    discovery = client.list_models(categories={ModelCategory.REALTIME}, refresh=True)
+    client.close()
+    matches = [m for m in discovery.models if m.id == "grok-voice-latest"]
+    assert len(matches) == 1
+    assert matches[0].classification_source == "keycall_rule"
+
+
 def test_context_limit_reads_every_spelling_and_stays_none_otherwise():
     """Three providers report the input ceiling under three different
     names, and three report nothing. The normalizing layer's job is to read

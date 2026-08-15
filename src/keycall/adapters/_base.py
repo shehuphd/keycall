@@ -820,6 +820,21 @@ class ProviderAdapter(ABC):
                     provider=self.resolved.provider,
                     operation=Operation.TEXT_GENERATION.value,
                 )
+            # "minimal" is narrower than the reasoning_effort capability
+            # flag above: OpenAI's Responses API is the only place it's
+            # live-verified. Every other reasoning-capable provider maps
+            # the value straight through to its own native control, so
+            # "minimal" would reach the wire as a level that control does
+            # not define, refused live rather than caught here.
+            if request.reasoning_effort == "minimal" and self.resolved.provider != "openai":
+                raise KeyCallError(
+                    f"provider {self.resolved.provider!r} does not support the "
+                    "'minimal' reasoning effort; only openai does. Use 'low', "
+                    "'medium', or 'high' instead",
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    provider=self.resolved.provider,
+                    operation=Operation.TEXT_GENERATION.value,
+                )
         if (
             request.web_search
             and request.response_schema is not None

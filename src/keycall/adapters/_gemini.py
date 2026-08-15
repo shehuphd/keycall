@@ -82,6 +82,7 @@ _METHOD_CATEGORIES = {
     "embedText": ModelCategory.EMBEDDING,
     "predict": ModelCategory.IMAGE_GENERATION,
     "predictLongRunning": ModelCategory.VIDEO_GENERATION,
+    "bidiGenerateContent": ModelCategory.REALTIME,
 }
 
 

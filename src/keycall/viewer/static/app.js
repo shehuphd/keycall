@@ -182,11 +182,17 @@ async function refreshTargets() {
   TARGETS = data.targets || [];
   PROVIDERS_ACCEPTING = data.providers_accepting || {};
   PROVIDER_CAPABILITIES = data.provider_capabilities || {};
+  // Only overwrite the control when the server names a value: an older
+  // server process without the field must not blank or reset it.
+  if (Number.isInteger(data.read_timeout)) {
+    el("pg-timeout").value = data.read_timeout;
+    paintTimeoutLabel();
+  }
   fillProviderOptions(data.providers || []);
   const version = el("health").textContent.split(" ")[1] || "";
   el("health").textContent = `keycall ${version} · ${TARGETS.length} target(s)`;
   renderDashboard();
-  fillTargetSelects();
+  await fillTargetSelects();
   toggleEmptyState(TARGETS.length === 0);
   if (TARGETS.length) {
     await loadModels();          // fills the cache…
@@ -384,18 +390,95 @@ async function checkTarget(id, row) {
 
 // --- shared target selects --------------------------------------------------
 
-function fillTargetSelects() {
-  ["models-target", "pg-target"].forEach((selId) => {
-    const sel = el(selId);
-    clear(sel);
-    TARGETS.forEach((t) => {
-      const opt = document.createElement("option");
-      opt.value = t.id;
-      opt.textContent = `${t.name} (${t.provider})`;
-      sel.appendChild(opt);
-    });
+async function fillTargetSelects() {
+  const sel = el("models-target");
+  clear(sel);
+  TARGETS.forEach((t) => {
+    const opt = document.createElement("option");
+    opt.value = t.id;
+    opt.textContent = `${t.name} (${t.provider})`;
+    sel.appendChild(opt);
   });
+  await renderPlaygroundTargets();
   applyKeyGates();
+}
+
+// The model category the current task needs, or null for text (every
+// provider on file serves text models). The name doubles as the provider
+// capability flag, which the two share deliberately.
+function modeCategory(mode) {
+  return mode === "image" ? "image_generation" : mode === "voice" ? "realtime" : null;
+}
+
+// "targetId:category" -> whether that key's own model list has at least
+// one model of the category. Session-scoped, same as the refused-model
+// memory: what a key can reach changes with the account, not the page.
+const PG_KEY_HAS_MODELS = new Map();
+
+async function keyHasModels(id, category) {
+  const cacheKey = `${id}:${category}`;
+  if (PG_KEY_HAS_MODELS.has(cacheKey)) return PG_KEY_HAS_MODELS.get(cacheKey);
+  const data = await api(`/api/models?target=${id}&category=${category}`);
+  // An errored listing (bad credential, provider down) keeps the key
+  // visible: silently dropping it would read as the key vanishing, and
+  // the model picker names the error somewhere it can be acted on.
+  const has = data.error ? true : data.models.length > 0;
+  PG_KEY_HAS_MODELS.set(cacheKey, has);
+  return has;
+}
+
+// Guards against a task switch landing while a slower check for the
+// previous task is still in flight.
+let PG_TARGET_RENDER = 0;
+
+// Rebuilds the Key select for the current task: the task decides which
+// models are needed, and only keys that can reach at least one such model
+// are offered at all. Provider capability rules out whole providers
+// without a network call; the survivors are then checked against their
+// key's own model list, because a provider having a realtime API does not
+// mean this key lists any realtime models. Keeps the current selection if
+// it still qualifies; otherwise falls back to the first eligible key, or
+// a disabled placeholder if none qualify.
+async function renderPlaygroundTargets() {
+  const sel = el("pg-target");
+  const previous = sel.value;
+  const category = modeCategory(currentMode());
+  const token = ++PG_TARGET_RENDER;
+  let eligible = TARGETS.filter((t) => {
+    if (!category) return true;
+    const caps = PROVIDER_CAPABILITIES[t.provider];
+    return !caps || Boolean(caps[category]);
+  });
+  if (category && eligible.length) {
+    sel.disabled = true;
+    clear(sel);
+    const busy = document.createElement("option");
+    busy.value = "";
+    busy.textContent = "checking your keys…";
+    sel.appendChild(busy);
+    const checks = await Promise.all(
+      eligible.map((t) => keyHasModels(t.id, category))
+    );
+    if (token !== PG_TARGET_RENDER) return;
+    eligible = eligible.filter((_, i) => checks[i]);
+  }
+  clear(sel);
+  if (!eligible.length) {
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = TARGETS.length ? "no key has models for this" : "add a key first";
+    sel.appendChild(none);
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  eligible.forEach((t) => {
+    const opt = document.createElement("option");
+    opt.value = t.id;
+    opt.textContent = `${t.name} (${t.provider})`;
+    sel.appendChild(opt);
+  });
+  if (eligible.some((t) => String(t.id) === previous)) sel.value = previous;
 }
 
 // --- models browser ---------------------------------------------------------
@@ -503,8 +586,22 @@ el("models-refresh").addEventListener("click", () => loadModels(true));
 
 async function loadPlaygroundModels() {
   const id = el("pg-target").value;
-  if (id === "") return;
-  const category = currentMode() === "image" ? "image_generation" : "text_generation";
+  if (id === "") {
+    // No eligible key for this task: leaving the previous task's models
+    // behind a dead Key select would offer choices nothing can run.
+    const sel = el("pg-model");
+    clear(sel);
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "—";
+    sel.appendChild(none);
+    sel.disabled = true;
+    return;
+  }
+  const category =
+    currentMode() === "image" ? "image_generation"
+    : currentMode() === "voice" ? "realtime"
+    : "text_generation";
   const sel = el("pg-model");
   clear(sel);
   const opt = document.createElement("option");
@@ -520,13 +617,20 @@ async function loadPlaygroundModels() {
   }
   if (!data.models.length) {
     const none = document.createElement("option");
+    // An explicit empty value, not left to default to the option's own
+    // text: an unset <option> takes its value from its textContent, which
+    // would otherwise let this placeholder's sentence itself pass every
+    // `!model` guard as if it were a valid model id, and reach a provider.
+    none.value = "";
     none.textContent =
-      currentMode() === "image"
-        ? "this key has no picture models"
-        : "this key has no text models";
+      currentMode() === "image" ? "this key has no picture models"
+      : currentMode() === "voice" ? "this key has no voice models"
+      : "this key has no text models";
     sel.appendChild(none);
+    sel.disabled = true;
     return;
   }
+  sel.disabled = false;
   // A model the provider has already refused for this key sinks to the
   // bottom and says so, rather than sitting at the top waiting to fail
   // again. This is learned from what the provider actually answered, not
@@ -612,23 +716,581 @@ function currentMode() {
   return el("pg-mode").value;
 }
 
-function applyMode() {
+async function applyMode() {
   const image = currentMode() === "image";
-  el("pg-extras").hidden = image;
-  el("pg-maxtok-row").hidden = image;
+  const voice = currentMode() === "voice";
+  el("pg-extras").hidden = image || voice;
+  el("pg-maxtok-row").hidden = image || voice;
+  el("pg-reasoning-row").hidden = voice;
   el("pg-system-row").hidden = image;
   el("pg-image-mode-note").hidden = !image;
+  el("pg-voice-mode-note").hidden = !voice;
   // An image model takes a description and nothing else, so a microphone
-  // in the composer would only offer something that cannot be sent.
-  el("pg-mic").hidden = image;
-  if (image && REC) discardRecording();
+  // in the composer would only offer something that cannot be sent. A
+  // voice session has its own microphone control, in its own panel.
+  el("pg-mic").hidden = image || voice;
+  el("pg-composer").hidden = voice;
+  el("pg-voice-panel").hidden = !voice;
+  // Leaving voice mode ends any session in progress rather than leaving
+  // a WebSocket open behind a panel nothing points at any more.
+  if (!voice) endVoiceSession();
+  if ((image || voice) && REC) discardRecording();
   el("pg-prompt").placeholder = image
     ? "Describe the picture you want. Press Send, or Ctrl+Enter."
     : "Ask anything. Press Send, or Ctrl+Enter.";
+  // What a key qualifies for changes with the task, so the Key list is
+  // rebuilt before the Model list is fetched for whichever key that leaves
+  // selected.
+  await renderPlaygroundTargets();
   loadPlaygroundModels();
 }
 
 el("pg-mode").addEventListener("change", applyMode);
+
+// --- voice conversation -------------------------------------------------
+
+// Caller audio rate each provider's realtime API expects (Gemini resamples
+// server-side to 16 kHz regardless of what it's sent; OpenAI and xAI take
+// 24 kHz). Generated audio is 24 kHz on all three, so playback needs no
+// per-provider branch.
+const REALTIME_INPUT_RATE = { openai: 24000, xai: 24000, gemini: 16000 };
+const REALTIME_OUTPUT_RATE = 24000;
+
+// Non-null for the life of one session: {ws, provider, pendingText, playCtx,
+// playAnalyser, playCursor, mic*, recognition, talking, micStarting,
+// liveBubble, liveBody, liveUserBubble, liveUserBody, gotFinalMessage}.
+// playCursor is the Web Audio clock time the next audio_delta should start
+// at, so consecutive chunks queue back to back instead of overlapping or
+// leaving silence between them. `talking` means the microphone is actively
+// streaming, which is the whole session for the common case: it starts
+// false only for a session opened by typing (Send, with no mic yet) or
+// during the short window before a mic permission prompt resolves.
+let PG_VOICE = null;
+
+function setVoiceStatus(text) {
+  el("pg-voice-status").textContent = text;
+}
+
+// The mic button doubles as the session's on/off indicator: filled and
+// glowing while a session is live, plain otherwise. There's no separate
+// start/stop button for it to sit next to.
+function setVoiceMicIndicator(active) {
+  const btn = el("pg-voice-talk");
+  btn.classList.toggle("live", active);
+  btn.setAttribute("aria-pressed", String(active));
+  btn.title = active ? "End the voice conversation" : "Start a voice conversation";
+  btn.setAttribute("aria-label", btn.title);
+}
+
+// A short two-tone rise, generated rather than shipped as an audio file:
+// the only signal it needs to carry is "the session is live now", which
+// two tones already say, and it means one fewer asset in the page.
+function playVoiceChime() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(660, ctx.currentTime);
+    osc.frequency.setValueAtTime(880, ctx.currentTime + 0.09);
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.3);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.32);
+    osc.onended = () => ctx.close();
+  } catch {
+    // No Web Audio, or the browser blocked audio before a user gesture:
+    // the status line already says the session started, so silence here
+    // costs nothing essential.
+  }
+}
+
+// withMic: false for a session opened by typing (Send with no session
+// yet), for someone who wants to hear the model without ever using the
+// microphone; the mic button still ends that session on the next tap.
+// pendingText: a line typed before any session existed, sent the moment
+// the provider confirms the session so it isn't lost to the connect delay.
+function startVoiceSession({ withMic = true, pendingText = null } = {}) {
+  if (PG_VOICE) return;
+  const target = TARGETS.find((t) => String(t.id) === el("pg-target").value);
+  const model = el("pg-model").value;
+  if (!target || !model) {
+    setVoiceStatus("pick a key and a model first");
+    return;
+  }
+  clearTranscriptPlaceholder();
+  const url = new URL("/api/realtime", location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("target", target.id);
+  url.searchParams.set("model", model);
+  // Standing instructions doubles as the session's system prompt: set once
+  // here, same as the field's placeholder says.
+  const instructions = el("pg-system").value.trim();
+  if (instructions) url.searchParams.set("instructions", instructions);
+
+  const ws = new WebSocket(url);
+  PG_VOICE = {
+    ws,
+    provider: target.provider,
+    pendingText,
+    playCtx: null,
+    playAnalyser: null,
+    playCursor: 0,
+    micStream: null,
+    micCtx: null,
+    micNode: null,
+    micSource: null,
+    micMute: null,
+    micAnalyser: null,
+    micStarting: false,
+    recognition: null,
+    talking: false,
+    liveBubble: null,
+    liveBody: null,
+    liveUserBubble: null,
+    liveUserBody: null,
+    gotFinalMessage: false,
+  };
+  setVoiceMicIndicator(true);
+  startVoiceWave();
+  setVoiceStatus(`connecting to ${target.provider}…`);
+  ws.onmessage = (event) => handleVoiceMessage(event.data);
+  ws.onclose = () => {
+    // Already torn down via the mic button; this is the socket finishing
+    // its own close handshake after that, not a new event.
+    if (!PG_VOICE) return;
+    if (!PG_VOICE.gotFinalMessage) setVoiceStatus("connection closed");
+    endVoiceSession();
+  };
+  if (withMic) startVoiceMic();
+}
+
+function handleVoiceMessage(raw) {
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (!PG_VOICE || !data || typeof data.type !== "string") return;
+  switch (data.type) {
+    case "session_started":
+      setVoiceStatus(`connected to ${PG_VOICE.provider}`);
+      playVoiceChime();
+      if (PG_VOICE.pendingText) {
+        const text = PG_VOICE.pendingText;
+        PG_VOICE.pendingText = null;
+        PG_VOICE.ws.send(JSON.stringify({ type: "text_turn", text }));
+        addUserTurn(text, []);
+      }
+      break;
+    case "transcript_delta":
+      appendVoiceTranscript(data.text || "");
+      break;
+    case "audio_delta":
+      scheduleVoiceAudio(data.pcm_base64 || "");
+      break;
+    case "turn_complete":
+      finishVoiceTurn(data.usage);
+      break;
+    case "interrupted":
+      // Not a failure: the model was mid-reply and the caller (or its own
+      // voice detection) started a new turn, so it stopped talking to
+      // listen. Named plainly so it doesn't read as something broken.
+      setVoiceStatus("you started talking, so the reply stopped there, go ahead");
+      break;
+    case "session_ended":
+      PG_VOICE.gotFinalMessage = true;
+      setVoiceStatus(data.reason ? `session ended: ${data.reason}` : "session ended");
+      break;
+    case "error":
+      PG_VOICE.gotFinalMessage = true;
+      setVoiceStatus(`error: ${data.message}`);
+      break;
+    default:
+      break;
+  }
+}
+
+function appendVoiceTranscript(text) {
+  if (!text) return;
+  if (!PG_VOICE.liveBody) {
+    const bubble = addBubble("model");
+    const body = document.createElement("div");
+    body.className = "result-text";
+    bubble.appendChild(body);
+    PG_VOICE.liveBubble = bubble;
+    PG_VOICE.liveBody = body;
+  }
+  PG_VOICE.liveBody.appendChild(document.createTextNode(text));
+  const transcript = el("pg-transcript");
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+function finishVoiceTurn(usage) {
+  if (PG_VOICE.liveBubble && usage) {
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = usageLabel(usage);
+    PG_VOICE.liveBubble.appendChild(meta);
+  }
+  PG_VOICE.liveBubble = null;
+  PG_VOICE.liveBody = null;
+}
+
+function ensurePlaybackContext() {
+  if (!PG_VOICE.playCtx) {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: REALTIME_OUTPUT_RATE,
+    });
+    // Every chunk routes through this one analyser rather than straight to
+    // the destination, so the waveform has something to read while the
+    // model is the one making sound.
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.connect(ctx.destination);
+    PG_VOICE.playCtx = ctx;
+    PG_VOICE.playAnalyser = analyser;
+    PG_VOICE.playCursor = ctx.currentTime;
+  }
+  return PG_VOICE.playCtx;
+}
+
+// Decodes and schedules one chunk back to back with whatever is already
+// queued, so a steady stream of deltas plays as one continuous voice
+// instead of a click between every chunk.
+function scheduleVoiceAudio(base64) {
+  if (!base64) return;
+  const binary = atob(base64);
+  const frames = binary.length >> 1;
+  if (!frames) return;
+  const ctx = ensurePlaybackContext();
+  const buffer = ctx.createBuffer(1, frames, REALTIME_OUTPUT_RATE);
+  const channel = buffer.getChannelData(0);
+  for (let i = 0; i < frames; i++) {
+    let sample = binary.charCodeAt(i * 2) | (binary.charCodeAt(i * 2 + 1) << 8);
+    if (sample >= 0x8000) sample -= 0x10000;
+    channel[i] = sample / 32768;
+  }
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(PG_VOICE.playAnalyser);
+  const startAt = Math.max(ctx.currentTime, PG_VOICE.playCursor);
+  source.start(startAt);
+  PG_VOICE.playCursor = startAt + buffer.duration;
+}
+
+// --- the waveform: whichever of mic and playback is louder this frame -----
+//
+// Continuous mode means both can be live at once (the caller barges in
+// while the model is still talking), so the wave reads the larger of the
+// two levels each frame rather than switching sources on a boolean.
+
+let VOICE_WAVE_FRAME = null;
+let VOICE_LEVELS = [];
+
+function startVoiceWave() {
+  VOICE_LEVELS = [];
+  el("pg-voice-wave").hidden = false;
+  if (VOICE_WAVE_FRAME == null) VOICE_WAVE_FRAME = requestAnimationFrame(voiceWaveLoop);
+}
+
+function stopVoiceWave() {
+  if (VOICE_WAVE_FRAME != null) cancelAnimationFrame(VOICE_WAVE_FRAME);
+  VOICE_WAVE_FRAME = null;
+  el("pg-voice-wave").hidden = true;
+  VOICE_LEVELS = [];
+}
+
+function analyserLevel(analyser) {
+  const samples = new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(samples);
+  let sum = 0;
+  for (const sample of samples) {
+    const centred = (sample - 128) / 128;
+    sum += centred * centred;
+  }
+  return Math.sqrt(sum / samples.length);
+}
+
+function voiceWaveLoop() {
+  if (!PG_VOICE) {
+    VOICE_WAVE_FRAME = null;
+    return;
+  }
+  const micLevel = PG_VOICE.micAnalyser ? analyserLevel(PG_VOICE.micAnalyser) : 0;
+  const playLevel = PG_VOICE.playAnalyser ? analyserLevel(PG_VOICE.playAnalyser) : 0;
+  drawVoiceWave(Math.max(micLevel, playLevel));
+  VOICE_WAVE_FRAME = requestAnimationFrame(voiceWaveLoop);
+}
+
+function drawVoiceWave(level) {
+  const canvas = el("pg-voice-wave");
+  const width = canvas.clientWidth;
+  const ratio = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.floor(width * ratio)) {
+    canvas.width = Math.floor(width * ratio);
+    canvas.height = Math.floor(canvas.clientHeight * ratio);
+  }
+  const ctx = canvas.getContext("2d");
+  VOICE_LEVELS.push(level);
+
+  const barWidth = 3 * ratio;
+  const spacing = 2 * ratio;
+  const slots = Math.floor(canvas.width / (barWidth + spacing));
+  if (VOICE_LEVELS.length > slots) VOICE_LEVELS.splice(0, VOICE_LEVELS.length - slots);
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = getComputedStyle(canvas).getPropertyValue("color") || "#c69c6d";
+  const mid = canvas.height / 2;
+  VOICE_LEVELS.forEach((level, index) => {
+    const height = Math.max(2 * ratio, Math.sqrt(level) * canvas.height * 0.9);
+    const x = index * (barWidth + spacing);
+    ctx.fillRect(x, mid - height / 2, barWidth, height);
+  });
+}
+
+// --- live captions of the caller's own speech ------------------------------
+
+// Local to the browser, independent of what the provider hears: a caption
+// of the microphone, not a transcript of the turn the provider received.
+// Unsupported browsers simply show no caption; the session itself doesn't
+// depend on this at all.
+function speechRecognitionCtor() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+// Runs for the whole session rather than per utterance: each recognizer
+// result finalizes into its own bubble via `isFinal`, and the browser's own
+// habit of stopping continuous recognition after a pause is covered by
+// restarting it from `onend` as long as the mic is still meant to be live.
+function startVoiceCaption() {
+  const Ctor = speechRecognitionCtor();
+  if (!Ctor) return;
+  const recognition = new Ctor();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = navigator.language || "en-US";
+  recognition.onresult = (event) => {
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const result = event.results[i];
+      updateVoiceCaption(result[0].transcript);
+      if (result.isFinal) finishVoiceCaption();
+    }
+  };
+  // A caption failing (no permission, no speech, browser policy) is not a
+  // session failure; it just means no caption this turn.
+  recognition.onerror = () => {};
+  recognition.onend = () => {
+    if (PG_VOICE && PG_VOICE.recognition === recognition && PG_VOICE.talking) {
+      try {
+        recognition.start();
+      } catch {
+        // Already restarting on its own, or the mic just stopped; either
+        // way there's nothing more to do here.
+      }
+    }
+  };
+  try {
+    recognition.start();
+  } catch {
+    return;
+  }
+  PG_VOICE.recognition = recognition;
+}
+
+function updateVoiceCaption(text) {
+  if (!PG_VOICE || !text) return;
+  if (!PG_VOICE.liveUserBody) {
+    const bubble = addBubble("user");
+    const body = document.createElement("div");
+    body.className = "result-text";
+    bubble.appendChild(body);
+    PG_VOICE.liveUserBubble = bubble;
+    PG_VOICE.liveUserBody = body;
+  }
+  // Replaced wholesale rather than appended: the recognizer keeps revising
+  // its own interim guess for the phrase in progress, not only adding to it.
+  PG_VOICE.liveUserBody.textContent = text;
+  const transcript = el("pg-transcript");
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+// One utterance is done: the next caption starts a fresh bubble instead of
+// overwriting this one.
+function finishVoiceCaption() {
+  if (!PG_VOICE) return;
+  PG_VOICE.liveUserBubble = null;
+  PG_VOICE.liveUserBody = null;
+}
+
+function stopVoiceCaption() {
+  if (!PG_VOICE) return;
+  const recognition = PG_VOICE.recognition;
+  PG_VOICE.recognition = null;
+  if (recognition) {
+    recognition.onresult = null;
+    recognition.onerror = null;
+    recognition.onend = null;
+    try {
+      recognition.stop();
+    } catch {
+      // Already stopped, or never started without error; nothing left to release.
+    }
+  }
+  finishVoiceCaption();
+}
+
+// Starts the microphone for the current session: the whole tap-to-toggle
+// flow (fresh session or a session that was opened by typing) routes
+// through here, and it streams continuously until the session ends rather
+// than per press.
+async function startVoiceMic() {
+  if (!PG_VOICE || PG_VOICE.talking || PG_VOICE.micStarting) return;
+  PG_VOICE.micStarting = true;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (err) {
+    setVoiceStatus(
+      err && err.name === "NotAllowedError"
+        ? "your browser blocked microphone access, allow it for this page and try again"
+        : "could not use the microphone"
+    );
+    if (PG_VOICE) PG_VOICE.micStarting = false;
+    return;
+  }
+  // The session ended while the permission prompt was up.
+  if (!PG_VOICE) {
+    stream.getTracks().forEach((track) => track.stop());
+    return;
+  }
+  const context = new (window.AudioContext || window.webkitAudioContext)();
+  const source = context.createMediaStreamSource(stream);
+  const node = context.createScriptProcessor(4096, 1, 1);
+  const analyser = context.createAnalyser();
+  analyser.fftSize = 1024;
+  const targetRate = REALTIME_INPUT_RATE[PG_VOICE.provider] || REALTIME_OUTPUT_RATE;
+  node.onaudioprocess = (event) => {
+    if (!PG_VOICE || !PG_VOICE.talking) return;
+    const samples = downsample(
+      new Float32Array(event.inputBuffer.getChannelData(0)), context.sampleRate, targetRate
+    );
+    if (!samples.length) return;
+    const pcm = new Int16Array(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      const clamped = Math.max(-1, Math.min(1, samples[i]));
+      pcm[i] = Math.round(clamped * 32767);
+    }
+    PG_VOICE.ws.send(JSON.stringify({ type: "audio_chunk", pcm_base64: base64OfBytes(pcm.buffer) }));
+  };
+  source.connect(node);
+  source.connect(analyser);
+  // Same silent-routing trick as the recorder: a ScriptProcessor only runs
+  // while connected to a destination, and this keeps the microphone from
+  // being played back through the speakers.
+  const mute = context.createGain();
+  mute.gain.value = 0;
+  node.connect(mute);
+  mute.connect(context.destination);
+
+  PG_VOICE.micStream = stream;
+  PG_VOICE.micCtx = context;
+  PG_VOICE.micNode = node;
+  PG_VOICE.micSource = source;
+  PG_VOICE.micMute = mute;
+  PG_VOICE.micAnalyser = analyser;
+  PG_VOICE.talking = true;
+  PG_VOICE.micStarting = false;
+  setVoiceStatus("listening…");
+  startVoiceCaption();
+}
+
+// Stops the microphone without ending the session. Deliberately doesn't
+// send an end-of-turn signal: the provider's own voice-activity detection
+// owns turn boundaries for the whole continuous stream, and this only runs
+// as part of ending the session outright, not on every pause.
+function stopVoiceMic() {
+  if (!PG_VOICE || !PG_VOICE.talking) return;
+  PG_VOICE.talking = false;
+  stopVoiceCaption();
+  const { micStream, micCtx, micNode, micSource, micMute, micAnalyser } = PG_VOICE;
+  micNode.onaudioprocess = null;
+  micSource.disconnect();
+  micNode.disconnect();
+  micMute.disconnect();
+  micAnalyser.disconnect();
+  micStream.getTracks().forEach((track) => track.stop());
+  micCtx.close();
+  PG_VOICE.micStream = null;
+  PG_VOICE.micCtx = null;
+  PG_VOICE.micNode = null;
+  PG_VOICE.micSource = null;
+  PG_VOICE.micMute = null;
+  PG_VOICE.micAnalyser = null;
+}
+
+// The mic button's single click handler: activate or deactivate the whole
+// session, one tap either way. If mic permission never came through (the
+// session is open but never got to start talking), the next tap still ends
+// it rather than retrying the microphone forever.
+function toggleVoiceSession() {
+  if (PG_VOICE) {
+    endVoiceSession();
+  } else {
+    startVoiceSession();
+  }
+}
+
+// Send always works, spoken session or not: typed text starts a session
+// with no mic if none is open yet, so someone who can't speak can still
+// hear the model reply.
+function sendVoiceText() {
+  const box = el("pg-voice-prompt");
+  const text = box.value.trim();
+  if (!text) return;
+  if (!PG_VOICE) {
+    startVoiceSession({ withMic: false, pendingText: text });
+    box.value = "";
+    return;
+  }
+  if (PG_VOICE.ws.readyState !== WebSocket.OPEN) {
+    PG_VOICE.pendingText = text;
+    box.value = "";
+    return;
+  }
+  PG_VOICE.ws.send(JSON.stringify({ type: "text_turn", text }));
+  addUserTurn(text, []);
+  box.value = "";
+}
+
+// Idempotent: safe from the mic button, from a mode switch away from
+// voice, and from the socket's own close event, whichever gets here first.
+function endVoiceSession() {
+  if (!PG_VOICE) return;
+  stopVoiceMic();
+  const { ws, playCtx } = PG_VOICE;
+  PG_VOICE = null;
+  if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
+  if (playCtx) playCtx.close();
+  stopVoiceWave();
+  setVoiceMicIndicator(false);
+  setVoiceStatus("not connected");
+}
+
+el("pg-voice-talk").addEventListener("click", toggleVoiceSession);
+el("pg-voice-send").addEventListener("click", sendVoiceText);
+el("pg-voice-prompt").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    sendVoiceText();
+  }
+});
 
 function openLightbox(source) {
   const overlay = document.createElement("div");
@@ -892,6 +1554,7 @@ ATTACHMENTS.forEach(({ id, noun, named }) => {
 
   el(`pg-${id}-on`).addEventListener("change", () => {
     el(`pg-${id}-panel`).hidden = !el(`pg-${id}-on`).checked;
+    updateSuggestedBudget();
   });
 
   el(`pg-${id}-clear`).addEventListener("click", () => {
@@ -934,6 +1597,88 @@ ATTACHMENTS.forEach(({ id, noun, named }) => {
     };
     reader.readAsDataURL(file);
   });
+});
+
+// --- reply budget -------------------------------------------------------
+
+// Extra headroom each token-intensive extra tends to need, on top of an
+// ordinary reply. Reasoning is the largest by far: hidden reasoning tokens
+// share the same budget as the visible answer (a gemini-3.5-flash reply was
+// observed cut off at 2048 purely from invisible "high"-tier thinking, with
+// no answer text at all), and higher effort spends more of them before the
+// first visible token. Search and tools both mean a longer synthesized
+// answer, or a second round after a tool result; an attachment usually
+// means describing or analyzing something, which runs longer than a bare
+// reply. None of these are measured per-model: they are a starting point,
+// overridden the moment the reply budget field is edited by hand.
+const REASONING_BUDGET_BONUS = { minimal: 512, low: 1536, medium: 4096, high: 10240 };
+const WEB_SEARCH_BUDGET_BONUS = 1536;
+const TOOLS_BUDGET_BONUS = 512;
+const ATTACHMENT_BUDGET_BONUS = 512;
+const BUDGET_FLOOR = 1024; // a bare reply with nothing selected
+const BUDGET_BASE = 2048; // the field's own starting value
+const BUDGET_CEILING = 16384;
+
+// False once the reply budget has been typed into by hand; from then on
+// nothing here touches it again, matching how the mode/task pickers never
+// override a value the caller set on purpose.
+let MAXTOK_TOUCHED = false;
+el("pg-maxtok").addEventListener("input", () => {
+  MAXTOK_TOUCHED = true;
+});
+
+function suggestedBudget() {
+  const reasoning = el("pg-reasoning").value;
+  const anyExtra =
+    reasoning ||
+    el("pg-search").checked ||
+    el("pg-tools-on").checked ||
+    ATTACHMENTS.some(({ id }) => el(`pg-${id}-on`).checked);
+  if (!anyExtra) return BUDGET_FLOOR;
+
+  let budget = BUDGET_BASE;
+  budget += REASONING_BUDGET_BONUS[reasoning] || 0;
+  if (el("pg-search").checked) budget += WEB_SEARCH_BUDGET_BONUS;
+  if (el("pg-tools-on").checked) budget += TOOLS_BUDGET_BONUS;
+  if (ATTACHMENTS.some(({ id }) => el(`pg-${id}-on`).checked)) {
+    budget += ATTACHMENT_BUDGET_BONUS;
+  }
+  return Math.min(budget, BUDGET_CEILING);
+}
+
+function updateSuggestedBudget() {
+  if (MAXTOK_TOUCHED) return;
+  el("pg-maxtok").value = suggestedBudget();
+}
+
+// --- provider timeout -------------------------------------------------------
+
+// A slider rather than a typed field, so an out-of-range or non-numeric
+// value cannot be entered at all; the range and step live on the control.
+// The label follows every drag, and the server hears one value on
+// release, not one per pixel. It validates on its side too.
+function paintTimeoutLabel() {
+  el("pg-timeout-value").textContent = `${el("pg-timeout").value}s`;
+}
+
+el("pg-timeout").addEventListener("input", paintTimeoutLabel);
+el("pg-timeout").addEventListener("change", async () => {
+  paintTimeoutLabel();
+  const data = await api("/api/settings", {
+    method: "POST",
+    body: { read_timeout: Number(el("pg-timeout").value) },
+  });
+  if (data.error) {
+    // "target required" is the older server's generic POST guard: it has
+    // no settings route at all, and this page is newer than the process
+    // serving it. Say that, rather than relaying a message about a field
+    // this request never needed.
+    showToast(
+      data.error.message === "target required"
+        ? "This viewer's server is older than the page and has no timeout setting yet: stop keycall view and start it again."
+        : `Could not set the timeout: ${data.error.message}`
+    );
+  }
 });
 
 // --- recording --------------------------------------------------------------
@@ -996,7 +1741,7 @@ async function startRecording() {
     // didn't work" leaves someone poking at the button.
     el("pg-audio-status").textContent =
       err && err.name === "NotAllowedError"
-        ? "your browser blocked microphone access — allow it for this page and try again"
+        ? "your browser blocked microphone access, allow it for this page and try again"
         : err && err.name === "NotFoundError"
           ? "no microphone found on this computer"
           : `could not start recording (${(err && err.name) || "unknown error"})`;
@@ -1357,7 +2102,7 @@ function showToast(text) {
   if (!toast) {
     toast = document.createElement("div");
     toast.id = "toast";
-    document.body.appendChild(toast);
+    el("pg-composer").appendChild(toast);
   }
   toast.textContent = text;
   toast.classList.add("show");
@@ -1410,16 +2155,64 @@ function gateCapabilities(off) {
     "tool_calling", "offer tools");
   if (el("pg-tools-on").disabled) el("pg-tools-panel").hidden = true;
 
-  // The task picker: a provider with no image models can't draw. The
-  // option greys out, and a selected image task falls back to text.
-  const imageOk = !target || !caps || Boolean(caps.image_generation);
-  const imageOption = [...el("pg-mode").options].find((o) => o.value === "image");
-  imageOption.disabled = !imageOk;
-  if (!imageOk && el("pg-mode").value === "image") {
-    el("pg-mode").value = "text";
-    el("pg-mode").dispatchEvent(new Event("change", { bubbles: true }));
-    off.push("make a picture");
+  // Same contract, for the reasoning-effort select: an unsupported key
+  // gets it disabled and reset rather than sending a value the provider
+  // will refuse.
+  const reasoningOk = !target || !caps || Boolean(caps.reasoning_effort);
+  const reasoningSelect = el("pg-reasoning");
+  const reasoningWasSet = reasoningSelect.value !== "";
+  reasoningSelect.disabled = !reasoningOk;
+  const reasoningNote = el("pg-reasoning-unavailable");
+  reasoningNote.hidden = reasoningOk;
+  if (!reasoningOk) {
+    reasoningSelect.value = "";
+    const loaded = providersAble("reasoning_effort").filter((p) =>
+      TARGETS.some((t) => t.provider === p)
+    );
+    reasoningNote.textContent = `This ${target.provider} key can't control reasoning effort. ` +
+      (loaded.length
+        ? keyPhrase("Pick", "above", loaded)
+        : keyPhrase("Load", "", providersAble("reasoning_effort")));
+    if (reasoningWasSet) off.push("control reasoning effort");
   }
+
+  // A capability gate only says whether reasoning_effort exists at all;
+  // "minimal" is narrower than that; OpenAI is the only provider that
+  // accepts it, so it stays selectable there and greys out everywhere
+  // else instead of being sent to a provider that will refuse it.
+  const minimalOption = [...reasoningSelect.options].find((o) => o.value === "minimal");
+  const minimalOk = reasoningOk && (!target || target.provider === "openai");
+  minimalOption.disabled = !minimalOk;
+  if (!minimalOk && reasoningSelect.value === "minimal") {
+    reasoningSelect.value = "";
+    off.push("use minimal reasoning effort");
+  }
+  updateSuggestedBudget();
+
+  // The task picker: picking a task rebuilds the Key list down to keys
+  // that can serve it, so a task only greys out when no loaded key's
+  // provider can serve it at all. The fallback to text covers the one way
+  // a selected task can still lose its footing: the key file reloading
+  // out from under it. Falling back also ends any voice session in
+  // progress, since no key remains that could hold one.
+  const anyKeyCan = (cap) =>
+    !TARGETS.length ||
+    TARGETS.some((t) => {
+      const c = PROVIDER_CAPABILITIES[t.provider];
+      return !c || Boolean(c[cap]);
+    });
+  const taskGate = (value, cap, noun) => {
+    const ok = anyKeyCan(cap);
+    const option = [...el("pg-mode").options].find((o) => o.value === value);
+    option.disabled = !ok;
+    if (!ok && el("pg-mode").value === value) {
+      el("pg-mode").value = "text";
+      el("pg-mode").dispatchEvent(new Event("change", { bubbles: true }));
+      off.push(noun);
+    }
+  };
+  taskGate("image", "image_generation", "make a picture");
+  taskGate("voice", "realtime", "hold a voice conversation");
 }
 
 // One pass over everything a key switch can invalidate, ending in a
@@ -1471,7 +2264,11 @@ let PG_HISTORY = [];
 
 el("pg-tools-on").addEventListener("change", () => {
   el("pg-tools-panel").hidden = !el("pg-tools-on").checked;
+  updateSuggestedBudget();
 });
+
+el("pg-search").addEventListener("change", updateSuggestedBudget);
+el("pg-reasoning").addEventListener("change", updateSuggestedBudget);
 
 el("pg-tools-example").addEventListener("click", () => {
   el("pg-tools").value = JSON.stringify(TOOL_EXAMPLE, null, 2);
@@ -1575,6 +2372,10 @@ el("pg-new").addEventListener("click", () => {
   PG_HISTORY = [];
   clear(el("pg-tool-calls"));
   transcriptEmpty();
+  // A new conversation gets a fresh suggestion too, in case the last one
+  // was hand-edited for a reply that's now behind it.
+  MAXTOK_TOUCHED = false;
+  updateSuggestedBudget();
 });
 
 el("pg-prompt").addEventListener("keydown", (event) => {
@@ -1635,11 +2436,20 @@ async function runGeneration({ continuation }) {
   }
   if (currentMode() === "image") {
     const placeholder = addBubble("model");
-    placeholder.textContent = "Drawing. This usually takes longer than text…";
+    // Same ticking clock the text stream shows: a draw can run past a
+    // minute, and a static line gives no sense that anything is moving.
+    const startedAt = Date.now();
+    const paint = () => {
+      placeholder.textContent =
+        `Drawing. This usually takes longer than text… · ${formatElapsed(startedAt)}`;
+    };
+    paint();
+    const ticker = setInterval(paint, 1000);
     const data = await api("/api/generate/image", {
       method: "POST",
       body: { target: Number(el("pg-target").value), model, prompt },
     });
+    clearInterval(ticker);
     placeholder.remove();
     if (data.error) {
       renderGeneration(addBubble("model"), data);
@@ -1657,6 +2467,7 @@ async function runGeneration({ continuation }) {
     prompt,
     system: el("pg-system").value.trim() || undefined,
     max_output_tokens: Number(el("pg-maxtok").value) || undefined,
+    reasoning_effort: el("pg-reasoning").value || undefined,
     web_search: el("pg-search").checked,
     tools: tooling.tools,
     tool_choice: tooling.choice,
@@ -1979,6 +2790,74 @@ function traceTargetName(id) {
 }
 
 
+// The rows as last fetched, so search and sort re-render locally without
+// another request, and the 2-second auto-refresh can't fight a half-typed
+// search or reset a chosen order.
+let TRACE_ROWS = [];
+// Time sorts by id (true request order), Took by the raw milliseconds:
+// both would sort wrongly as their display strings ("9:5" after "18:3",
+// "901 ms" after "60.05 s").
+let TRACE_SORT = { key: "id", dir: "desc" };
+
+function traceDisplay(r) {
+  let outcome = r.status;
+  if (r.events != null) outcome += ` · ${r.events} event(s)`;
+  if (r.detail) outcome += ` — ${r.detail}`;
+  return {
+    id: r.id,
+    duration_ms: r.duration_ms,
+    status: r.status,
+    at: r.at,
+    what: TRACE_ROUTE_LABELS[r.route] || r.route,
+    key: traceTargetName(r.target),
+    model: r.model || "—",
+    took: formatDuration(r.duration_ms),
+    outcome,
+  };
+}
+
+function renderTraces() {
+  const query = el("traces-search").value.trim().toLowerCase();
+  let rows = TRACE_ROWS.map(traceDisplay);
+  if (query) {
+    rows = rows.filter((d) =>
+      [d.at, d.what, d.key, d.model, d.took, d.outcome].some((v) =>
+        String(v).toLowerCase().includes(query)
+      )
+    );
+  }
+  const { key, dir } = TRACE_SORT;
+  const numeric = key === "id" || key === "duration_ms";
+  rows.sort((a, b) => {
+    const cmp = numeric ? a[key] - b[key] : String(a[key]).localeCompare(String(b[key]));
+    return dir === "asc" ? cmp : -cmp;
+  });
+
+  document.querySelectorAll("#traces-table th").forEach((th) => {
+    th.classList.toggle("sorted-asc", th.dataset.sort === key && dir === "asc");
+    th.classList.toggle("sorted-desc", th.dataset.sort === key && dir === "desc");
+  });
+
+  el("traces-status").textContent =
+    TRACE_ROWS.length === 0
+      ? "Nothing yet. Use the Playground or Verify, then look back here."
+      : rows.length === 0
+        ? "No trace matches that search."
+        : "";
+  const tbody = document.querySelector("#traces-table tbody");
+  clear(tbody);
+  rows.forEach((d) => {
+    const tr = document.createElement("tr");
+    [d.at, d.what, d.key, d.model, d.took, d.outcome].forEach((text, i) => {
+      const td = document.createElement("td");
+      td.textContent = String(text);
+      if (i === 5 && d.status !== "ok") td.className = "fail";
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
 async function loadTraces() {
   const data = await api("/api/traces");
   if (data.error) {
@@ -1995,33 +2874,8 @@ async function loadTraces() {
     }
     return;
   }
-  const rows = data.traces || [];
-  el("traces-status").textContent = rows.length
-    ? ""
-    : "Nothing yet. Use the Playground or Verify, then look back here.";
-  const tbody = document.querySelector("#traces-table tbody");
-  clear(tbody);
-  rows.forEach((r) => {
-    const tr = document.createElement("tr");
-    let outcome = r.status;
-    if (r.events != null) outcome += ` · ${r.events} event(s)`;
-    if (r.detail) outcome += ` — ${r.detail}`;
-    const cells = [
-      r.at,
-      TRACE_ROUTE_LABELS[r.route] || r.route,
-      traceTargetName(r.target),
-      r.model || "—",
-      formatDuration(r.duration_ms),
-      outcome,
-    ];
-    cells.forEach((text, i) => {
-      const td = document.createElement("td");
-      td.textContent = String(text);
-      if (i === 5 && r.status !== "ok") td.className = "fail";
-      tr.appendChild(td);
-    });
-    tbody.appendChild(tr);
-  });
+  TRACE_ROWS = data.traces || [];
+  renderTraces();
 }
 
 function stopTracesTimer() {
@@ -2050,6 +2904,21 @@ document.querySelectorAll("#tabs button").forEach((btn) => {
 });
 
 el("traces-refresh").addEventListener("click", loadTraces);
+el("traces-search").addEventListener("input", renderTraces);
+document.querySelectorAll("#traces-table th").forEach((th) => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    if (!key) return;
+    if (TRACE_SORT.key === key) {
+      TRACE_SORT.dir = TRACE_SORT.dir === "asc" ? "desc" : "asc";
+    } else {
+      // A fresh column starts with its natural reading: newest first for
+      // Time, ascending for everything else.
+      TRACE_SORT = { key, dir: key === "id" ? "desc" : "asc" };
+    }
+    renderTraces();
+  });
+});
 el("traces-clear").addEventListener("click", async () => {
   const data = await api("/api/traces/clear", { method: "POST", body: {} });
   if (data.error) {

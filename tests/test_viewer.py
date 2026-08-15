@@ -9,6 +9,7 @@ import urllib.request
 import httpx
 import pytest
 
+from keycall import ModelCategory
 from keycall._sources import Target
 from keycall.viewer import Token
 from keycall.viewer._api import (
@@ -18,6 +19,7 @@ from keycall.viewer._api import (
     generate_image,
     generate_stream_events,
     list_targets,
+    set_settings,
     verify_target,
 )
 from keycall.viewer._registry import Registry
@@ -102,6 +104,46 @@ def test_list_targets_never_exposes_key():
         reg.close()
 
 
+def test_list_targets_reports_the_current_read_timeout():
+    reg = make_registry()
+    try:
+        assert list_targets(reg)["read_timeout"] == 180
+        set_settings(reg, {"read_timeout": 60})
+        assert list_targets(reg)["read_timeout"] == 60
+    finally:
+        reg.close()
+
+
+def test_set_settings_rebuilds_clients_and_keeps_ids():
+    reg = make_registry()
+    try:
+        before = reg.client(0)
+        body = set_settings(reg, {"read_timeout": 300})
+        assert body == {"read_timeout": 300}
+        after = reg.client(0)
+        assert after is not before
+        # Same target behind the same id, and the retired client still
+        # works until shutdown so an in-flight request isn't cut off.
+        assert after.provider == before.provider
+        assert reg.views()[0].id == 0
+        before.list_models(categories={ModelCategory.TEXT_GENERATION})
+    finally:
+        reg.close()
+
+
+@pytest.mark.parametrize(
+    "value", [59, 301, 180.5, "180", True, None]
+)
+def test_set_settings_refuses_a_bad_read_timeout(value):
+    reg = make_registry()
+    try:
+        body = set_settings(reg, {"read_timeout": value})
+        assert body["error"]["code"] == "bad_request"
+        assert reg.read_timeout == 180
+    finally:
+        reg.close()
+
+
 def test_check_target_lists_all_categories():
     reg = make_registry()
     try:
@@ -138,6 +180,63 @@ def test_generate_bad_input():
     try:
         assert "error" in generate(reg, 0, {"target": 0, "model": "", "prompt": "hi"})
         assert "error" in generate(reg, 0, {"target": 0, "model": "m", "prompt": ""})
+    finally:
+        reg.close()
+
+
+def test_generate_sends_reasoning_effort_to_the_provider():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-4o-mini",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "hi"}]}
+                ],
+                "usage": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
+            },
+        )
+
+    targets = [Target(provider="openai", key=CANARY, name="my-openai")]
+    reg = Registry(targets, httpx_transport=httpx.MockTransport(handler))
+    try:
+        body = generate(
+            reg,
+            0,
+            {"target": 0, "model": "gpt-4o-mini", "prompt": "hi", "reasoning_effort": "low"},
+        )
+        assert body["text"] == "hi"
+        assert seen[0]["reasoning"] == {"effort": "low"}
+    finally:
+        reg.close()
+
+
+def test_generate_refuses_reasoning_effort_on_an_unsupporting_provider():
+    targets = [Target(provider="deepseek", key=CANARY, name="my-deepseek")]
+    reg = Registry(
+        targets,
+        httpx_transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"data": [{"id": "deepseek-chat"}]})
+        ),
+    )
+    try:
+        body = generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "deepseek-chat",
+                "prompt": "hi",
+                "reasoning_effort": "low",
+            },
+        )
+        assert body["error"]["code"] == "unsupported_operation"
     finally:
         reg.close()
 
@@ -395,7 +494,7 @@ def test_add_targets_closes_opened_clients_on_later_failure(monkeypatch):
 
     class StubClient:
         def __init__(self, *, provider, api_key, protocol=None, base_url=None,
-                     httpx_transport=None):
+                     read_timeout=None, httpx_transport=None):
             if provider == "bad":
                 raise KeyCallError("unknown provider", code=ErrorCode.UNSUPPORTED_PROVIDER)
             self.provider = provider
@@ -1251,6 +1350,8 @@ def test_targets_tell_the_browser_what_each_key_can_accept():
     assert caps["perplexity"]["tool_calling"] is False
     assert caps["anthropic"]["image_generation"] is False
     assert caps["openai"]["image_generation"] is True
+    assert caps["openai"]["reasoning_effort"] is True
+    assert caps["deepseek"]["reasoning_effort"] is False
     assert CANARY not in json.dumps(body)
 
 
