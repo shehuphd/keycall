@@ -8,7 +8,15 @@ cd "$(dirname "$0")" || exit 1
 if command -v python3 >/dev/null 2>&1; then
     PY=python3
 else
-    echo "error: python3 not found. Install Python 3.10+ and retry." >&2
+    echo "error: python3 not found. Install Python 3.10+ from https://www.python.org/downloads/ (or, on Debian/Ubuntu, 'sudo apt install python3-pip'; on Fedora, 'sudo dnf install python3-pip'), then run this script again." >&2
+    exit 1
+fi
+
+# python3 exists but may be older than KeyCall's floor: an unhelpful
+# ImportError or SyntaxError later is a worse first impression than
+# catching it here with a fix in hand.
+if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+    echo "error: found $("$PY" --version 2>&1), but KeyCall needs Python 3.10+. Install a newer Python from https://www.python.org/downloads/, then run this script again." >&2
     exit 1
 fi
 

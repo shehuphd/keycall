@@ -5,7 +5,14 @@ cd /d "%~dp0"
 rem Resolve the interpreter explicitly.
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo error: Python not found. Install Python 3.10+ and retry.
+    echo error: Python not found. Install Python 3.10+ from https://www.python.org/downloads/ ^(check "Add python.exe to PATH" during install^), then run this script again.
+    exit /b 1
+)
+
+rem python exists but may be older than KeyCall's floor.
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+if errorlevel 1 (
+    echo error: found an older Python, but KeyCall needs Python 3.10+. Install a newer Python from https://www.python.org/downloads/, then run this script again.
     exit /b 1
 )
 

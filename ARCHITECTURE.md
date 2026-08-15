@@ -131,3 +131,4 @@ browser ── token + target id ──► _server.py ──► _api.py ──�
 ## Error taxonomy
 
 One exception type, `KeyCallError`, discriminated by a closed `ErrorCode` enum (invalid key, permission, rate limit, provider outage, network, timeout, malformed response, unsupported provider/operation, model availability). Codes, retryability, and the full table are in [USAGE.md](https://github.com/shehuphd/keycall/blob/main/USAGE.md).
+
