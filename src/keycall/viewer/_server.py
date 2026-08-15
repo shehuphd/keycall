@@ -13,6 +13,7 @@ Routes (all under the base "/"):
   POST /api/generate             {target, model, prompt, ...} -> InvocationResult
   POST /api/generate/stream      same body -> SSE events ending in a result or error
   POST /api/generate/image       {target, model, prompt} -> InvocationResult
+  POST /api/generate/video       {target, model, prompt} -> InvocationResult
   GET  /api/realtime?target=&model=&voice=&instructions=   WebSocket upgrade;
                                   bridges the browser to a realtime session
 
@@ -71,8 +72,9 @@ _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 _CONTENT_TYPES = {".html": "text/html", ".css": "text/css", ".js": "text/javascript"}
 # Scripts, styles, and fetches stay same-origin. Images additionally allow
 # data: URIs so a generated picture can be shown from the bytes the page
-# already holds, and media allows blob: so a recording can be played back
-# from memory before it is sent. Neither reaches the network.
+# already holds, and media allows both blob: (a recording played back from
+# memory before it is sent) and data: (a generated video, same reasoning
+# as a generated picture). None of it reaches the network.
 #
 # The last three don't inherit from default-src and were therefore unset:
 #   base-uri       a <base> tag can re-point every relative URL on the page
@@ -81,11 +83,11 @@ _CONTENT_TYPES = {".html": "text/html", ".css": "text/css", ".js": "text/javascr
 # None of them are used by the viewer, so 'none' costs nothing and closes
 # the gap. Relax frame-ancestors only if the viewer ever needs embedding.
 #
-# media-src is deliberately left room to grow: speech and video generation
-# will need to play provider bytes back, and if those arrive as data: URIs
-# the way generated pictures do, this is the line that has to allow them.
+# media-src also allows data:, the same way img-src does: a generated
+# video arrives as a data: URI built from bytes the page already holds,
+# the same as a generated picture, and blob: alone does not cover that.
 _CSP = (
-    "default-src 'self'; img-src 'self' data:; media-src 'self' blob:; "
+    "default-src 'self'; img-src 'self' data:; media-src 'self' blob: data:; "
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
 
@@ -587,6 +589,14 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             started = time.monotonic()
             result = _api.generate_image(self._registry, target_id, body)
+            self._record(route=route, method="POST", started=started, body=body, result=result)
+            self._send_json(result)
+        elif route == "/api/generate/video":
+            # Blocks this handler thread for the render duration (up to
+            # VIDEO_JOB_TIMEOUT), unlike every other route: the local,
+            # single-user ThreadingHTTPServer has a thread to spare.
+            started = time.monotonic()
+            result = _api.generate_video(self._registry, target_id, body)
             self._record(route=route, method="POST", started=started, body=body, result=result)
             self._send_json(result)
         elif route == "/api/generate/stream":

@@ -4,6 +4,20 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The Playground can generate a video.** A new "Make a video" task sends a prompt to any video-capable key (Gemini Veo, xAI Grok Imagine) and renders the finished clip inline with playback controls once it's done. Video rendering runs far longer than a picture, from under a minute to over ten, so the reply bubble shows a running elapsed-time clock instead of a static wait message. As with every other task, the Key select only offers keys whose own model list has at least one video model, checked per key rather than assumed from the provider.
+
+### Fixed
+
+- **Switching the Playground task could leave a control gated for the wrong key.** Picking a task narrows the Key select to keys that can serve it and can silently move the selection to a different key (setting it in code fires no change event), but the per-key gates were never re-checked afterward. A key switched in this way could leave a stale toggle enabled for a provider that doesn't support it, e.g. OpenAI's "minimal" reasoning effort staying selectable after switching the task moved the key to Gemini underneath it. The gates now re-run every time the task changes, not only when the Key select itself is touched directly.
+- **The Reasoning effort control showed up in Make a picture and Make a video, doing nothing.** Neither request sends `reasoning_effort` at all, so a value chosen there was silently dropped rather than reaching the provider. The row is now hidden for both tasks, the same way the reply-budget field already was.
+- **New chat showed up next to Send before any message had been sent.** An empty transcript already is a new chat, so the button had nothing to reset. It now appears only once there's a conversation to start over from.
+- **A generated video showed a player with no content.** The page's Content-Security-Policy allowed a `data:` URI for a generated picture's `<img>` but not for a generated video's `<video>`, so the browser silently blocked the source and left an empty player with a 0:00 duration. `media-src` now allows `data:` the same way `img-src` already did.
+- **A generated picture or video's caption read "usage unreported" as if something had failed.** Neither operation reports usage on any current provider, so that's the expected outcome, not a symptom. The caption now omits that segment entirely for both tasks instead of showing a phrase that reads like an error.
+
 ## [1.1.0] — 2026-08-15
 
 ### Added

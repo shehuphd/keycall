@@ -131,6 +131,7 @@
               <select id="pg-mode">
                 <option value="text">Write text</option>
                 <option value="image">Make a picture</option>
+                <option value="video">Make a video</option>
                 <option value="voice">Have a voice conversation</option>
               </select>
             </div>
@@ -170,6 +171,10 @@
             <p class="hint" id="pg-image-mode-note" hidden>
               Picture models take a description and nothing else. Generating one
               takes longer than text, often half a minute.
+            </p>
+            <p class="hint" id="pg-video-mode-note" hidden>
+              Video models take a description and nothing else. Rendering one
+              runs far longer than a picture, from under a minute to over ten.
             </p>
             <p class="hint" id="pg-voice-mode-note" hidden>
               A live session over its own connection, held open until you end

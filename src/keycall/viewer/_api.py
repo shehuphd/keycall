@@ -31,6 +31,7 @@ from .._types import (
     Tool,
     ToolCall,
     ToolResult,
+    VideoOutput,
 )
 from .._verify_core import DEFAULT_ATTEMPTS, order_candidates, run_verify
 from ._registry import MAX_READ_TIMEOUT, MIN_READ_TIMEOUT, Registry
@@ -44,10 +45,18 @@ __all__ = [
     "generate",
     "generate_image",
     "generate_stream_events",
+    "generate_video",
     "list_targets",
     "set_settings",
     "verify_target",
 ]
+
+# The viewer is a local single-user tool where a route blocking one request
+# thread for a while is fine; render times observed live range from 10s to
+# over 11 minutes, so this is generous rather than tight. This is a separate
+# budget from `registry.read_timeout` (each individual start/check/download
+# call within the poll loop still respects that, much shorter, setting).
+VIDEO_JOB_TIMEOUT = 900.0
 
 
 def error_body(error: KeyCallError) -> dict[str, Any]:
@@ -80,6 +89,7 @@ def list_targets(registry: Registry) -> dict[str, Any]:
                 "web_search": caps.web_search,
                 "tool_calling": caps.tool_calling,
                 "image_generation": caps.image_generation,
+                "video_generation": caps.video_generation,
                 "reasoning_effort": caps.reasoning_effort,
                 "realtime": caps.realtime,
             }
@@ -460,6 +470,35 @@ def generate_image(registry: Registry, target_id: int, body: dict[str, Any]) -> 
         {"base64_data": part.base64_data, "media_type": part.media_type}
         for part in result.parts
         if isinstance(part, ImageOutput)
+    ]
+    return body_out
+
+
+def generate_video(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """Video generation is job-based under the hood (start/poll/download),
+    but `client.generate_video()` already collapses that into one blocking
+    call, so this route stays a single round trip from the browser's view,
+    same shape as `generate_image`."""
+    try:
+        client = registry.client(target_id)
+    except KeyError:
+        return {"error": {"code": "not_found", "message": "unknown target id"}}
+
+    model = body.get("model")
+    prompt = body.get("prompt")
+    if not model or not isinstance(model, str) or not prompt or not isinstance(prompt, str):
+        return {"error": {"code": "bad_request", "message": "model and prompt are required"}}
+
+    try:
+        result = client.generate_video(model=model, prompt=prompt, timeout=VIDEO_JOB_TIMEOUT)
+    except KeyCallError as error:
+        return error_body(error)
+
+    body_out = _result_dict(result)
+    body_out["videos"] = [
+        {"base64_data": part.base64_data, "media_type": part.media_type, "url": part.url}
+        for part in result.parts
+        if isinstance(part, VideoOutput)
     ]
     return body_out
 

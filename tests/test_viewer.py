@@ -1,5 +1,6 @@
 """Viewer: API layer, HTTP server, auth, and the credential-leak canary."""
 
+import base64
 import json
 import os
 import threading
@@ -18,6 +19,7 @@ from keycall.viewer._api import (
     generate,
     generate_image,
     generate_stream_events,
+    generate_video,
     list_targets,
     set_settings,
     verify_target,
@@ -1114,6 +1116,78 @@ def test_generate_image_reports_a_provider_that_cannot():
     assert missing["error"]["code"] == "bad_request"
 
 
+GEMINI_VIDEO_OP = "models/veo-3.1-lite-generate-preview/operations/y5lxdapaztmq"
+GEMINI_VIDEO_URI = (
+    "https://generativelanguage.googleapis.com/v1beta/files/jn989ri0g72v:download?alt=media"
+)
+
+
+def test_generate_video_returns_the_clip_and_its_media_type():
+    # Video is job-based (start, poll, download), unlike image's single
+    # round trip, so the route's mock has to answer the whole sequence,
+    # not just one request. Payloads mirror test_video_generation.py's own
+    # live-captured Gemini fixtures.
+    video_bytes = b"\x00\x00\x00 ftypisommp4-ish"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(":predictLongRunning"):
+            return httpx.Response(200, json={"name": GEMINI_VIDEO_OP})
+        if "/operations/" in request.url.path:
+            return httpx.Response(
+                200,
+                json={
+                    "name": GEMINI_VIDEO_OP,
+                    "done": True,
+                    "response": {
+                        "generateVideoResponse": {
+                            "generatedSamples": [{"video": {"uri": GEMINI_VIDEO_URI}}]
+                        }
+                    },
+                },
+            )
+        return httpx.Response(
+            200, content=video_bytes, headers={"content-type": "video/mp4"}
+        )
+
+    reg = Registry(
+        [Target(provider="gemini", key=CANARY, name="my-gemini")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        body = generate_video(
+            reg,
+            0,
+            {"target": 0, "model": "veo-3.1-lite-generate-preview", "prompt": "A boat."},
+        )
+    finally:
+        reg.close()
+
+    assert body["videos"] == [
+        {
+            "base64_data": base64.b64encode(video_bytes).decode(),
+            "media_type": "video/mp4",
+            "url": GEMINI_VIDEO_URI,
+        }
+    ]
+    assert body["operation"] == "video_generation"
+    assert CANARY not in json.dumps(body)
+
+
+def test_generate_video_reports_a_provider_that_cannot():
+    reg = make_registry()
+    try:
+        body = generate_video(
+            reg, 0, {"target": 0, "model": "gpt-4o-mini", "prompt": "A boat."}
+        )
+        missing = generate_video(reg, 0, {"target": 0, "model": "", "prompt": ""})
+    finally:
+        reg.close()
+    # make_registry() is an OpenAI target, which has no video surface at
+    # all; the response shape is what's checked here.
+    assert "error" in body
+    assert missing["error"]["code"] == "bad_request"
+
+
 WAV_BYTES = b"RIFF$\x00\x00\x00WAVEfmt " + b"\x00" * 24
 PDF_BYTES = b"%PDF-1.4\n1 0 obj\nendobj\ntrailer\n%%EOF\n"
 
@@ -1350,6 +1424,9 @@ def test_targets_tell_the_browser_what_each_key_can_accept():
     assert caps["perplexity"]["tool_calling"] is False
     assert caps["anthropic"]["image_generation"] is False
     assert caps["openai"]["image_generation"] is True
+    assert caps["gemini"]["video_generation"] is True
+    assert caps["xai"]["video_generation"] is True
+    assert caps["openai"]["video_generation"] is False
     assert caps["openai"]["reasoning_effort"] is True
     assert caps["deepseek"]["reasoning_effort"] is False
     assert CANARY not in json.dumps(body)

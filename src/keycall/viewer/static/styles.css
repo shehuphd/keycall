@@ -595,6 +595,17 @@ a { color: var(--accent); }
   object-fit: contain;
   cursor: zoom-in;
 }
+
+/* A generated video sizes and caps the same way; its own controls bar
+   handles fullscreen, so no lightbox affordance is needed here. */
+.pg-video {
+  display: block;
+  max-width: 100%;
+  max-height: 24rem;
+  width: auto;
+  border-radius: 8px;
+  margin-bottom: 0.5rem;
+}
 .lightbox {
   position: fixed;
   inset: 0;

@@ -407,7 +407,10 @@ async function fillTargetSelects() {
 // provider on file serves text models). The name doubles as the provider
 // capability flag, which the two share deliberately.
 function modeCategory(mode) {
-  return mode === "image" ? "image_generation" : mode === "voice" ? "realtime" : null;
+  return mode === "image" ? "image_generation"
+    : mode === "video" ? "video_generation"
+    : mode === "voice" ? "realtime"
+    : null;
 }
 
 // "targetId:category" -> whether that key's own model list has at least
@@ -600,6 +603,7 @@ async function loadPlaygroundModels() {
   }
   const category =
     currentMode() === "image" ? "image_generation"
+    : currentMode() === "video" ? "video_generation"
     : currentMode() === "voice" ? "realtime"
     : "text_generation";
   const sel = el("pg-model");
@@ -624,6 +628,7 @@ async function loadPlaygroundModels() {
     none.value = "";
     none.textContent =
       currentMode() === "image" ? "this key has no picture models"
+      : currentMode() === "video" ? "this key has no video models"
       : currentMode() === "voice" ? "this key has no voice models"
       : "this key has no text models";
     sel.appendChild(none);
@@ -718,31 +723,44 @@ function currentMode() {
 
 async function applyMode() {
   const image = currentMode() === "image";
+  const video = currentMode() === "video";
   const voice = currentMode() === "voice";
-  el("pg-extras").hidden = image || voice;
-  el("pg-maxtok-row").hidden = image || voice;
-  el("pg-reasoning-row").hidden = voice;
-  el("pg-system-row").hidden = image;
+  el("pg-extras").hidden = image || video || voice;
+  el("pg-maxtok-row").hidden = image || video || voice;
+  // Neither generate_image() nor generate_video() sends reasoning_effort
+  // at all (their requests are model + prompt, nothing else), so the
+  // control would silently do nothing if left up rather than refusing.
+  el("pg-reasoning-row").hidden = image || video || voice;
+  el("pg-system-row").hidden = image || video;
   el("pg-image-mode-note").hidden = !image;
+  el("pg-video-mode-note").hidden = !video;
   el("pg-voice-mode-note").hidden = !voice;
-  // An image model takes a description and nothing else, so a microphone
-  // in the composer would only offer something that cannot be sent. A
-  // voice session has its own microphone control, in its own panel.
-  el("pg-mic").hidden = image || voice;
+  // An image or video model takes a description and nothing else, so a
+  // microphone in the composer would only offer something that cannot be
+  // sent. A voice session has its own microphone control, in its own panel.
+  el("pg-mic").hidden = image || video || voice;
   el("pg-composer").hidden = voice;
   el("pg-voice-panel").hidden = !voice;
   // Leaving voice mode ends any session in progress rather than leaving
   // a WebSocket open behind a panel nothing points at any more.
   if (!voice) endVoiceSession();
-  if ((image || voice) && REC) discardRecording();
+  if ((image || video || voice) && REC) discardRecording();
   el("pg-prompt").placeholder = image
     ? "Describe the picture you want. Press Send, or Ctrl+Enter."
+    : video
+    ? "Describe the video you want. Press Send, or Ctrl+Enter."
     : "Ask anything. Press Send, or Ctrl+Enter.";
   // What a key qualifies for changes with the task, so the Key list is
   // rebuilt before the Model list is fetched for whichever key that leaves
   // selected.
   await renderPlaygroundTargets();
   loadPlaygroundModels();
+  // renderPlaygroundTargets() can silently swap the selected key (setting
+  // .value directly fires no change event), so the per-key gates have to
+  // be re-run here too. Without this, a control gated for the previous
+  // key's provider (e.g. OpenAI's "minimal" reasoning effort) stayed
+  // enabled after the task switch moved the key to Gemini underneath it.
+  applyKeyGates();
 }
 
 el("pg-mode").addEventListener("change", applyMode);
@@ -1330,6 +1348,17 @@ function openLightbox(source) {
   dismiss.focus();
 }
 
+// Neither image nor video generation reports usage on any current
+// provider, so "usage unreported" there is the expected outcome, not a
+// symptom that needs its own caption; it would otherwise read as an
+// error to a user unsure whether it needs acting on.
+function generationCaption(result) {
+  const parts = [result.model, formatDuration(result.round_trip_duration_ms)];
+  const usage = usageLabel(result.usage);
+  if (usage !== "usage unreported") parts.push(usage);
+  return parts.join(" · ");
+}
+
 function addImageBubble(result) {
   const bubble = addBubble("model");
   (result.images || []).forEach((image) => {
@@ -1349,9 +1378,39 @@ function addImageBubble(result) {
   });
   const meta = document.createElement("div");
   meta.className = "meta";
-  meta.textContent =
-    `${result.model} · ${formatDuration(result.round_trip_duration_ms)} · ` +
-    usageLabel(result.usage);
+  meta.textContent = generationCaption(result);
+  bubble.appendChild(meta);
+  (result.warnings || []).forEach((warning) => {
+    const note = document.createElement("div");
+    note.className = "meta";
+    note.textContent = warning;
+    bubble.appendChild(note);
+  });
+  return bubble;
+}
+
+function addVideoBubble(result) {
+  const bubble = addBubble("model");
+  (result.videos || []).forEach((video) => {
+    const player = document.createElement("video");
+    player.className = "pg-video";
+    player.controls = true;
+    // Embedded the same way as a picture: the base64 bytes are already in
+    // the response, and a provider's own video_url can expire, so the data
+    // URI is the one source guaranteed to still work when this bubble is
+    // scrolled back to later.
+    player.src = `data:${video.media_type};base64,${video.base64_data}`;
+    bubble.appendChild(player);
+    const save = document.createElement("a");
+    save.href = player.src;
+    save.download = `keycall-video.${(video.media_type || "video/mp4").split("/")[1]}`;
+    save.textContent = "Save this video";
+    save.className = "meta";
+    bubble.appendChild(save);
+  });
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = generationCaption(result);
   bubble.appendChild(meta);
   (result.warnings || []).forEach((warning) => {
     const note = document.createElement("div");
@@ -1376,11 +1435,15 @@ function transcriptEmpty() {
   empty.appendChild(title);
   empty.appendChild(hint);
   box.appendChild(empty);
+  // Nothing to start over from yet: an empty transcript already is a new
+  // chat, so the button would only offer to reset a reset.
+  el("pg-new").hidden = true;
 }
 
 function clearTranscriptPlaceholder() {
   const placeholder = el("pg-transcript").querySelector(".pg-empty");
   if (placeholder) placeholder.remove();
+  el("pg-new").hidden = false;
 }
 
 function addBubble(kind) {
@@ -2212,6 +2275,7 @@ function gateCapabilities(off) {
     }
   };
   taskGate("image", "image_generation", "make a picture");
+  taskGate("video", "video_generation", "make a video");
   taskGate("voice", "realtime", "hold a voice conversation");
 }
 
@@ -2423,7 +2487,10 @@ async function runGeneration({ continuation }) {
     return;
   }
   PG_LAST_REQUEST = { targetId: el("pg-target").value, modelId: model };
-  working(btn, currentMode() === "image" ? "Drawing…" : "Sending…");
+  working(
+    btn,
+    currentMode() === "image" ? "Drawing…" : currentMode() === "video" ? "Rendering…" : "Sending…"
+  );
   if (!continuation) {
     addUserTurn(prompt, attached.labels);
     // The turn is on screen now, so leaving the text in the box invites
@@ -2455,6 +2522,32 @@ async function runGeneration({ continuation }) {
       renderGeneration(addBubble("model"), data);
     } else {
       addImageBubble(data);
+    }
+    done(btn);
+    return;
+  }
+  if (currentMode() === "video") {
+    const placeholder = addBubble("model");
+    // Video renders run far longer than pictures (minutes, not seconds),
+    // so the copy sets that expectation instead of implying something is
+    // stuck.
+    const startedAt = Date.now();
+    const paint = () => {
+      placeholder.textContent =
+        `Rendering the video. This can take several minutes… · ${formatElapsed(startedAt)}`;
+    };
+    paint();
+    const ticker = setInterval(paint, 1000);
+    const data = await api("/api/generate/video", {
+      method: "POST",
+      body: { target: Number(el("pg-target").value), model, prompt },
+    });
+    clearInterval(ticker);
+    placeholder.remove();
+    if (data.error) {
+      renderGeneration(addBubble("model"), data);
+    } else {
+      addVideoBubble(data);
     }
     done(btn);
     return;
@@ -2777,6 +2870,7 @@ const TRACE_ROUTE_LABELS = {
   "/api/generate/stream": "Streamed text",
   "/api/generate": "Text",
   "/api/generate/image": "Picture",
+  "/api/generate/video": "Video",
   "/api/verify": "Verify",
   "/api/models": "Model list",
 };
