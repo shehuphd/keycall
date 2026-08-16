@@ -4,6 +4,13 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The release gate live-verifies video generation.** A short, bounded call against each video-capable provider now runs as part of the strict live-test suite: the cheapest available model (matched by tier words like "lite" or "flash" rather than a hardcoded id, since no provider's model list exposes a price or tier field to check directly) and the shortest duration each accepts, decoded to confirm the bytes are a valid MP4 or WebM rather than just checking that bytes arrived.
+- **The Playground's video task has a Duration control.** A slider sets how many seconds of video to render, ranging over whatever the selected key's provider accepts: a 4/6/8-second stepped range for Gemini's Veo, a continuous 1–15 second range for xAI's Grok Imagine. It defaults to 2 seconds (Gemini's own floor is 4) and shows a warning once raised past 4, since every provider charges per second. The video model dropdown now defaults to the same cheaper/lighter model the live test picks, instead of whatever the provider lists first.
+
 ## [1.2.0] — 2026-08-16
 
 ### Added

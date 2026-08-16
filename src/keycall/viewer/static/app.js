@@ -652,6 +652,26 @@ async function loadPlaygroundModels() {
     o.disabled = no;
     sel.appendChild(o);
   });
+  if (category === "video_generation") {
+    const cheap = cheapestModelId(live.map((m) => m.id));
+    if (cheap) sel.value = cheap;
+  }
+}
+
+// No provider's model list carries a price or tier field, so a
+// cheaper/lighter model can only be recognized by name. These are the
+// tier words providers already use today, tried in priority order; a
+// provider with none of them keeps the picker's default (first) choice.
+// Mirrors tests/test_live.py's _CHEAP_TIER_HINTS so both pick the same
+// model for the same key.
+const CHEAP_TIER_HINTS = ["lite", "nano", "mini", "fast", "flash"];
+
+function cheapestModelId(ids) {
+  for (const hint of CHEAP_TIER_HINTS) {
+    const match = ids.find((id) => id.toLowerCase().includes(hint));
+    if (match) return match;
+  }
+  return null;
 }
 
 // "<target id>:<model id>" for every model this session has seen a provider
@@ -688,6 +708,9 @@ el("pg-target").addEventListener("change", () => {
   // What a key can do changes with the key, so re-gate before the user
   // reaches for a control the new one cannot honour.
   applyKeyGates();
+  // A key swap within video mode can cross the Gemini/xAI duration-range
+  // boundary; clamp onto the new range without resetting to its default.
+  if (currentMode() === "video") syncVideoDuration(false);
 });
 
 // Bound the two Playground columns to what is actually left on screen, so
@@ -735,6 +758,8 @@ async function applyMode() {
   el("pg-image-mode-note").hidden = !image;
   el("pg-video-mode-note").hidden = !video;
   el("pg-voice-mode-note").hidden = !voice;
+  el("pg-video-duration-row").hidden = !video;
+  if (!video) el("pg-video-duration-warning").hidden = true;
   // An image or video model takes a description and nothing else, so a
   // microphone in the composer would only offer something that cannot be
   // sent. A voice session has its own microphone control, in its own panel.
@@ -761,9 +786,55 @@ async function applyMode() {
   // key's provider (e.g. OpenAI's "minimal" reasoning effort) stayed
   // enabled after the task switch moved the key to Gemini underneath it.
   applyKeyGates();
+  // Fresh entry into video mode resets to the provider's default rather
+  // than carrying over whatever the slider last held.
+  if (video) syncVideoDuration(true);
 }
 
 el("pg-mode").addEventListener("change", applyMode);
+
+// Gemini's Veo only accepts 4, 6, or 8 second clips; xAI's Grok Imagine
+// takes any whole second from 1. Rather than one compromise range, the
+// slider's min/max/step switch to match whichever provider the selected
+// key belongs to. `reset` snaps to that provider's default (fresh entry
+// into video mode); otherwise the current value is clamped and rounded
+// onto the new step so a mid-task key swap doesn't silently jump.
+function syncVideoDuration(reset) {
+  const input = el("pg-video-duration");
+  // Read the current value before touching min/max/step: reassigning those
+  // attributes one at a time can leave the input in a momentarily invalid
+  // state (e.g. old value 4 against a new min of 1 with the old step of 2
+  // still in place), and the browser silently re-snaps .value right then,
+  // not when the whole set finishes. Reading afterward would pick up that
+  // intermediate snap instead of the value this function was asked to
+  // carry forward.
+  const previous = Number(input.value);
+  const target = TARGETS.find((t) => String(t.id) === el("pg-target").value);
+  const gemini = target && target.provider === "gemini";
+  const config = gemini
+    ? { min: 4, max: 8, step: 2, def: 4 }
+    : { min: 1, max: 15, step: 1, def: 2 };
+  input.min = config.min;
+  input.max = config.max;
+  input.step = config.step;
+  if (reset) {
+    input.value = config.def;
+  } else {
+    const clamped = Math.min(config.max, Math.max(config.min, previous));
+    input.value = config.min + Math.round((clamped - config.min) / config.step) * config.step;
+  }
+  paintVideoDurationLabel();
+}
+
+function paintVideoDurationLabel() {
+  const input = el("pg-video-duration");
+  el("pg-video-duration-value").textContent = `${input.value}s`;
+  // Every provider charges per second, so a longer render past the
+  // shorter end of either range is where the warning earns its keep.
+  el("pg-video-duration-warning").hidden = Number(input.value) <= 4;
+}
+
+el("pg-video-duration").addEventListener("input", paintVideoDurationLabel);
 
 // --- voice conversation -------------------------------------------------
 
@@ -2540,7 +2611,12 @@ async function runGeneration({ continuation }) {
     const ticker = setInterval(paint, 1000);
     const data = await api("/api/generate/video", {
       method: "POST",
-      body: { target: Number(el("pg-target").value), model, prompt },
+      body: {
+        target: Number(el("pg-target").value),
+        model,
+        prompt,
+        duration_seconds: Number(el("pg-video-duration").value),
+      },
     });
     clearInterval(ticker);
     placeholder.remove();

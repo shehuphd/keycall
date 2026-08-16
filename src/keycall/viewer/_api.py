@@ -489,8 +489,17 @@ def generate_video(registry: Registry, target_id: int, body: dict[str, Any]) -> 
     if not model or not isinstance(model, str) or not prompt or not isinstance(prompt, str):
         return {"error": {"code": "bad_request", "message": "model and prompt are required"}}
 
+    duration_seconds = body.get("duration_seconds")
+    if duration_seconds is not None and not isinstance(duration_seconds, int):
+        return {"error": {"code": "bad_request", "message": "duration_seconds must be an integer"}}
+
     try:
-        result = client.generate_video(model=model, prompt=prompt, timeout=VIDEO_JOB_TIMEOUT)
+        result = client.generate_video(
+            model=model,
+            prompt=prompt,
+            duration_seconds=duration_seconds,
+            timeout=VIDEO_JOB_TIMEOUT,
+        )
     except KeyCallError as error:
         return error_body(error)
 

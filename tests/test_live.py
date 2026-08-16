@@ -798,6 +798,78 @@ def test_live_image_generation():
     assert checked, "no image-capable target in the live source"
 
 
+# No provider's list_models response carries a price or tier field (nor
+# does keycall.Model), so a cheaper/lighter model can only be recognized
+# by name. These are the tier words providers already use today, tried
+# in priority order; a provider with none of them falls back to its
+# first listed model. Centralized here so a provider renaming its tier
+# (e.g. "lite" -> "mini") is a one-line fix instead of a silent miss.
+_CHEAP_TIER_HINTS = ("lite", "nano", "mini", "fast", "flash")
+
+
+def _cheapest_model_id(models):
+    for hint in _CHEAP_TIER_HINTS:
+        match = next((m.id for m in models if hint in m.id.lower()), None)
+        if match is not None:
+            return match
+    return models[0].id
+
+
+def test_live_video_generation():
+    """Video billing runs well above every other operation this suite
+    covers, so this picks the lightest available model per provider (the
+    live model list, not a fixed id: a hardcoded model would drift the
+    day a lighter tier ships) and the shortest duration each accepts.
+    Gemini's Veo only takes 4, 6, or 8 seconds; xAI's Grok Imagine takes
+    any whole second from 1. Bytes still have to decode as a valid video,
+    not just arrive."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import base64
+
+    from keycall import KeyCall, ModelCategory
+    from keycall._registry import providers_with
+
+    shortest_duration = {"gemini": 4, "xai": 1}
+
+    targets, _ = load_targets(source)
+    supporting = providers_with("video_generation")
+    checked = []
+    for target in targets:
+        if target.provider not in supporting:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+            read_timeout=120.0,
+        )
+        try:
+            discovery = client.list_models(categories={ModelCategory.VIDEO_GENERATION})
+            assert discovery.models, f"{target.display_name}: no video models listed"
+            model = _cheapest_model_id(discovery.models)
+            result = client.generate_video(
+                model=model,
+                prompt="A simple flat illustration of a blue circle on a white background",
+                duration_seconds=shortest_duration[target.provider],
+                timeout=120.0,
+            )
+            assert result.parts, "no video part returned"
+            part = result.parts[0]
+            raw = base64.b64decode(part.base64_data or "")
+            assert raw[4:12] == b"ftypisom" or raw[:4] == b"\x1aE\xdf\xa3", (
+                f"{model} returned bytes that are not a recognized video "
+                f"format (first bytes {raw[:16]!r})"
+            )
+            print(f"{target.display_name}: {len(raw)} bytes from {model}")
+            checked.append(target.provider)
+        finally:
+            client.close()
+    assert checked, "no video-capable target in the live source"
+
+
 def test_live_async_client_parity():
     """The async client shares the adapters but has its own transport,
     context managers, and stream iteration. Everything shipped since 0.5.0

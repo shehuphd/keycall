@@ -611,6 +611,28 @@ Error messages are sanitized: no credentials, no raw request bodies, no unsaniti
 
 Retry behavior: model listing gets a small bounded retry budget for transient failures, honoring `Retry-After`. Generation is never retried by KeyCall, since no supported provider documents generation idempotency, so retrying an ambiguous failure risks a second charge. `retryable` tells *you* whether a retry is reasonable at your layer.
 
+## Falling back across discovered models
+
+A model a provider's listing endpoint returns isn't a guarantee it will accept a request from your account: some providers advertise retired or entitlement-gated models with no lifecycle field to filter on ahead of time (see [Listing and filtering models](#listing-and-filtering-models) above). `MODEL_NOT_AVAILABLE` is how KeyCall reports that after the fact, and it's not retryable on the same model for that reason, so the useful response is to drop it and move to the next discovered candidate rather than retry it:
+
+```python
+from keycall import ErrorCode, KeyCallError
+
+def generate_with_fallback(client, model_ids, prompt):
+    for model_id in model_ids:
+        try:
+            return client.generate_text(model=model_id, prompt=prompt)
+        except KeyCallError as error:
+            if error.code is not ErrorCode.MODEL_NOT_AVAILABLE:
+                raise
+    raise RuntimeError("no candidate model was available")
+
+discovery = client.list_models()
+result = generate_with_fallback(client, [m.id for m in discovery.models], "Say hello.")
+```
+
+This is the same pattern the viewer's own Playground uses client-side: a model that comes back `MODEL_NOT_AVAILABLE` sinks to the bottom of its list for the rest of the session instead of being retried.
+
 ## The verify CLI
 
 Live credential verification, one model-list call per target:

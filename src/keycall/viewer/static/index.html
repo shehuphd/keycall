@@ -163,6 +163,15 @@
               <input id="pg-timeout" type="range" value="180" min="60" max="300" step="5">
               <span id="pg-timeout-value">180s</span>
             </div>
+            <div class="pg-row" id="pg-video-duration-row" hidden>
+              <label for="pg-video-duration" title="How many seconds of video to render. Longer clips cost more; the range and step depend on the selected key's provider.">Duration</label>
+              <input id="pg-video-duration" type="range" value="2" min="1" max="15" step="1">
+              <span id="pg-video-duration-value">2s</span>
+            </div>
+            <p class="hint" id="pg-video-duration-warning" hidden>
+              A longer render costs more. Check the provider's per-second
+              rate before raising this much further.
+            </p>
             <div class="pg-row stacked" id="pg-system-row">
               <label for="pg-system">Standing instructions</label>
               <input id="pg-system" type="text"

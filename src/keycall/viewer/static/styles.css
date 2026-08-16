@@ -352,6 +352,17 @@ a { color: var(--accent); }
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+/* Same third-column layout as the timeout row, for the same reason: a
+   live value readout next to the slider, not below it. */
+#pg-video-duration-row { grid-template-columns: 8.5rem minmax(0, 1fr) auto; }
+#pg-video-duration { accent-color: var(--accent); }
+#pg-video-duration-value {
+  color: var(--muted);
+  font-size: 0.85rem;
+  min-width: 2.8rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 .pg-row-end { display: flex; justify-content: flex-end; margin-top: 0.5rem; }
 
 /* Recording */
