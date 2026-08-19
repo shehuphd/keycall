@@ -45,7 +45,7 @@ dependencies = [
 # unbounded constraint here would let pip install a traceact release the
 # runtime guard immediately disables, which is what happened when 1.0.0
 # shipped upstream and CI's fresh install picked it straight up.
-traceact = ["traceact>=0.13,<1.0"]
+traceact = ["traceact>=0.13,<2.0"]
 # tomli is unconditional here, unlike in the runtime dependencies where it
 # is gated to Python < 3.11: mypy targets 3.10, so it type-checks the
 # backport branch of the TOML import regardless of the interpreter running
@@ -55,7 +55,7 @@ traceact = ["traceact>=0.13,<1.0"]
 # the gated type check fails on an import it cannot read. Runtime is
 # unaffected, so the optional extra above stays where it is. Same upper
 # bound as the traceact extra, for the same reason.
-dev = ["pytest>=8", "mypy>=1.10", "ruff>=0.5", "traceact>=0.14.2,<1.0", "tomli>=2.0"]
+dev = ["pytest>=8", "mypy>=1.10", "ruff>=0.5", "traceact>=0.14.2,<2.0", "tomli>=2.0"]
 
 [project.urls]
 Homepage = "https://github.com/shehuphd/keycall"
