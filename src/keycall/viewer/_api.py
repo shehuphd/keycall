@@ -41,12 +41,16 @@ __all__ = [
     "add_source",
     "browse_models",
     "check_target",
+    "clear_conversations",
     "error_body",
     "generate",
     "generate_image",
     "generate_stream_events",
     "generate_video",
+    "get_conversation",
+    "list_conversations",
     "list_targets",
+    "save_conversation",
     "set_settings",
     "verify_target",
 ]
@@ -123,6 +127,86 @@ def set_settings(registry: Registry, body: dict[str, Any]) -> dict[str, Any]:
         }
     registry.set_read_timeout(seconds)
     return {"read_timeout": seconds}
+
+
+def _conversation_summary(conversation: Any) -> dict[str, Any]:
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "mode": conversation.mode,
+        "target": conversation.target_id,
+        "model": conversation.model_id,
+        "updated_at": conversation.updated_at,
+    }
+
+
+def _conversation_full(conversation: Any) -> dict[str, Any]:
+    return {
+        **_conversation_summary(conversation),
+        "history": conversation.history,
+        "transcript_html": conversation.transcript_html,
+    }
+
+
+def list_conversations(registry: Registry) -> dict[str, Any]:
+    """Metadata only, newest first: enough for the Playground's history
+    list without shipping every saved transcript on every page load."""
+    return {"conversations": [_conversation_summary(c) for c in registry.list_conversations()]}
+
+
+def get_conversation(registry: Registry, conversation_id: int) -> dict[str, Any]:
+    conversation = registry.get_conversation(conversation_id)
+    if conversation is None:
+        return {"error": {"code": "not_found", "message": "unknown conversation id"}}
+    return {"conversation": _conversation_full(conversation)}
+
+
+def save_conversation(registry: Registry, body: dict[str, Any]) -> dict[str, Any]:
+    """Create or overwrite a conversation. The body is what the Playground
+    already holds client-side (title, mode, target, model, the replay
+    history, and the rendered transcript) plus an optional id from a
+    previous save of the same conversation, so repeated saves as a chat
+    grows update one slot instead of piling up copies."""
+    conversation_id = body.get("id")
+    if conversation_id is not None and not isinstance(conversation_id, int):
+        return {"error": {"code": "bad_request", "message": "id must be an integer"}}
+    title = body.get("title")
+    mode = body.get("mode")
+    history = body.get("history")
+    transcript_html = body.get("transcript_html")
+    if (
+        not isinstance(title, str)
+        or not isinstance(mode, str)
+        or not isinstance(history, list)
+        or not isinstance(transcript_html, str)
+    ):
+        return {
+            "error": {
+                "code": "bad_request",
+                "message": "title, mode, history, and transcript_html are required",
+            }
+        }
+    target_id = body.get("target")
+    if target_id is not None and not isinstance(target_id, int):
+        return {"error": {"code": "bad_request", "message": "target must be an integer or null"}}
+    model_id = body.get("model")
+    if model_id is not None and not isinstance(model_id, str):
+        return {"error": {"code": "bad_request", "message": "model must be a string or null"}}
+    conversation = registry.save_conversation(
+        id=conversation_id,
+        title=title,
+        mode=mode,
+        target_id=target_id,
+        model_id=model_id,
+        history=history,
+        transcript_html=transcript_html,
+    )
+    return {"conversation": _conversation_full(conversation)}
+
+
+def clear_conversations(registry: Registry) -> dict[str, Any]:
+    registry.clear_conversations()
+    return {"cleared": True}
 
 
 def _model_dict(model: Any) -> dict[str, Any]:

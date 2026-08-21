@@ -205,6 +205,20 @@ def dedupe_citations(citations: Sequence[Citation]) -> tuple[Citation, ...]:
     return tuple(unique)
 
 
+def _schema_has_key(schema: Any, key: str) -> bool:
+    """Whether `key` appears anywhere in a JSON Schema tree, at any nesting
+    depth: a schema generator puts a keyword like `additionalProperties` on
+    every object level it emits, and `$defs`/`definitions` can nest one
+    again inside a referenced sub-schema."""
+    if isinstance(schema, dict):
+        if key in schema:
+            return True
+        return any(_schema_has_key(value, key) for value in schema.values())
+    if isinstance(schema, list):
+        return any(_schema_has_key(item, key) for item in schema)
+    return False
+
+
 class InbandStreamError(Exception):
     """A provider error event received mid-stream. Carries the raw provider
     message; the client scrubs it before it can reach a KeyCallError."""
@@ -850,6 +864,29 @@ class ProviderAdapter(ABC):
                 "anthropic cannot combine web_search with response_schema: "
                 "forcing the structured-output tool prevents the model "
                 "from also calling web_search in the same turn",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.resolved.provider,
+                operation=Operation.TEXT_GENERATION.value,
+            )
+        if (
+            request.response_schema is not None
+            and self.resolved.provider == "gemini"
+            and _schema_has_key(request.response_schema, "additionalProperties")
+        ):
+            # Live-verified 2026-08-08: gemini's schema dialect rejects the
+            # key with a 400 wherever it appears, not only at the top
+            # level — the opposite of OpenAI's strict mode, which requires
+            # it on every object level. One schema object cannot satisfy
+            # both, and a schema generator that defaults to including it
+            # (Pydantic's model_json_schema(), for one) will trip this on
+            # every nested object unless it is stripped first. Caught here
+            # rather than silently stripped: KeyCall doesn't know whether
+            # the same schema object is about to be reused for a provider
+            # that requires the key.
+            raise KeyCallError(
+                "gemini rejects any 'additionalProperties' key in "
+                "response_schema, at any nesting depth. Strip it from the "
+                "schema before calling gemini with it",
                 code=ErrorCode.UNSUPPORTED_OPERATION,
                 provider=self.resolved.provider,
                 operation=Operation.TEXT_GENERATION.value,

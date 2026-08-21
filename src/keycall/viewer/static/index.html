@@ -123,6 +123,19 @@
 
     <section id="playground" class="tab">
       <div class="pg-layout">
+        <aside class="pg-history">
+          <div class="pg-group">
+            <div class="pg-history-head">
+              <h3>History</h3>
+              <button id="pg-history-clear" class="secondary danger" type="button" disabled
+                      title="Nothing saved yet — send a message to start a conversation">Clear</button>
+            </div>
+            <div id="pg-history-list" class="pg-history-list">
+              <p class="hint" id="pg-history-empty">Conversations appear here once they have a reply. Cleared when the server stops, kept through a page reload.</p>
+            </div>
+          </div>
+        </aside>
+
         <aside class="pg-side">
           <div class="pg-group">
             <h3>Key and model</h3>
@@ -309,10 +322,11 @@
                 <path fill="currentColor" d="M18 11a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.91V19H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.09A6 6 0 0 0 18 11Z"/>
               </svg>
             </button>
-            <button id="pg-run">Send</button>
+            <button id="pg-run" disabled title="Type a message, or attach something, before sending">Send</button>
             <button id="pg-new" type="button" class="secondary"
                     title="Clear the transcript and start a new conversation">New chat</button>
           </div>
+          <p class="hint" id="pg-composer-hint">Enter starts a new line. Ctrl+Enter to send.</p>
           <!-- Replaces the composer while recording, so there is one place to
                look and one obvious way to finish. -->
           <div class="pg-voice-panel" id="pg-voice-panel" hidden>
@@ -328,8 +342,9 @@
                   <path fill="currentColor" d="M18 11a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.91V19H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.09A6 6 0 0 0 18 11Z"/>
                 </svg>
               </button>
-              <button id="pg-voice-send" type="button">Send</button>
+              <button id="pg-voice-send" type="button" disabled title="Type a line before sending">Send</button>
             </div>
+            <p class="hint" id="pg-voice-composer-hint">Enter starts a new line. Ctrl+Enter to send.</p>
           </div>
           <div class="pg-recorder" id="pg-recorder" hidden>
             <span class="rec-dot" aria-hidden="true"></span>
@@ -388,7 +403,8 @@
       </p>
       <div class="controls">
         <button id="traces-refresh">Refresh</button>
-        <button id="traces-clear">Clear traces</button>
+        <button id="traces-clear" class="secondary danger" disabled
+                title="No traces recorded yet">Clear traces</button>
         <input id="traces-search" type="search" placeholder="Search traces">
         <label><input id="traces-auto" type="checkbox" checked> Refresh automatically while this tab is open</label>
       </div>
@@ -406,6 +422,18 @@
       </table>
     </section>
   </main>
+
+  <div id="confirm-dialog" class="confirm-backdrop" hidden>
+    <div class="confirm-box" role="alertdialog" aria-modal="true"
+         aria-labelledby="confirm-title" aria-describedby="confirm-message">
+      <h3 id="confirm-title"></h3>
+      <p id="confirm-message"></p>
+      <div class="confirm-actions">
+        <button id="confirm-cancel" class="secondary" type="button">Cancel</button>
+        <button id="confirm-accept" class="danger" type="button"></button>
+      </div>
+    </div>
+  </div>
 
   <script type="module" src="/static/app.js"></script>
 </body>

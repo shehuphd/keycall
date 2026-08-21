@@ -21,7 +21,7 @@ from .._sanitize import safe_display_name
 from .._sources import Target
 from .._types import ModelDiscovery
 
-__all__ = ["Registry", "TargetView"]
+__all__ = ["Conversation", "Registry", "TargetView"]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -48,6 +48,24 @@ def _accepts(capabilities: Any) -> dict[str, dict[str, bool]]:
         }
         for kind in ("image", "audio", "file")
     }
+
+
+@dataclass(slots=True, kw_only=True)
+class Conversation:
+    """A Playground conversation, saved server-side so it survives a page
+    reload rather than only a JS variable's lifetime. The browser owns the
+    shape of `history` and `transcript_html`: the server stores and returns
+    them opaque, the same way it never re-derives a rendered bubble from raw
+    provider text a second time."""
+
+    id: int
+    title: str
+    mode: str
+    target_id: int | None
+    model_id: str | None
+    history: list[dict[str, Any]]
+    transcript_html: str
+    updated_at: float
 
 
 @dataclass(slots=True, kw_only=True)
@@ -85,6 +103,8 @@ class Registry:
         self._httpx_transport = httpx_transport
         self._read_timeout = DEFAULT_READ_TIMEOUT
         self._retired: list[KeyCall] = []
+        self._conversations: dict[int, Conversation] = {}
+        self._next_conversation_id = 0
         self.add_targets(targets)
 
     def _open_client(self, target: Target) -> KeyCall:
@@ -196,6 +216,56 @@ class Registry:
             if entry is not None:
                 entry.discovery = discovery
                 entry.discovery_at = time.monotonic()
+
+    def save_conversation(
+        self,
+        *,
+        id: int | None,
+        title: str,
+        mode: str,
+        target_id: int | None,
+        model_id: str | None,
+        history: list[dict[str, Any]],
+        transcript_html: str,
+    ) -> Conversation:
+        """Create a conversation, or overwrite one this same viewer already
+        saved. `id` addresses a slot the browser already knows about (its
+        own most recent save), not a request to guess at merging: a save
+        with an unknown or absent id always creates a new one rather than
+        silently landing on the wrong conversation."""
+        with self._lock:
+            if id is not None and id in self._conversations:
+                new_id = id
+            else:
+                new_id = self._next_conversation_id
+                self._next_conversation_id += 1
+            conversation = Conversation(
+                id=new_id,
+                title=title,
+                mode=mode,
+                target_id=target_id,
+                model_id=model_id,
+                history=history,
+                transcript_html=transcript_html,
+                updated_at=time.time(),
+            )
+            self._conversations[new_id] = conversation
+            return conversation
+
+    def list_conversations(self) -> list[Conversation]:
+        """Newest activity first, the same order a Playground's own history
+        list should read in."""
+        with self._lock:
+            conversations = list(self._conversations.values())
+        return sorted(conversations, key=lambda c: c.updated_at, reverse=True)
+
+    def get_conversation(self, conversation_id: int) -> Conversation | None:
+        with self._lock:
+            return self._conversations.get(conversation_id)
+
+    def clear_conversations(self) -> None:
+        with self._lock:
+            self._conversations.clear()
 
     def close(self) -> None:
         with self._lock:

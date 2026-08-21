@@ -16,6 +16,11 @@ Routes (all under the base "/"):
   POST /api/generate/video       {target, model, prompt} -> InvocationResult
   GET  /api/realtime?target=&model=&voice=&instructions=   WebSocket upgrade;
                                   bridges the browser to a realtime session
+  GET  /api/conversations        metadata for every saved Playground conversation
+  GET  /api/conversations?id=    one conversation's full history and transcript
+  POST /api/conversations        {id?, title, mode, target, model, history,
+                                   transcript_html} -> create or overwrite one
+  POST /api/conversations/clear  drop every saved conversation
 
 Auth: a token is required on every /api/* request. Unlike TraceAct's opt-in
 token, it is mandatory here: this server holds live credentials and can make
@@ -473,6 +478,21 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(_api.list_targets(self._registry))
         elif route == "/api/traces":
             self._send_json({"traces": self.server.trace_log.entries()})
+        elif route == "/api/conversations":
+            params = parse_qs(parsed.query)
+            raw_id = params.get("id", [None])[0]
+            if raw_id is None:
+                self._send_json(_api.list_conversations(self._registry))
+                return
+            try:
+                conversation_id = int(raw_id)
+            except ValueError:
+                self._send_json(
+                    {"error": {"code": "bad_request", "message": "id must be an integer"}}, 400
+                )
+                return
+            result = _api.get_conversation(self._registry, conversation_id)
+            self._send_json(result, 404 if "error" in result else 200)
         elif route == "/api/realtime":
             self._handle_realtime(parsed)
         elif route == "/api/models":
@@ -544,6 +564,14 @@ class _Handler(BaseHTTPRequestHandler):
 
         if route == "/api/settings":
             self._send_json(_api.set_settings(self._registry, body))
+            return
+
+        if route == "/api/conversations":
+            self._send_json(_api.save_conversation(self._registry, body))
+            return
+
+        if route == "/api/conversations/clear":
+            self._send_json(_api.clear_conversations(self._registry))
             return
 
         target_id = body.get("target")

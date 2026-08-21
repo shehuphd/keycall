@@ -17,6 +17,14 @@
 
 import { renderMarkdown } from "/static/markdown.js";
 
+// The composer hints and placeholders name the actual modifier key the
+// keydown handlers accept (event.metaKey on Mac, event.ctrlKey elsewhere),
+// not a hardcoded one — a Mac user reading "Ctrl+Enter" would reasonably
+// try Ctrl first and wonder why nothing happened.
+const MOD_KEY = /Mac|iPhone|iPod|iPad/.test(navigator.platform || navigator.userAgent)
+  ? "Cmd"
+  : "Ctrl";
+
 async function api(path, options = {}) {
   const opts = {
     ...options,
@@ -41,6 +49,43 @@ async function api(path, options = {}) {
 
 const el = (id) => document.getElementById(id);
 const clear = (node) => { while (node.firstChild) node.removeChild(node.firstChild); };
+
+// The page's one in-app confirmation dialog, for every irreversible action
+// — never window.confirm(), which can't be themed and reads as untrusted
+// next to the rest of the page. `confirmLabel` names the action itself
+// ("Clear conversations"), never "OK": the choice should read as what it
+// does, not a generic acknowledgement. Focus starts on Cancel, never on
+// the destructive button, so a stray Enter can't confirm by accident.
+function confirmDialog({ title, message, confirmLabel }) {
+  return new Promise((resolve) => {
+    const backdrop = el("confirm-dialog");
+    el("confirm-title").textContent = title;
+    el("confirm-message").textContent = message;
+    const accept = el("confirm-accept");
+    const cancel = el("confirm-cancel");
+    accept.textContent = confirmLabel;
+    backdrop.hidden = false;
+    cancel.focus();
+
+    const finish = (result) => {
+      backdrop.hidden = true;
+      accept.removeEventListener("click", onAccept);
+      cancel.removeEventListener("click", onCancel);
+      backdrop.removeEventListener("click", onBackdrop);
+      document.removeEventListener("keydown", onKeydown);
+      resolve(result);
+    };
+    const onAccept = () => finish(true);
+    const onCancel = () => finish(false);
+    const onBackdrop = (event) => { if (event.target === backdrop) finish(false); };
+    const onKeydown = (event) => { if (event.key === "Escape") finish(false); };
+
+    accept.addEventListener("click", onAccept);
+    cancel.addEventListener("click", onCancel);
+    backdrop.addEventListener("click", onBackdrop);
+    document.addEventListener("keydown", onKeydown);
+  });
+}
 
 function td(text, className) {
   const cell = document.createElement("td");
@@ -321,6 +366,10 @@ el("source-load").addEventListener("click", async () => {
   await refreshTargets();
 });
 
+el("pg-composer-hint").textContent = `Enter starts a new line. ${MOD_KEY}+Enter to send.`;
+el("pg-voice-composer-hint").textContent = `Enter starts a new line. ${MOD_KEY}+Enter to send.`;
+el("pg-prompt").placeholder = `Ask anything. Press Send, or ${MOD_KEY}+Enter.`;
+
 async function boot() {
   const health = await api("/api/health");
   if (health.error) {
@@ -344,6 +393,7 @@ async function boot() {
     "Every model this key can reach, of every kind. The Models tab breaks them down.";
   transcriptEmpty();
   sizePlayground();
+  loadConversationList();
   // The Verify tab opens with no results, which is a state, not a blank.
   emptyState(
     el("verify-empty"),
@@ -599,6 +649,7 @@ async function loadPlaygroundModels() {
     none.textContent = "—";
     sel.appendChild(none);
     sel.disabled = true;
+    updateSendEnabled();
     return;
   }
   const category =
@@ -617,6 +668,7 @@ async function loadPlaygroundModels() {
     const o = document.createElement("option");
     o.textContent = `error: ${data.error.code}`;
     sel.appendChild(o);
+    updateSendEnabled();
     return;
   }
   if (!data.models.length) {
@@ -633,6 +685,7 @@ async function loadPlaygroundModels() {
       : "this key has no text models";
     sel.appendChild(none);
     sel.disabled = true;
+    updateSendEnabled();
     return;
   }
   sel.disabled = false;
@@ -656,6 +709,7 @@ async function loadPlaygroundModels() {
     const cheap = cheapestModelId(live.map((m) => m.id));
     if (cheap) sel.value = cheap;
   }
+  updateSendEnabled();
 }
 
 // No provider's model list carries a price or tier field, so a
@@ -765,16 +819,17 @@ async function applyMode() {
   // sent. A voice session has its own microphone control, in its own panel.
   el("pg-mic").hidden = image || video || voice;
   el("pg-composer").hidden = voice;
+  el("pg-composer-hint").hidden = voice;
   el("pg-voice-panel").hidden = !voice;
   // Leaving voice mode ends any session in progress rather than leaving
   // a WebSocket open behind a panel nothing points at any more.
   if (!voice) endVoiceSession();
   if ((image || video || voice) && REC) discardRecording();
   el("pg-prompt").placeholder = image
-    ? "Describe the picture you want. Press Send, or Ctrl+Enter."
+    ? `Describe the picture you want. Press Send, or ${MOD_KEY}+Enter.`
     : video
-    ? "Describe the video you want. Press Send, or Ctrl+Enter."
-    : "Ask anything. Press Send, or Ctrl+Enter.";
+    ? `Describe the video you want. Press Send, or ${MOD_KEY}+Enter.`
+    : `Ask anything. Press Send, or ${MOD_KEY}+Enter.`;
   // What a key qualifies for changes with the task, so the Key list is
   // rebuilt before the Model list is fetched for whichever key that leaves
   // selected.
@@ -1346,16 +1401,19 @@ function sendVoiceText() {
   if (!PG_VOICE) {
     startVoiceSession({ withMic: false, pendingText: text });
     box.value = "";
+    updateVoiceSendEnabled();
     return;
   }
   if (PG_VOICE.ws.readyState !== WebSocket.OPEN) {
     PG_VOICE.pendingText = text;
     box.value = "";
+    updateVoiceSendEnabled();
     return;
   }
   PG_VOICE.ws.send(JSON.stringify({ type: "text_turn", text }));
   addUserTurn(text, []);
   box.value = "";
+  updateVoiceSendEnabled();
 }
 
 // Idempotent: safe from the mic button, from a mode switch away from
@@ -1703,6 +1761,7 @@ ATTACHMENTS.forEach(({ id, noun, named }) => {
       if (REC) discardRecording();
       clearRecording();
     }
+    updateSendEnabled();
   });
 
   picker.addEventListener("change", () => {
@@ -1840,6 +1899,7 @@ let REC = null; // {stream, context, node, source, analyser, chunks, started, ti
 // once: while recording, the only two things to decide are keep or discard.
 function recordingUI(active) {
   el("pg-composer").hidden = active;
+  el("pg-composer-hint").hidden = active;
   el("pg-recorder").hidden = !active;
   // Picking a file mid-recording would leave two sources of truth.
   el("pg-audio-file").disabled = active;
@@ -2018,6 +2078,7 @@ function stopRecording() {
   // truth rather than a second, invisible rule for microphone clips.
   const toggle = el("pg-audio-on");
   toggle.checked = true;
+  updateSendEnabled();
   el("pg-audio-panel").hidden = false;
   el("pg-audio-file").value = "";
   // Let the person hear what the model is about to hear, so a silent
@@ -2114,6 +2175,7 @@ el("pg-attached-remove").addEventListener("click", () => {
   el("pg-audio-on").checked = false;
   el("pg-audio-panel").hidden = true;
   el("pg-audio-status").textContent = "";
+  updateSendEnabled();
 });
 
 // Enter keeps the recording, Escape bins it. Bound on the document because
@@ -2152,6 +2214,46 @@ function attachmentsFromInput() {
   return { body, labels };
 }
 
+// Send has nothing to do until there is a model and either text or an
+// attachment — clicking it empty used to drop an inert bubble into the
+// transcript saying so, which is what a disabled button with a reason
+// already says for free.
+function updateSendEnabled() {
+  const btn = el("pg-run");
+  const hasModel = Boolean(el("pg-model").value);
+  const hasContent = Boolean(el("pg-prompt").value.trim()) || attachmentsFromInput().labels.length > 0;
+  btn.disabled = !hasModel || !hasContent;
+  btn.title = !hasModel
+    ? "Pick a key and a model on the left first"
+    : !hasContent
+    ? "Type a message, or attach something, before sending"
+    : "";
+}
+
+function updateVoiceSendEnabled() {
+  const btn = el("pg-voice-send");
+  const hasContent = Boolean(el("pg-voice-prompt").value.trim());
+  btn.disabled = !hasContent;
+  btn.title = hasContent ? "" : "Type a line before sending";
+}
+
+// Typing, attaching, and picking a model/key all go through native
+// input/change events that bubble to the document, so one delegated pair
+// here covers those cases without a listener at each control. The handful
+// of paths that mutate state programmatically (a finished recording, a key
+// swap gating an attachment off, Clear) call updateSendEnabled() directly
+// where that happens, since no native event fires for those.
+document.addEventListener("input", (event) => {
+  if (!event.target.closest("#playground")) return;
+  updateSendEnabled();
+  updateVoiceSendEnabled();
+});
+document.addEventListener("change", (event) => {
+  if (!event.target.closest("#playground")) return;
+  updateSendEnabled();
+  updateVoiceSendEnabled();
+});
+
 /** Detach everything after a turn goes out. Each attachment kind clears
  *  its own picker, status line, and toggle, so the composer returns to the
  *  state it had before anything was attached. */
@@ -2166,6 +2268,7 @@ function clearAttachments() {
     el(`pg-${id}-panel`).hidden = true;
   });
   clearRecording();
+  updateSendEnabled();
 }
 
 // Disable an attachment the selected key can never satisfy, and say which
@@ -2216,6 +2319,7 @@ function gateAttachments(off = null) {
           : `No key you've loaded can. ` + keyPhrase("Load", "", capableProviders(id)));
     }
   });
+  updateSendEnabled();
 }
 
 // Every provider that takes this kind, loaded or not, straight from the
@@ -2397,6 +2501,135 @@ const TOOL_EXAMPLE = [
 // reject the next turn.
 let PG_HISTORY = [];
 
+// The server-assigned id of the conversation now open, or null for one that
+// has not been saved yet (nothing sent, or cleared since the last save).
+// The title is decided once, from the first prompt, and kept for every
+// later save of the same conversation rather than drifting to whatever was
+// typed most recently.
+let PG_CONVERSATION_ID = null;
+let PG_CONVERSATION_TITLE = null;
+
+const PG_MODE_LABELS = { text: "Text", image: "Picture", video: "Video", voice: "Voice" };
+
+function deriveConversationTitle(promptText) {
+  const text = (promptText || "").trim();
+  if (text) return text.length > 48 ? `${text.slice(0, 48)}…` : text;
+  return `${PG_MODE_LABELS[currentMode()] || "New"} conversation`;
+}
+
+// Fire-and-forget: this is bookkeeping for the History pane, not something
+// a reply should wait on. Saved server-side (not just a JS variable) so a
+// conversation survives a page reload, cleared only when the server itself
+// stops — the same lifetime the Playground's third pane promises.
+async function saveCurrentConversation(latestPrompt) {
+  const transcript = el("pg-transcript");
+  if (!transcript.querySelector(".bubble")) return;
+  if (!PG_CONVERSATION_TITLE) PG_CONVERSATION_TITLE = deriveConversationTitle(latestPrompt);
+  const targetValue = el("pg-target").value;
+  const modelValue = el("pg-model").value;
+  const data = await api("/api/conversations", {
+    method: "POST",
+    body: {
+      id: PG_CONVERSATION_ID,
+      title: PG_CONVERSATION_TITLE,
+      mode: currentMode(),
+      target: targetValue ? Number(targetValue) : null,
+      model: modelValue || null,
+      history: PG_HISTORY,
+      transcript_html: transcript.innerHTML,
+    },
+  });
+  if (data.error) return;
+  PG_CONVERSATION_ID = data.conversation.id;
+  loadConversationList();
+}
+
+async function loadConversationList() {
+  const data = await api("/api/conversations");
+  if (data.error) return;
+  renderHistoryList(data.conversations);
+}
+
+function renderHistoryList(conversations) {
+  const list = el("pg-history-list");
+  const empty = el("pg-history-empty");
+  [...list.querySelectorAll(".pg-history-item")].forEach((item) => item.remove());
+  empty.hidden = conversations.length > 0;
+  // Nothing to confirm away when the list is already empty — disabled
+  // rather than hidden, since Clear is a stable fixture of this pane, and
+  // the tooltip says what to do instead of just refusing the click.
+  const clearBtn = el("pg-history-clear");
+  clearBtn.disabled = conversations.length === 0;
+  clearBtn.title = conversations.length === 0
+    ? "Nothing saved yet — send a message to start a conversation"
+    : "Delete every saved conversation";
+  conversations.forEach((conversation) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "pg-history-item";
+    if (conversation.id === PG_CONVERSATION_ID) item.classList.add("active");
+    const title = document.createElement("div");
+    title.className = "title";
+    title.textContent = conversation.title;
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const when = new Date(conversation.updated_at * 1000);
+    meta.textContent = `${PG_MODE_LABELS[conversation.mode] || conversation.mode} · ${when.toLocaleString()}`;
+    item.appendChild(title);
+    item.appendChild(meta);
+    item.addEventListener("click", () => openConversation(conversation.id));
+    list.appendChild(item);
+  });
+}
+
+async function openConversation(id) {
+  if (id === PG_CONVERSATION_ID) return;
+  const data = await api(`/api/conversations?id=${id}`);
+  if (data.error) return;
+  const conversation = data.conversation;
+  PG_CONVERSATION_ID = conversation.id;
+  PG_CONVERSATION_TITLE = conversation.title;
+  PG_HISTORY = conversation.history || [];
+  clear(el("pg-tool-calls"));
+  el("pg-mode").value = conversation.mode;
+  await applyMode();
+  if (conversation.target != null && TARGETS.some((t) => t.id === conversation.target)) {
+    el("pg-target").value = String(conversation.target);
+    await loadPlaygroundModels();
+    applyKeyGates();
+    if (currentMode() === "video") syncVideoDuration(false);
+  }
+  if (
+    conversation.model &&
+    [...el("pg-model").options].some((o) => o.value === conversation.model)
+  ) {
+    el("pg-model").value = conversation.model;
+  }
+  el("pg-transcript").innerHTML = conversation.transcript_html || "";
+  el("pg-new").hidden = false;
+  el("pg-transcript").scrollTop = el("pg-transcript").scrollHeight;
+  updateSendEnabled();
+  loadConversationList();
+}
+
+el("pg-history-clear").addEventListener("click", async () => {
+  const count = el("pg-history-list").querySelectorAll(".pg-history-item").length;
+  if (!count) return;
+  const noun = count === 1 ? "conversation" : "conversations";
+  const ok = await confirmDialog({
+    title: `Clear ${count} saved ${noun}?`,
+    message: "Every saved conversation is removed from this session and can't be recovered.",
+    confirmLabel: "Clear conversations",
+  });
+  if (!ok) return;
+  const data = await api("/api/conversations/clear", { method: "POST", body: {} });
+  if (data.error) return;
+  // The conversation on screen right now, whether saved or not, no longer
+  // has anything backing it once every saved conversation is gone — reset
+  // to a fresh chat rather than leaving its content still on display.
+  startNewConversation();
+});
+
 el("pg-tools-on").addEventListener("change", () => {
   el("pg-tools-panel").hidden = !el("pg-tools-on").checked;
   updateSuggestedBudget();
@@ -2494,24 +2727,37 @@ function recordExchange({ prompt, labels, data, continuation }) {
   if (data.tool_calls && data.tool_calls.length) {
     // The tool panel records this assistant turn together with the results
     // when they are sent back; recording it here too would duplicate it.
+    saveCurrentConversation(prompt);
     return;
   }
   if (data.text) {
     PG_HISTORY.push({ role: "assistant", parts: [{ kind: "text", text: data.text }] });
   }
+  saveCurrentConversation(prompt);
 }
 
 el("pg-run").addEventListener("click", () => runGeneration({ continuation: false }));
 
-el("pg-new").addEventListener("click", () => {
+// Shared by New chat and by Clear (once every saved conversation is gone,
+// whatever's on screen no longer has a saved record behind it either).
+function startNewConversation() {
   PG_HISTORY = [];
+  // Every exchange up to now is already saved (saveCurrentConversation runs
+  // after each one), so this just opens a fresh, as-yet-unsaved slot rather
+  // than needing one last save on the way out.
+  PG_CONVERSATION_ID = null;
+  PG_CONVERSATION_TITLE = null;
   clear(el("pg-tool-calls"));
   transcriptEmpty();
   // A new conversation gets a fresh suggestion too, in case the last one
   // was hand-edited for a reply that's now behind it.
   MAXTOK_TOUCHED = false;
   updateSuggestedBudget();
-});
+  updateSendEnabled();
+  loadConversationList();
+}
+
+el("pg-new").addEventListener("click", startNewConversation);
 
 el("pg-prompt").addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.shiftKey) return;
@@ -2536,14 +2782,15 @@ async function runGeneration({ continuation }) {
   const prompt = el("pg-prompt").value.trim();
   const attached = attachmentsFromInput();
   const hasAttachment = attached.labels.length > 0;
-  if (!model || (!prompt && !continuation && !hasAttachment)) {
-    // Say which half is missing rather than restating both.
+  if (!model) {
+    // Send is disabled whenever a model isn't picked, so this is only
+    // reachable from "Send results" on a tool-call card left over from
+    // before the model was cleared.
     const note = addBubble("model");
-    note.textContent = model
-      ? "Type a message below, or attach something, then press Send."
-      : "Pick a key and a model on the left first.";
+    note.textContent = "Pick a key and a model on the left first.";
     return;
   }
+  if (!prompt && !continuation && !hasAttachment) return;
   if (!continuation) {
     // A fresh send abandons any unanswered tool calls: their turn was never
     // recorded, so history stays free of calls with no results.
@@ -2593,8 +2840,10 @@ async function runGeneration({ continuation }) {
       renderGeneration(addBubble("model"), data);
     } else {
       addImageBubble(data);
+      saveCurrentConversation(prompt);
     }
     done(btn);
+    updateSendEnabled();
     return;
   }
   if (currentMode() === "video") {
@@ -2624,8 +2873,10 @@ async function runGeneration({ continuation }) {
       renderGeneration(addBubble("model"), data);
     } else {
       addVideoBubble(data);
+      saveCurrentConversation(prompt);
     }
     done(btn);
+    updateSendEnabled();
     return;
   }
   const out = addBubble("model");
@@ -2663,6 +2914,7 @@ async function runGeneration({ continuation }) {
     }
   }
   done(btn);
+  updateSendEnabled();
 }
 
 // A finished duration reads in seconds once it takes a second: "75.65 s"
@@ -3045,6 +3297,13 @@ async function loadTraces() {
     return;
   }
   TRACE_ROWS = data.traces || [];
+  // Nothing to confirm away when there are no traces at all, regardless of
+  // what the current search filters down to.
+  const clearBtn = el("traces-clear");
+  clearBtn.disabled = TRACE_ROWS.length === 0;
+  clearBtn.title = TRACE_ROWS.length === 0
+    ? "No traces recorded yet"
+    : "Delete every recorded trace";
   renderTraces();
 }
 
@@ -3090,6 +3349,14 @@ document.querySelectorAll("#traces-table th").forEach((th) => {
   });
 });
 el("traces-clear").addEventListener("click", async () => {
+  if (!TRACE_ROWS.length) return;
+  const noun = TRACE_ROWS.length === 1 ? "trace" : "traces";
+  const ok = await confirmDialog({
+    title: `Clear ${TRACE_ROWS.length} ${noun}?`,
+    message: "Every recorded request in this run is removed and can't be recovered.",
+    confirmLabel: "Clear traces",
+  });
+  if (!ok) return;
   const data = await api("/api/traces/clear", { method: "POST", body: {} });
   if (data.error) {
     el("traces-status").textContent = `${data.error.code}: ${data.error.message}`;

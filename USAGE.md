@@ -294,6 +294,7 @@ Support splits by *form*, not only by provider, and the gate fires before any ne
 | Perplexity | yes | no | no |
 | Moonshot | yes | no | no |
 | DeepSeek | no | no | no |
+| xAI | yes | no | no |
 
 Audio is Gemini-only among the supported providers: OpenAI's Responses API takes no audio content part, and Anthropic, Moonshot, and Perplexity all reject one. Documents are sent as bytes everywhere that takes them, and `FileInput.filename` is passed through where the provider wants a name. Every refusal names the providers that do accept that kind, so a gate is a signpost rather than a dead end.
 
@@ -456,7 +457,7 @@ On a non-enforcing provider, `result.warnings` explains that the schema wasn't e
 Three provider requirements to know before writing a schema:
 
 - **OpenAI's strict mode requires `additionalProperties: false`** on every object level of the schema, or the request fails with a 400. Write it in from the start rather than discovering it from an error.
-- **Gemini rejects any `additionalProperties` key** in the schema with a 400 (live-verified 2026-08-08) — the direct opposite of OpenAI's requirement. One schema can't satisfy both providers; strip or add the key per provider before the call.
+- **Gemini rejects any `additionalProperties` key** in the schema, at any nesting depth, with a 400 (live-verified 2026-08-08) — the direct opposite of OpenAI's requirement. One schema can't satisfy both providers; strip or add the key per provider before the call. KeyCall checks for the key before calling Gemini and raises `UNSUPPORTED_OPERATION` if it finds one, rather than letting the provider's raw 400 through — a schema generator that includes it by default (Pydantic's `model_json_schema()`, for one) will trip this on every nested object until it's stripped for Gemini specifically.
 - **DeepSeek requires the word "json" somewhere in the prompt** for its fallback mode, or it 400s. KeyCall detects this and inserts a short system instruction automatically when needed — you'll see it noted in `result.warnings`, not applied silently.
 
 `response_schema` and `web_search` can't be combined on Anthropic (forcing the structured-output tool prevents the model calling a different one in the same turn); combining them raises `UNSUPPORTED_OPERATION` before any network call. The same combination on Gemini is untested and not gated — KeyCall passes it through rather than guessing at behavior it hasn't verified.

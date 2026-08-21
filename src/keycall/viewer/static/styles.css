@@ -66,7 +66,16 @@ nav#tabs button {
 }
 nav#tabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
 
-main { padding: 1.5rem; max-width: 1100px; }
+/* Centered, not left-hugging: unguarded, a wide viewport left everything
+   pinned to the left edge with the remainder as dead space on the right. */
+main { padding: 1.5rem; max-width: 1100px; margin: 0 auto; }
+/* The Playground alone gets a wider cap: its three-column chat layout
+   needs more lateral room than the 1100px reading width gives the
+   transcript, which is the column doing the actual reading. The other
+   tabs keep 1100px on purpose — a table's `width: 100%` would otherwise
+   stretch into sparse, widely-spaced columns at 1600px, which reads as
+   broken rather than roomy. */
+main:has(#playground.active) { max-width: 1600px; }
 .tab { display: none; }
 .tab.active { display: block; }
 
@@ -105,7 +114,13 @@ button {
   cursor: pointer;
   font-weight: 500;
 }
-button:hover { opacity: 0.9; }
+/* :not(:disabled) on every hover rule below: a disabled button's own
+   :hover still matches in CSS (disabled only blocks clicks and focus, not
+   style matching), so without the guard a greyed-out button snaps back to
+   full-strength color and opacity the moment the pointer sits over it —
+   a control that looks off, then looks on again, while still doing
+   nothing on click. */
+button:hover:not(:disabled) { opacity: 0.9; }
 button:disabled { opacity: 0.5; cursor: default; }
 /* Supporting actions — Remove, Load example — were marked `secondary` in
    the markup with no rule behind it, so they rendered in the accent colour
@@ -117,10 +132,26 @@ button.secondary {
   border-color: var(--border);
   font-weight: 400;
 }
-button.secondary:hover { border-color: var(--fg); opacity: 1; }
-/* The one destructive control in a panel. Reads as a warning on hover
-   without shouting in its resting state. */
-button.danger:hover { border-color: #c0554a; color: #e08d83; }
+button.secondary:hover:not(:disabled) { border-color: var(--fg); opacity: 1; }
+/* A destructive control reads as one at rest, not only revealed on hover:
+   an irreversible action is red wherever it appears. Filled by default —
+   the natural weight for a dialog's own primary destructive action, where
+   .danger appears alone. Paired with .secondary (every toolbar/inline
+   instance: Remove, Clear) it drops to the quieter outlined form instead,
+   matching the rest of that class's own quiet-at-rest buttons. */
+button.danger { background: var(--err); border-color: var(--err); color: var(--bg); }
+button.danger:hover:not(:disabled) { opacity: 0.85; }
+button.secondary.danger {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--err) 55%, transparent);
+  color: var(--err);
+}
+button.secondary.danger:hover:not(:disabled) {
+  background: var(--err);
+  border-color: var(--err);
+  color: var(--bg);
+  opacity: 1;
+}
 label { font-size: 0.9rem; display: inline-flex; gap: 0.35rem; align-items: center; }
 
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
@@ -290,7 +321,7 @@ a { color: var(--accent); }
    composer pinned where a person expects to type. */
 .pg-layout {
   display: grid;
-  grid-template-columns: 22rem minmax(0, 1fr);
+  grid-template-columns: 14rem 22rem minmax(0, 1fr);
   gap: 1.5rem;
   /* Each column is bounded by the viewport and scrolls its own overflow,
      so neither one's length changes the other's. Previously a long reply
@@ -307,10 +338,52 @@ a { color: var(--accent); }
   min-height: 26rem;
 }
 @media (max-width: 900px) {
-  /* Stacked on narrow screens, where two scroll regions would fight for
+  /* Stacked on narrow screens, where three scroll regions would fight for
      the same thumb. */
   .pg-layout { grid-template-columns: 1fr; height: auto; }
-  .pg-side, .pg-main { max-height: none; overflow: visible; }
+  .pg-history, .pg-side, .pg-main { max-height: none; overflow: visible; }
+}
+
+.pg-history {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  padding-right: 0.35rem;
+}
+.pg-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+.pg-history-head h3 { margin: 0; }
+.pg-history-list { display: flex; flex-direction: column; gap: 0.35rem; }
+.pg-history-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.pg-history-item:hover { border-color: var(--accent); }
+.pg-history-item.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.pg-history-item .title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.85rem;
+}
+.pg-history-item .meta {
+  color: var(--muted);
+  font-size: 0.75rem;
+  margin-top: 0.2rem;
 }
 
 .pg-side {
@@ -648,6 +721,35 @@ a { color: var(--accent); }
   font-size: 1.5rem;
   line-height: 1;
   cursor: pointer;
+}
+
+/* The one in-app confirmation dialog, shared by every irreversible action
+   in the page — never a bare window.confirm(). */
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+.confirm-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  max-width: 26rem;
+  width: 100%;
+}
+.confirm-box h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+.confirm-box p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
 }
 .lightbox-close:hover { background: var(--code); }
 .lightbox img { cursor: default; }

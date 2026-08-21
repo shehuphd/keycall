@@ -181,6 +181,80 @@ def test_gemini_sends_response_schema():
     assert result.text == '{"name":"x","version":"1"}'
 
 
+def test_gemini_rejects_response_schema_with_additional_properties():
+    """Gemini's schema dialect 400s on this key (live-verified 2026-08-08);
+    OpenAI's strict mode requires the exact opposite. KeyCall catches this
+    before any network call rather than surfacing gemini's raw 400."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must fail before any network call")
+
+    client = make_client("gemini", handler)
+    schema = {**SCHEMA, "additionalProperties": False}
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(
+            model="gemini-flash-latest", messages=simple_messages(), response_schema=schema
+        )
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+
+
+def test_gemini_rejects_additional_properties_nested_in_defs():
+    """A schema exporter (Pydantic's model_json_schema(), for one) puts the
+    key on every object level, not only the top one, and a $defs sub-schema
+    nests it again — this must be caught there too, not just at the root."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must fail before any network call")
+
+    client = make_client("gemini", handler)
+    schema = {
+        "type": "object",
+        "properties": {"item": {"$ref": "#/$defs/Item"}},
+        "$defs": {
+            "Item": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "additionalProperties": False,
+            }
+        },
+    }
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(
+            model="gemini-flash-latest", messages=simple_messages(), response_schema=schema
+        )
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+
+
+def test_openai_strict_mode_still_accepts_additional_properties():
+    """The gemini-only gate above must not leak onto the provider that
+    requires this exact key."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-4o-mini",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": '{"name":"x","version":"1"}'}
+                        ],
+                    }
+                ],
+                "usage": {},
+            },
+        )
+
+    client = make_client("openai", handler)
+    schema = {**SCHEMA, "additionalProperties": False}
+    result = client.generate_text(
+        model="gpt-4o-mini", messages=simple_messages(), response_schema=schema
+    )
+    assert result.text == '{"name":"x","version":"1"}'
+
+
 # --- Compat family: capability split -------------------------------------------
 
 
