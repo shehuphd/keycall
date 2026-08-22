@@ -12,6 +12,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,6 +146,43 @@ def _parse_toml(text: str) -> list[Target]:
     return targets
 
 
+def _git_status(path: Path) -> str | None:
+    """Whether `path` is tracked, ignored, or neither by the git repository
+    that contains it, asking git directly rather than inferring anything from a
+    `.git` directory's mere presence somewhere above it — a file can sit
+    inside a repository's working tree and still be nowhere near its
+    history, and a directory-presence check can't tell the two apart.
+    Returns None when there's no enclosing repository, git isn't installed,
+    or either check fails to complete for any other reason: callers then
+    stay silent rather than warn from a check that couldn't run."""
+    directory = path.parent
+    try:
+        tracked = subprocess.run(
+            ["git", "-C", str(directory), "ls-files", "--error-unmatch", "--", path.name],
+            capture_output=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if tracked.returncode == 0:
+        return "tracked"
+    try:
+        ignored = subprocess.run(
+            ["git", "-C", str(directory), "check-ignore", "-q", "--", path.name],
+            capture_output=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if ignored.returncode == 0:
+        return "ignored"
+    if ignored.returncode == 1:
+        return "untracked"
+    return None  # not inside a working tree, or git itself errored
+
+
 def _file_warnings(path: Path) -> list[SourceWarning]:
     warnings: list[SourceWarning] = []
     try:
@@ -157,15 +195,22 @@ def _file_warnings(path: Path) -> list[SourceWarning]:
                 message=f"{path.name} is readable by other users; consider chmod 600"
             )
         )
-    for parent in path.resolve().parents:
-        if (parent / ".git").exists():
-            warnings.append(
-                SourceWarning(
-                    message=f"{path.name} is inside a git repository; "
-                    "keep credential files out of version control"
-                )
+    status = _git_status(path.resolve())
+    if status == "tracked":
+        warnings.append(
+            SourceWarning(
+                message=f"{path.name} is tracked by git — this credential file has "
+                "been committed. Remove it from git history, not only from disk, "
+                "and rotate every key it held"
             )
-            break
+        )
+    elif status == "untracked":
+        warnings.append(
+            SourceWarning(
+                message=f"{path.name} is inside a git working tree and isn't "
+                "gitignored yet; add it to .gitignore before it gets committed"
+            )
+        )
     return warnings
 
 

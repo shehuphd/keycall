@@ -1,14 +1,23 @@
+import shutil
+import subprocess
+
 import pytest
 
 from keycall._sources import SourceError, load_targets
 
 CANARY = "sk-canary-source-key-000"
 
+no_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+
 
 def write(tmp_path, name, content):
     path = tmp_path / name
     path.write_text(content, encoding="utf-8")
     return str(path)
+
+
+def git(*args, cwd):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
 
 def test_txt_multiple_targets_with_comments_and_quotes(tmp_path):
@@ -128,6 +137,42 @@ def test_broadly_readable_file_warns(tmp_path):
     path.chmod(0o600)
     _, warnings = load_targets(str(path))
     assert not any("readable" in w.message for w in warnings)
+
+
+def test_no_git_repo_stays_silent(tmp_path):
+    # No .git anywhere above this file: the old check keyed off directory
+    # presence alone and could never distinguish this from the git cases
+    # below, so this stays its own explicit case.
+    path = write(tmp_path, "keys.txt", f"provider=openai key={CANARY}\n")
+    _, warnings = load_targets(path)
+    assert not any("git" in w.message for w in warnings)
+
+
+@no_git
+def test_git_tracked_file_warns_strongly(tmp_path):
+    git("init", cwd=tmp_path)
+    path = write(tmp_path, "keys.txt", f"provider=openai key={CANARY}\n")
+    git("add", "keys.txt", cwd=tmp_path)
+    _, warnings = load_targets(path)
+    assert any("tracked by git" in w.message for w in warnings)
+
+
+@no_git
+def test_git_untracked_and_unignored_file_warns(tmp_path):
+    git("init", cwd=tmp_path)
+    path = write(tmp_path, "keys.txt", f"provider=openai key={CANARY}\n")
+    _, warnings = load_targets(path)
+    assert any("git working tree" in w.message for w in warnings)
+    assert not any("tracked by git" in w.message for w in warnings)
+
+
+@no_git
+def test_git_ignored_file_stays_silent(tmp_path):
+    git("init", cwd=tmp_path)
+    (tmp_path / ".gitignore").write_text("keys.txt\n", encoding="utf-8")
+    path = write(tmp_path, "keys.txt", f"provider=openai key={CANARY}\n")
+    _, warnings = load_targets(path)
+    assert not any("git" in w.message for w in warnings)
 
 
 def test_empty_source_rejected(tmp_path):

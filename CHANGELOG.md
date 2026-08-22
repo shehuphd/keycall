@@ -4,6 +4,12 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The credential-file source loader's "inside a git repository" warning fired on location alone, not on whether the file was actually reachable through git.** A key file could be inside a `.gitignore`d directory and still trigger it, or inside a tracked one and not — the check only looked for a `.git` folder somewhere above the file, never asking git anything. It now asks git directly: tracked gets a strong warning naming the exposure (remove it from history, rotate every key it held), gitignored stays silent, and untracked-but-not-ignored keeps the original softer warning to add it to `.gitignore` before it's committed.
+
 ## [1.3.0] — 2026-08-21
 
 ### Added
