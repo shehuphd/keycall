@@ -25,7 +25,7 @@ from typing import Any
 __all__ = ["span"]
 
 _COMPATIBLE_MIN = (0, 13)
-_COMPATIBLE_MAX_EXCLUSIVE = (1, 0)
+_COMPATIBLE_MAX_EXCLUSIVE = (2, 0)
 
 # Module state: None = not yet checked; False = unavailable; module = usable.
 _traceact_module: Any = None
