@@ -183,7 +183,19 @@ def _git_status(path: Path) -> str | None:
     return None  # not inside a working tree, or git itself errored
 
 
-def _file_warnings(path: Path) -> list[SourceWarning]:
+_PLACEHOLDER_KEY = "REPLACE-ME"
+
+
+def _holds_only_placeholders(targets: list[Target]) -> bool:
+    """Whether every target's key is the literal placeholder KeyCall's own
+    bundled example files ship (`REPLACE-ME`, `sk-REPLACE-ME`, ...). Those
+    files are meant to stay tracked as a template, and a git warning telling
+    someone to rotate a key that never existed would be wrong advice, not
+    caution."""
+    return all(t.key.endswith(_PLACEHOLDER_KEY) for t in targets)
+
+
+def _file_warnings(path: Path, targets: list[Target]) -> list[SourceWarning]:
     warnings: list[SourceWarning] = []
     try:
         mode = path.stat().st_mode
@@ -195,6 +207,8 @@ def _file_warnings(path: Path) -> list[SourceWarning]:
                 message=f"{path.name} is readable by other users; consider chmod 600"
             )
         )
+    if _holds_only_placeholders(targets):
+        return warnings
     status = _git_status(path.resolve())
     if status == "tracked":
         warnings.append(
@@ -273,7 +287,7 @@ def load_targets(
         targets = _parse_txt(text)
     if not targets:
         raise SourceError("source contains no targets")
-    return targets, _file_warnings(path)
+    return targets, _file_warnings(path, targets)
 
 
 def remind_deletion(source: str) -> str | None:

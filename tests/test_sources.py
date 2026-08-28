@@ -175,6 +175,18 @@ def test_git_ignored_file_stays_silent(tmp_path):
     assert not any("git" in w.message for w in warnings)
 
 
+@no_git
+def test_tracked_placeholder_only_file_stays_silent(tmp_path):
+    # A bundled example file (every key literally "REPLACE-ME") is meant to
+    # stay tracked as a template; telling someone to rotate a key that never
+    # existed would be wrong advice, not caution.
+    git("init", cwd=tmp_path)
+    path = write(tmp_path, "keys.txt", "provider=openai key=sk-REPLACE-ME\n")
+    git("add", "keys.txt", cwd=tmp_path)
+    _, warnings = load_targets(path)
+    assert not any("git" in w.message for w in warnings)
+
+
 def test_empty_source_rejected(tmp_path):
     source = write(tmp_path, "keys.txt", "# only a comment\n")
     with pytest.raises(SourceError, match="no targets"):
