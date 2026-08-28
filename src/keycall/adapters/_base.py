@@ -21,6 +21,7 @@ from .._transport import DownloadPlan, RequestSpec
 from .._types import (
     AudioOutput,
     Citation,
+    CodeExecutionOutput,
     EmbeddingOutput,
     ImageOutput,
     InvocationResult,
@@ -248,6 +249,7 @@ class StreamAssembler(ABC):
         self.citations: list[Citation] = []
         self.warnings: list[str] = []
         self.tool_calls: list[ToolCall] = []
+        self.code_executions: list[CodeExecutionOutput] = []
         self._text: list[str] = []
         # Provider key (block index, item id, choice index) -> in-flight call.
         self._pending_calls: dict[Any, dict[str, Any]] = {}
@@ -343,6 +345,13 @@ class StreamAssembler(ABC):
             ToolCallComplete(tool_call=call),
         ]
 
+    def record_code_execution(self, output: CodeExecutionOutput) -> None:
+        """Record a code_interpreter/code_execution run that arrived whole.
+        No StreamEvent of its own — unlike a tool call, there is nothing
+        for a caller to act on mid-stream; it only needs to appear once,
+        correctly, in the final result's parts."""
+        self.code_executions.append(output)
+
     def finalize(self, *, round_trip_duration_ms: float) -> InvocationResult:
         if self.provider_request_id is None and self.resolved.provider_request_id_header:
             self.provider_request_id = safe_request_id(
@@ -354,6 +363,7 @@ class StreamAssembler(ABC):
         if self._text:
             parts.append(TextOutput(text=self.text))
         parts.extend(self.tool_calls)
+        parts.extend(self.code_executions)
         return InvocationResult(
             provider=self.resolved.provider,
             model=self.model,
@@ -651,6 +661,19 @@ class ProviderAdapter(ABC):
             operation="realtime",
         )
 
+    def transcription_plan(self, config: Any) -> tuple[str, Any]:
+        """The WebSocket path and frame translator for a streaming
+        transcription session. Providers without one refuse here, before
+        any connection."""
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} has no streaming "
+            "transcription API; transcribe_stream is supported on: "
+            + ", ".join(sorted(providers_with("streaming_transcription"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.STREAMING_TRANSCRIPTION.value,
+        )
+
     def video_result(
         self,
         *,
@@ -785,6 +808,31 @@ class ProviderAdapter(ABC):
                     provider=self.resolved.provider,
                     operation=Operation.TEXT_GENERATION.value,
                 )
+            if any(tool.input_schema is None for tool in request.tools):
+                from .._capabilities import CUSTOM_TOOL_PROVIDERS
+
+                if not self.resolved.capabilities.custom_tool:
+                    raise KeyCallError(
+                        f"provider {self.resolved.provider!r} has no custom "
+                        "(freeform) tool convention; a Tool with "
+                        "input_schema=None is supported on: "
+                        + ", ".join(sorted(CUSTOM_TOOL_PROVIDERS)),
+                        code=ErrorCode.UNSUPPORTED_OPERATION,
+                        provider=self.resolved.provider,
+                        operation=Operation.TEXT_GENERATION.value,
+                    )
+            if any(tool.defer_loading for tool in request.tools):
+                from .._capabilities import TOOL_SEARCH_PROVIDERS
+
+                if not self.resolved.capabilities.tool_search:
+                    raise KeyCallError(
+                        f"provider {self.resolved.provider!r} has no tool-search "
+                        "convention; defer_loading=True is supported on: "
+                        + ", ".join(sorted(TOOL_SEARCH_PROVIDERS)),
+                        code=ErrorCode.UNSUPPORTED_OPERATION,
+                        provider=self.resolved.provider,
+                        operation=Operation.TEXT_GENERATION.value,
+                    )
             if request.response_schema is not None and self.resolved.provider == "anthropic":
                 # Schema enforcement on Anthropic is itself a forced tool
                 # call; combining it with caller tools is mechanically
@@ -818,6 +866,42 @@ class ProviderAdapter(ABC):
                     f"provider {self.resolved.provider!r} has no native web search "
                     "tool; web_search is supported on: "
                     + ", ".join(sorted(WEB_SEARCH_PROVIDERS)),
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    provider=self.resolved.provider,
+                    operation=Operation.TEXT_GENERATION.value,
+                )
+        if request.apply_patch:
+            from .._capabilities import APPLY_PATCH_PROVIDERS
+
+            if not self.resolved.capabilities.apply_patch:
+                raise KeyCallError(
+                    f"provider {self.resolved.provider!r} has no apply_patch tool; "
+                    "apply_patch is supported on: " + ", ".join(sorted(APPLY_PATCH_PROVIDERS)),
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    provider=self.resolved.provider,
+                    operation=Operation.TEXT_GENERATION.value,
+                )
+            if any(tool.name == "apply_patch" for tool in request.tools):
+                # "apply_patch" is the name KeyCall reserves for the
+                # provider-owned tool's own ToolCall/ToolResult parts; a
+                # caller-defined tool with the same name would be
+                # indistinguishable from it on replay.
+                raise KeyCallError(
+                    "a caller-defined tool cannot be named 'apply_patch' "
+                    "while apply_patch=True — that name is reserved for "
+                    "the apply_patch tool's own ToolCall/ToolResult parts",
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    provider=self.resolved.provider,
+                    operation=Operation.TEXT_GENERATION.value,
+                )
+        if request.code_interpreter:
+            from .._capabilities import CODE_INTERPRETER_PROVIDERS
+
+            if not self.resolved.capabilities.code_interpreter:
+                raise KeyCallError(
+                    f"provider {self.resolved.provider!r} has no code interpreter "
+                    "tool; code_interpreter is supported on: "
+                    + ", ".join(sorted(CODE_INTERPRETER_PROVIDERS)),
                     code=ErrorCode.UNSUPPORTED_OPERATION,
                     provider=self.resolved.provider,
                     operation=Operation.TEXT_GENERATION.value,

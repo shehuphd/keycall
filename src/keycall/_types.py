@@ -20,14 +20,17 @@ __all__ = [
     "AudioOutput",
     "Citation",
     "CitationFound",
+    "CodeExecutionOutput",
     "EmbeddingOutput",
     "EmbeddingRequest",
     "FileInput",
     "FileOutput",
+    "FinalTranscript",
     "ImageGenerationRequest",
     "ImageInput",
     "ImageOutput",
     "InputPart",
+    "InterimTranscript",
     "InvocationResult",
     "Message",
     "MessageRole",
@@ -50,8 +53,14 @@ __all__ = [
     "ToolCallStarted",
     "ToolResult",
     "TranscriptOutput",
+    "TranscriptWord",
+    "TranscriptionConfig",
+    "TranscriptionEvent",
+    "TranscriptionSessionEnded",
+    "TranscriptionSessionStarted",
     "UnknownOutput",
     "UnknownStreamEvent",
+    "UnknownTranscriptionEvent",
     "Usage",
     "VideoGenerationRequest",
     "VideoJob",
@@ -139,16 +148,35 @@ class FileInput:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Tool:
     """A caller-defined tool the model may request. KeyCall never executes
-    tools; it normalizes the request/response wire shapes."""
+    tools; it normalizes the request/response wire shapes.
+
+    ``input_schema=None`` declares a custom (freeform) tool instead of an
+    ordinary JSON-Schema one: the model's call arrives as a plain string
+    rather than parsed arguments, carried in the resulting ToolCall's
+    ``arguments["input"]``. OpenAI-only (live-verified 2026-08-22); other
+    providers raise UNSUPPORTED_OPERATION for a tool declared this way.
+
+    ``defer_loading=True`` keeps this tool's definition out of the
+    model's context until it searches for and finds it — a request-size
+    optimization for callers registering many tools, not a behavior
+    change to the tool itself. KeyCall sends the provider's tool-search
+    tool automatically whenever any Tool in a request sets this; a
+    discovered tool's call and reply are ordinary ToolCall/ToolResult
+    parts, identical to a non-deferred tool's. OpenAI and Anthropic only
+    (live-verified 2026-08-22); other providers raise
+    UNSUPPORTED_OPERATION when this is set."""
 
     name: str
     description: str
-    input_schema: Mapping[str, Any]
+    input_schema: Mapping[str, Any] | None
+    defer_loading: bool = False
 
     def __post_init__(self) -> None:
         if not self.name or not isinstance(self.name, str):
             raise ValueError("Tool.name must be a non-empty string")
-        if not isinstance(self.input_schema, Mapping) or "type" not in self.input_schema:
+        if self.input_schema is not None and (
+            not isinstance(self.input_schema, Mapping) or "type" not in self.input_schema
+        ):
             raise ValueError("Tool.input_schema must be a JSON Schema object with a 'type' key")
 
 
@@ -198,6 +226,25 @@ class ImageOutput:
     base64_data: str | None = None
     media_type: str | None = None
     kind: Literal["image"] = "image"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CodeExecutionOutput:
+    """Provider-hosted code that ran during generation, and what it
+    produced. Covers OpenAI's code_interpreter, Gemini's code_execution,
+    xAI's code_interpreter, and Anthropic's bash_code_execution — the
+    "code ran, produced a text result" case common to all four. A
+    provider-generated file (e.g. a saved plot) surfaces separately: as an
+    ImageOutput when the provider returns image bytes inline (Gemini), or
+    not at all when the provider only returns an opaque file reference
+    needing a further authenticated download (OpenAI, xAI, Anthropic) —
+    that download path is not yet built. No ``opaque`` echo field: unlike
+    a ToolCall, a caller never replays this back to the provider."""
+
+    code: str
+    output: str
+    language: str | None = None
+    kind: Literal["code_execution"] = "code_execution"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -254,6 +301,7 @@ OutputPart = (
     | VideoOutput
     | FileOutput
     | ToolCall
+    | CodeExecutionOutput
     | UnknownOutput
 )
 
@@ -298,6 +346,28 @@ class TextGenerationRequest:
     (DeepSeek, Moonshot, custom targets) raise UNSUPPORTED_OPERATION rather
     than silently ignoring the request. Perplexity's Sonar always searches
     regardless of this flag; setting it False there is a no-op, warned."""
+    apply_patch: bool = False
+    """Enable OpenAI's ``apply_patch`` tool: the model proposes file
+    create/update/delete operations (V4A-format diffs), the caller executes
+    them and replies with the outcome — the same round trip as a caller
+    tool, but the schema is fixed and provider-owned, so there is nothing
+    to declare in ``tools``. Calls and replies are ordinary ToolCall
+    and ToolResult parts with ``name == "apply_patch"``; a caller-defined
+    tool also named "apply_patch" is rejected rather than silently
+    colliding with it. OpenAI-only (live-verified 2026-08-22); other
+    providers raise UNSUPPORTED_OPERATION."""
+    code_interpreter: bool = False
+    """Enable the provider's hosted code-execution tool: the model writes
+    and runs code server-side and the run's code and output come back as
+    CodeExecutionOutput parts. Provider-run, not caller-run — unlike
+    apply_patch and caller-defined tools, there is nothing for the caller
+    to execute or reply to. A provider-generated file surfaces as an
+    ImageOutput only when the provider returns its bytes inline (Gemini);
+    OpenAI, xAI, and Anthropic instead return an opaque file reference
+    that needs a further authenticated download KeyCall does not yet
+    perform, so a code run that only produces a file (no text answer)
+    currently loses that file. Supported on OpenAI, Gemini, xAI, and
+    Anthropic; other providers raise UNSUPPORTED_OPERATION."""
     tools: Sequence[Tool] = ()
     """Caller-defined tools the model may request. KeyCall normalizes the
     definitions, the model's ToolCall parts, and ToolResult replies across
@@ -530,12 +600,13 @@ class ToolCallStarted:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ToolCallArgumentsDelta:
-    """A fragment of a tool call's argument JSON, verbatim as the provider
-    sent it. Fragments are individually meaningless: they split mid-token
-    and only the concatenation is valid JSON. Useful for showing progress,
-    not for parsing. Providers that send arguments whole (Gemini) emit
-    none of these, so a stream can go from started to complete with no
-    deltas in between."""
+    """A fragment of a tool call's argument content, verbatim as the
+    provider sent it — JSON arguments for a caller-defined tool, diff text
+    for OpenAI's apply_patch. Fragments are individually meaningless: JSON
+    ones split mid-token and only the concatenation parses. Useful for
+    showing progress, not for parsing. Providers that send arguments whole
+    (Gemini) emit none of these, so a stream can go from started to
+    complete with no deltas in between."""
 
     id: str
     fragment: str
@@ -679,6 +750,112 @@ class RealtimeConfig:
     def __post_init__(self) -> None:
         if not self.model:
             raise ValueError("model must be a non-empty string")
+
+
+# --- streaming transcription events ----------------------------------------
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TranscriptionSessionStarted:
+    """The provider accepted the transcription session. AssemblyAI answers
+    a Begin frame carrying its session id; Deepgram sends no
+    acknowledgement frame at all, so no event of this kind arrives there —
+    a successful connect is its only accept signal."""
+
+    provider_session_id: str | None = None
+    kind: Literal["session_started"] = "session_started"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TranscriptWord:
+    """One recognized word inside a finalized transcript, with its timing
+    in milliseconds from the start of the session's audio. ``confidence``
+    is the provider's own 0-1 score where reported."""
+
+    text: str
+    start_ms: float
+    end_ms: float
+    confidence: float | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InterimTranscript:
+    """A provisional transcript of audio still being spoken. Superseded by
+    later interims and by the FinalTranscript that closes the utterance —
+    useful for live display, never for downstream processing. ``channel``
+    is the provider's audio-channel index where it reports one (Deepgram);
+    None on single-channel providers (AssemblyAI)."""
+
+    text: str
+    channel: int | None = None
+    kind: Literal["interim_transcript"] = "interim_transcript"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FinalTranscript:
+    """A finalized stretch of transcript: this text will not change.
+    ``utterance_end`` marks whether the speaker also finished the thought —
+    Deepgram can finalize text mid-utterance (is_final without
+    speech_final), in which case more finals belonging to the same
+    utterance follow; AssemblyAI only finalizes whole turns, so it is
+    always True there. ``confidence`` is the provider's overall score
+    where reported (Deepgram); None where the provider only scores
+    per-word (AssemblyAI — read ``words`` instead)."""
+
+    text: str
+    words: tuple[TranscriptWord, ...] = ()
+    utterance_end: bool = True
+    confidence: float | None = None
+    channel: int | None = None
+    kind: Literal["final_transcript"] = "final_transcript"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TranscriptionSessionEnded:
+    """The session closed. ``audio_duration_seconds`` is the provider's
+    own count of billable audio processed — STT bills per second, not per
+    token, so this is the usage figure for the session. Both AssemblyAI
+    (Termination frame) and Deepgram (terminal Metadata frame) report it;
+    None means the session ended without the provider's summary frame,
+    e.g. a dropped connection."""
+
+    reason: str | None = None
+    audio_duration_seconds: float | None = None
+    kind: Literal["session_ended"] = "session_ended"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UnknownTranscriptionEvent:
+    """A transcription frame KeyCall doesn't recognize yet. Bounded
+    provider kind only — never a raw provider payload."""
+
+    provider_kind: str
+    kind: Literal["unknown"] = "unknown"
+
+
+TranscriptionEvent = (
+    TranscriptionSessionStarted
+    | InterimTranscript
+    | FinalTranscript
+    | TranscriptionSessionEnded
+    | UnknownTranscriptionEvent
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TranscriptionConfig:
+    """What a streaming transcription session asks of the provider.
+    ``model`` None means the provider's default streaming model.
+    ``sample_rate`` is the rate of the 16-bit mono PCM audio the caller
+    will send — the only audio form this surface takes; encode conversion
+    is the caller's job."""
+
+    model: str | None = None
+    sample_rate: int = 16000
+
+    def __post_init__(self) -> None:
+        if self.sample_rate < 8000:
+            raise ValueError("sample_rate must be at least 8000 Hz")
 
 
 # --- results ---------------------------------------------------------------
@@ -840,6 +1017,12 @@ class InvocationResult:
         """The model's tool-call requests, in order. Several per response
         is normal, not an edge case."""
         return tuple(part for part in self.parts if isinstance(part, ToolCall))
+
+    @property
+    def code_executions(self) -> tuple[CodeExecutionOutput, ...]:
+        """Provider-hosted code runs, in order. Empty unless the request
+        set code_interpreter=True."""
+        return tuple(part for part in self.parts if isinstance(part, CodeExecutionOutput))
 
     def to_assistant_message(self) -> Message:
         """This response as an assistant Message for conversation replay:

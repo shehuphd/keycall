@@ -80,6 +80,7 @@
       <!-- Trying a one-off key shouldn't mean editing a file first, even
            when a key file is already loaded. -->
       <div class="add-key">
+        <button id="dash-check-all" class="secondary" type="button">Test all keys</button>
         <button id="dash-key-toggle" class="secondary" type="button">Test another key</button>
         <div id="dash-key-form" hidden>
           <p class="hint">
@@ -146,6 +147,7 @@
                 <option value="image">Make a picture</option>
                 <option value="video">Make a video</option>
                 <option value="voice">Have a voice conversation</option>
+                <option value="transcribe">Transcribe speech</option>
               </select>
             </div>
             <div class="pg-row">
@@ -203,6 +205,13 @@
               it. Standing instructions above apply for the whole session,
               set once when it starts. Tap the microphone to start talking,
               tap it again to end the session, or type a line instead.
+            </p>
+            <p class="hint" id="pg-transcribe-mode-note" hidden>
+              Live speech-to-text over its own connection: tap the microphone
+              and talk, and the words appear as they are recognized. Tap
+              again to finish; the provider then reports the seconds of
+              audio it billed. Nothing talks back — this is transcription,
+              not a conversation.
             </p>
           </div>
 
@@ -343,8 +352,26 @@
                 </svg>
               </button>
               <button id="pg-voice-send" type="button" disabled title="Type a line before sending">Send</button>
+              <button id="pg-voice-new" type="button" class="secondary"
+                      title="Clear the transcript and start a new conversation">New chat</button>
             </div>
             <p class="hint" id="pg-voice-composer-hint">Enter starts a new line. Ctrl+Enter to send.</p>
+          </div>
+          <!-- Replaces the composer in transcribe mode: one status line and
+               one microphone toggle, since nothing is typed or sent back. -->
+          <div class="pg-voice-panel" id="pg-transcribe-panel" hidden>
+            <div class="pg-voice-status" id="pg-transcribe-status">Not yet started.</div>
+            <div class="pg-composer" id="pg-transcribe-composer">
+              <button id="pg-transcribe-talk" type="button" class="icon-btn"
+                      title="Start transcribing" aria-label="Start transcribing" aria-pressed="false">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z"/>
+                  <path fill="currentColor" d="M18 11a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.91V19H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.09A6 6 0 0 0 18 11Z"/>
+                </svg>
+              </button>
+              <button id="pg-transcribe-new" type="button" class="secondary"
+                      title="Clear the transcript and start a new conversation">New chat</button>
+            </div>
           </div>
           <div class="pg-recorder" id="pg-recorder" hidden>
             <span class="rec-dot" aria-hidden="true"></span>

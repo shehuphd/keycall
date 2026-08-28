@@ -59,6 +59,9 @@ nav#tabs button {
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
+  /* Square, so the underline is a flat bar instead of inheriting the
+     global button radius and curling up at its ends. */
+  border-radius: 0;
   color: var(--muted);
   padding: 0.75rem 1rem;
   cursor: pointer;
@@ -66,9 +69,11 @@ nav#tabs button {
 }
 nav#tabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
 
-/* Centered, not left-hugging: unguarded, a wide viewport left everything
-   pinned to the left edge with the remainder as dead space on the right. */
-main { padding: 1.5rem; max-width: 1100px; margin: 0 auto; }
+/* Left-aligned under the nav's gutter (a centered column read as a stray
+   indent on wide windows, since the header and tabs hug the left). The
+   width cap keeps text at a readable measure; spare room on a wide
+   viewport all falls to the right. */
+main { padding: 1.5rem; max-width: 1100px; margin: 0; }
 /* The Playground alone gets a wider cap: its three-column chat layout
    needs more lateral room than the 1100px reading width gives the
    transcript, which is the column doing the actual reading. The other

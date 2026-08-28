@@ -27,6 +27,11 @@ class ProviderProtocol(str, Enum):
     ANTHROPIC = "anthropic"
     GEMINI = "gemini"
     OPENAI_COMPATIBLE = "openai-compatible"
+    # Speech-to-text WebSocket providers (AssemblyAI, Deepgram). Each named
+    # provider has its own frame dialect and adapter; there is no generic
+    # "stt-compatible" wire the way there is an OpenAI-compatible one, so
+    # custom targets cannot claim this protocol.
+    STT = "stt"
 
 
 class Operation(str, Enum):
@@ -38,3 +43,4 @@ class Operation(str, Enum):
     IMAGE_GENERATION = "image_generation"
     SPEECH_GENERATION = "speech_generation"
     VIDEO_GENERATION = "video_generation"
+    STREAMING_TRANSCRIPTION = "streaming_transcription"

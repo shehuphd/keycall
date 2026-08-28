@@ -1429,6 +1429,9 @@ def test_targets_tell_the_browser_what_each_key_can_accept():
     assert caps["openai"]["video_generation"] is False
     assert caps["openai"]["reasoning_effort"] is True
     assert caps["deepseek"]["reasoning_effort"] is False
+    assert caps["assemblyai"]["transcription"] is True
+    assert caps["deepgram"]["transcription"] is True
+    assert caps["openai"]["transcription"] is False
     assert CANARY not in json.dumps(body)
 
 
@@ -1570,6 +1573,29 @@ def test_the_page_shell_never_carries_the_token(server):
     assert token.encode() not in script
     # And the script no longer has any token machinery to leak through.
     assert b"sessionStorage" not in script
+
+
+def test_every_tab_path_serves_the_page_shell(server):
+    """Each tab has its own URL, so a reload or a pasted link opens
+    straight onto it; the page reads the path and shows the matching tab.
+    An unknown path stays a 404 rather than becoming a catch-all."""
+    base, _ = server
+    for path in ("/", "/dashboard", "/models", "/playground", "/verify", "/traces"):
+        status, _, body = _raw(f"{base}{path}")
+        assert status == 200, path
+        assert b"<nav id=\"tabs\">" in body, path
+    status, _, _ = _raw(f"{base}/nonsense")
+    assert status == 404
+
+
+def test_the_token_handshake_works_on_a_tab_path(server):
+    """A bookmarked deep link with a token still swaps it for the cookie
+    and redirects back to the same tab path, token stripped."""
+    base, token = server
+    status, headers, _ = _raw(f"{base}/traces?token={token}", follow=False)
+    assert status == 303
+    assert headers["Location"] == "/traces"
+    assert "keycall_viewer_token" in headers.get("Set-Cookie", "")
 
 
 # --- adding a key from the browser ------------------------------------------

@@ -2,7 +2,7 @@
 
 One consistent interface for validating AI-provider API keys, listing and filtering the models available to them, and making normalized calls, so every product stops rebuilding the same model-picker filters and provider wrappers.
 
-Key validation, model listing and filtering, text generation, streaming, tool calling, native web search with normalized citations, structured JSON output, embeddings, image, speech, realtime voice, and video generation, and image, audio, and document input all work and are live-verified against every provider that supports them. The API is stable.
+Key validation, model listing and filtering, text generation, streaming, tool calling, native web search with normalized citations, hosted code execution, structured JSON output, embeddings, image, speech, realtime voice, and video generation, streaming speech-to-text, and image, audio, and document input all work and are live-verified against every provider that supports them. The API is stable.
 
 Docs: [USAGE.md](https://github.com/shehuphd/keycall/blob/main/USAGE.md) for the full API and CLI reference · [ARCHITECTURE.md](https://github.com/shehuphd/keycall/blob/main/ARCHITECTURE.md) for the layer diagram and component contracts · [CHANGELOG.md](https://github.com/shehuphd/keycall/blob/main/CHANGELOG.md) for version history.
 
@@ -39,7 +39,7 @@ Prefer to click around? Same key, one word different:
 keycall view --provider openai --source env:OPENAI_API_KEY
 ```
 
-That opens a local web app in your browser with your key already loaded: a dashboard that checks it live, a browsable model list with category filters, and a Playground where you can chat, show a model a picture, record a voice message straight from the page, hold a live voice conversation, attach a PDF, offer it a tool, or have it draw you something. Keys stay in the local server process and never reach the browser.
+That opens a local web app in your browser with your key already loaded: a dashboard that checks it live, a browsable model list with category filters, and a Playground where you can chat, show a model a picture, record a voice message straight from the page, hold a live voice conversation, transcribe your speech live, attach a PDF, offer it a tool, or have it draw you something. Keys stay in the local server process and never reach the browser.
 
 Got several keys? Put them in a file and load them all at once — see [`keycall-test-keys.example.toml`](https://github.com/shehuphd/keycall/blob/main/keycall-test-keys.example.toml) for the format:
 
@@ -83,6 +83,9 @@ print(result.round_trip_duration_ms)
 - **Web search with citations.** `web_search=True` turns on the provider's native search tool (OpenAI, Anthropic, Gemini, xAI, Moonshot; Perplexity always searches) and returns sources normalized to one `Citation` shape (Moonshot reports none).
 - **Reasoning effort control.** `reasoning_effort="low"` (or `"medium"` / `"high"`) maps to the provider's native thinking control on OpenAI, Anthropic, Gemini, Perplexity, and xAI — each verified live to move reasoning-token spend. Providers that accept the parameter without honoring it refuse instead of silently ignoring it.
 - **Realtime voice sessions.** `realtime()` opens a live WebSocket conversation on OpenAI, xAI, or Gemini — text or microphone audio up, normalized audio/transcript/turn events down, sync and async. The credential rides the handshake headers and never enters a URL.
+- **Streaming transcription.** `transcribe_stream()` opens a live speech-to-text session on AssemblyAI or Deepgram — raw PCM audio up, normalized interim/final transcripts with per-word millisecond timings down, and the provider's billable audio seconds on the session-ended event. Sync and async, same header-auth rule as realtime.
+- **Hosted code execution.** `code_interpreter=True` lets the model write and run code on the provider's own sandbox (OpenAI, Anthropic, Gemini, xAI), with each run returned as a typed part — nothing executes on your machine.
+- **Tool search.** `Tool(defer_loading=True)` keeps a large tool library out of the model's context until it searches for what it needs (OpenAI, Anthropic); discovered tools call and reply like ordinary ones.
 - **Structured output.** `response_schema=<JSON Schema>` is enforced provider-side on OpenAI, Anthropic, Gemini, Moonshot, and Perplexity; on providers without enforcement (DeepSeek, unverified custom targets) KeyCall falls back to guaranteed-valid-JSON mode and adds a result warning rather than claiming a guarantee it can't back. `result.text` is always the JSON string, regardless of which mechanism produced it.
 - **Hardened transport.** TLS always verified, redirects refused, response sizes capped, SSRF and DNS-rebinding guards on custom endpoints, and generation is never silently retried.
 

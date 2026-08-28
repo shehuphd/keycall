@@ -389,6 +389,257 @@ def test_openai_tools_merge_with_web_search():
     assert kinds == ["function", "web_search"]
 
 
+# --- apply_patch: a provider-owned tool, not a caller-defined one -----------
+#
+# Fixture responses mirror the live round captured 2026-08-22
+# (project/tool-calling-probe-findings.md): OpenAI only, no caller-supplied
+# schema, ToolCall/ToolResult with name "apply_patch" carry the fixed
+# operation form instead of arbitrary caller JSON.
+
+APPLY_PATCH_CREATE_RESPONSE = {
+    "model": "gpt-5.1",
+    "status": "completed",
+    "output": [
+        {
+            "id": "apc_1",
+            "type": "apply_patch_call",
+            "status": "completed",
+            "call_id": "call_p1",
+            "operation": {
+                "type": "create_file",
+                "diff": '+print("hello")\n',
+                "path": "hello.py",
+            },
+        }
+    ],
+    "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+}
+
+APPLY_PATCH_DELETE_RESPONSE = {
+    "model": "gpt-5.1",
+    "status": "completed",
+    "output": [
+        {
+            "id": "apc_2",
+            "type": "apply_patch_call",
+            "status": "completed",
+            "call_id": "call_p2",
+            "operation": {"type": "delete_file", "path": "scratch.tmp"},
+        }
+    ],
+    "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+}
+
+
+def test_openai_apply_patch_tool_appended():
+    handler, captured = capture(APPLY_PATCH_CREATE_RESPONSE)
+    make_client("openai", handler).generate_text(
+        model="gpt-5.1", messages=[user()], apply_patch=True
+    )
+    assert {"type": "apply_patch"} in captured["body"]["tools"]
+
+
+def test_openai_apply_patch_create_call_parsed():
+    handler, _ = capture(APPLY_PATCH_CREATE_RESPONSE)
+    result = make_client("openai", handler).generate_text(
+        model="gpt-5.1", messages=[user()], apply_patch=True
+    )
+    (call,) = result.tool_calls
+    assert call.id == "call_p1"
+    assert call.name == "apply_patch"
+    assert call.arguments == {
+        "type": "create_file",
+        "diff": '+print("hello")\n',
+        "path": "hello.py",
+    }
+    assert json.loads(call.opaque) == {"id": "apc_1"}
+
+
+def test_openai_apply_patch_delete_call_has_no_diff():
+    handler, _ = capture(APPLY_PATCH_DELETE_RESPONSE)
+    result = make_client("openai", handler).generate_text(
+        model="gpt-5.1", messages=[user()], apply_patch=True
+    )
+    (call,) = result.tool_calls
+    assert call.arguments == {"type": "delete_file", "path": "scratch.tmp"}
+    assert "diff" not in call.arguments
+
+
+def test_openai_apply_patch_replay_shapes():
+    handler, captured = capture(APPLY_PATCH_CREATE_RESPONSE)
+    call = ToolCall(
+        id="call_p1",
+        name="apply_patch",
+        arguments={"type": "create_file", "diff": '+print("hello")\n', "path": "hello.py"},
+        opaque=json.dumps({"id": "apc_1"}),
+    )
+    make_client("openai", handler).generate_text(
+        model="gpt-5.1",
+        messages=[
+            user(),
+            Message(role="assistant", content=[call]),
+            Message(role="user", content=[
+                ToolResult(tool_call_id=call.id, name=call.name,
+                           content={"status": "failed", "output": "disk full"}),
+            ]),
+        ],
+        apply_patch=True,
+    )
+    items = captured["body"]["input"]
+    kinds = [item.get("type") or item.get("role") for item in items]
+    assert kinds == ["user", "apply_patch_call", "apply_patch_call_output"]
+    assert items[1]["call_id"] == "call_p1"
+    assert items[1]["id"] == "apc_1"  # echoed provider item id
+    assert items[1]["status"] == "completed"
+    assert items[1]["operation"] == {
+        "type": "create_file", "diff": '+print("hello")\n', "path": "hello.py",
+    }
+    assert items[2] == {
+        "type": "apply_patch_call_output",
+        "call_id": "call_p1",
+        "status": "failed",
+        "output": "disk full",
+    }
+
+
+def test_openai_apply_patch_replay_defaults_status_for_plain_string_content():
+    handler, captured = capture(APPLY_PATCH_CREATE_RESPONSE)
+    call = ToolCall(
+        id="call_p1", name="apply_patch",
+        arguments={"type": "create_file", "diff": "+x\n", "path": "x.py"},
+    )
+    make_client("openai", handler).generate_text(
+        model="gpt-5.1",
+        messages=[
+            user(),
+            Message(role="assistant", content=[call]),
+            Message(role="user", content=[
+                ToolResult(tool_call_id=call.id, name=call.name, content="patched"),
+            ]),
+        ],
+        apply_patch=True,
+    )
+    assert captured["body"]["input"][-1] == {
+        "type": "apply_patch_call_output",
+        "call_id": "call_p1",
+        "status": "completed",
+        "output": "patched",
+    }
+
+
+def test_apply_patch_gated_before_network():
+    handler, captured = capture({})
+    with pytest.raises(KeyCallError) as excinfo:
+        make_client("anthropic", handler).generate_text(
+            model="claude-opus-5", messages=[user()], apply_patch=True
+        )
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+    assert "count" not in captured
+
+
+def test_apply_patch_reserved_name_collision_gated_before_network():
+    handler, captured = capture({})
+    collide = Tool(name="apply_patch", description="x", input_schema={"type": "object"})
+    with pytest.raises(KeyCallError) as excinfo:
+        make_client("openai", handler).generate_text(
+            model="gpt-5.1", messages=[user()], apply_patch=True, tools=[collide]
+        )
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+    assert "count" not in captured
+
+
+# --- custom tool: a caller-defined tool with no JSON Schema (OpenAI only) --
+#
+# Fixture responses mirror the live round captured 2026-08-22: input_schema
+# is None, the model's call arrives as a plain string instead of parsed
+# arguments, carried in ToolCall.arguments["input"].
+
+WRITE_POEM = Tool(name="write_poem", description="Records a poem", input_schema=None)
+
+CUSTOM_TOOL_RESPONSE = {
+    "model": "gpt-5.1",
+    "status": "completed",
+    "output": [
+        {
+            "id": "ctc_1",
+            "type": "custom_tool_call",
+            "status": "completed",
+            "call_id": "call_c1",
+            "name": "write_poem",
+            "input": "Roses are red.",
+        }
+    ],
+    "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+}
+
+
+def test_openai_custom_tool_appended_without_schema():
+    handler, captured = capture(CUSTOM_TOOL_RESPONSE)
+    make_client("openai", handler).generate_text(
+        model="gpt-5.1", messages=[user()], tools=[WRITE_POEM]
+    )
+    assert {"type": "custom", "name": "write_poem", "description": "Records a poem"} in (
+        captured["body"]["tools"]
+    )
+
+
+def test_openai_custom_tool_call_parsed_as_plain_string():
+    handler, _ = capture(CUSTOM_TOOL_RESPONSE)
+    result = make_client("openai", handler).generate_text(
+        model="gpt-5.1", messages=[user()], tools=[WRITE_POEM]
+    )
+    (call,) = result.tool_calls
+    assert call.id == "call_c1"
+    assert call.name == "write_poem"
+    assert call.arguments == {"input": "Roses are red."}
+
+
+def test_openai_custom_tool_replay_shapes():
+    handler, captured = capture(CUSTOM_TOOL_RESPONSE)
+    call = ToolCall(id="call_c1", name="write_poem", arguments={"input": "Roses are red."})
+    make_client("openai", handler).generate_text(
+        model="gpt-5.1",
+        messages=[
+            user(),
+            Message(role="assistant", content=[call]),
+            Message(role="user", content=[
+                ToolResult(tool_call_id=call.id, name=call.name, content="Recorded."),
+            ]),
+        ],
+        tools=[WRITE_POEM],
+    )
+    items = captured["body"]["input"]
+    kinds = [item.get("type") or item.get("role") for item in items]
+    assert kinds == ["user", "custom_tool_call", "custom_tool_call_output"]
+    assert items[1] == {
+        "type": "custom_tool_call",
+        "call_id": "call_c1",
+        "name": "write_poem",
+        "input": "Roses are red.",
+    }
+    assert items[2] == {
+        "type": "custom_tool_call_output",
+        "call_id": "call_c1",
+        "output": "Recorded.",
+    }
+
+
+def test_custom_tool_rejected_for_providers_without_it():
+    handler, captured = capture({})
+    with pytest.raises(KeyCallError) as excinfo:
+        make_client("anthropic", handler).generate_text(
+            model="claude-opus-5", messages=[user()], tools=[WRITE_POEM]
+        )
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+    assert "custom" in excinfo.value.message
+    assert "count" not in captured
+
+
+def test_tool_still_requires_a_json_schema_when_declared():
+    with pytest.raises(ValueError, match="JSON Schema"):
+        Tool(name="bad", description="x", input_schema={"no_type": "here"})
+
+
 def test_custom_target_passes_through_with_warning():
     handler, captured = capture(COMPAT_CALL_RESPONSE)
     client = KeyCall(
@@ -531,3 +782,139 @@ def test_openai_call_without_reasoning_replays_unchanged():
     kinds = [item.get("type") for item in captured["body"]["input"]]
     assert "reasoning" not in kinds
     assert kinds.count("function_call") == 1
+
+
+# --- tool search: defer_loading, request-size optimization only -----------
+#
+# Fixture responses mirror the live rounds captured 2026-08-22: a deferred
+# tool's discovered call is an ordinary function_call/tool_use, identical to
+# a non-deferred one — tool_search_call/tool_search_output and
+# server_tool_use/tool_search_tool_result are traces of server-side work,
+# never output content.
+
+DEFERRED_WEATHER = Tool(
+    name="get_weather",
+    description="Get the weather at a specific location",
+    input_schema={
+        "type": "object",
+        "properties": {"location": {"type": "string"}},
+        "required": ["location"],
+    },
+    defer_loading=True,
+)
+
+OPENAI_TOOL_SEARCH_RESPONSE = {
+    "model": "gpt-5.4",
+    "status": "completed",
+    "output": [
+        {"id": "tsc_1", "type": "tool_search_call", "status": "completed",
+         "arguments": {"paths": ["get_weather"]}, "call_id": None, "execution": "server"},
+        {"id": "tso_1", "type": "tool_search_output", "status": "completed",
+         "call_id": None, "execution": "server", "tools": []},
+        {"id": "fc_1", "type": "function_call", "status": "completed",
+         "arguments": '{"location":"San Francisco"}', "call_id": "call_ts1",
+         "name": "get_weather", "namespace": "get_weather"},
+    ],
+    "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+}
+
+
+def test_openai_tool_search_appended_when_any_tool_defers():
+    handler, captured = capture(OPENAI_TOOL_SEARCH_RESPONSE)
+    make_client("openai", handler).generate_text(
+        model="gpt-5.4", messages=[user()], tools=[DEFERRED_WEATHER]
+    )
+    assert {"type": "tool_search"} in captured["body"]["tools"]
+    (function_tool,) = [t for t in captured["body"]["tools"] if t.get("type") == "function"]
+    assert function_tool["defer_loading"] is True
+
+
+def test_openai_tool_search_traces_skipped_call_parsed_normally():
+    handler, _ = capture(OPENAI_TOOL_SEARCH_RESPONSE)
+    result = make_client("openai", handler).generate_text(
+        model="gpt-5.4", messages=[user()], tools=[DEFERRED_WEATHER]
+    )
+    (call,) = result.tool_calls
+    assert call.id == "call_ts1"
+    assert call.name == "get_weather"
+    assert call.arguments == {"location": "San Francisco"}
+    assert not [p for p in result.parts if p.kind == "unknown"]
+
+
+def test_openai_tool_search_reply_is_ordinary_function_call_output():
+    handler, captured = capture(OPENAI_TOOL_SEARCH_RESPONSE)
+    call = ToolCall(id="call_ts1", name="get_weather", arguments={"location": "San Francisco"})
+    make_client("openai", handler).generate_text(
+        model="gpt-5.4",
+        messages=[
+            user(),
+            Message(role="assistant", content=[call]),
+            Message(role="user", content=[
+                ToolResult(tool_call_id=call.id, name=call.name, content="68F, sunny"),
+            ]),
+        ],
+        tools=[DEFERRED_WEATHER],
+    )
+    items = captured["body"]["input"]
+    kinds = [item.get("type") or item.get("role") for item in items]
+    assert kinds == ["user", "function_call", "function_call_output"]
+    assert "defer_loading" not in items[1]
+    assert "namespace" not in items[1]
+
+
+def test_untouched_tools_do_not_trigger_tool_search():
+    handler, captured = capture(OPENAI_TOOL_SEARCH_RESPONSE)
+    make_client("openai", handler).generate_text(
+        model="gpt-5.4", messages=[user()], tools=[WEATHER]
+    )
+    assert {"type": "tool_search"} not in captured["body"]["tools"]
+
+
+ANTHROPIC_TOOL_SEARCH_RESPONSE = {
+    "model": "claude-opus-5",
+    "content": [
+        {"type": "text", "text": "Searching for a weather tool."},
+        {"type": "server_tool_use", "id": "srvtoolu_1", "name": "tool_search_tool_bm25",
+         "input": {"query": "weather forecast"}},
+        {"type": "tool_search_tool_result", "tool_use_id": "srvtoolu_1",
+         "content": {"type": "tool_search_tool_search_result",
+                     "tool_references": [{"type": "tool_reference", "tool_name": "get_weather"}]}},
+        {"type": "tool_use", "id": "toolu_ts1", "name": "get_weather",
+         "input": {"location": "San Francisco"}},
+    ],
+    "usage": {"input_tokens": 5, "output_tokens": 3},
+}
+
+
+def test_anthropic_tool_search_appended_when_any_tool_defers():
+    handler, captured = capture(ANTHROPIC_TOOL_SEARCH_RESPONSE)
+    make_client("anthropic", handler).generate_text(
+        model="claude-opus-5", messages=[user()], tools=[DEFERRED_WEATHER]
+    )
+    assert {"type": "tool_search_tool_bm25_20251119", "name": "tool_search_tool_bm25"} in (
+        captured["body"]["tools"]
+    )
+    (function_tool,) = [t for t in captured["body"]["tools"] if "input_schema" in t]
+    assert function_tool["defer_loading"] is True
+
+
+def test_anthropic_tool_search_traces_skipped_call_parsed_normally():
+    handler, _ = capture(ANTHROPIC_TOOL_SEARCH_RESPONSE)
+    result = make_client("anthropic", handler).generate_text(
+        model="claude-opus-5", messages=[user()], tools=[DEFERRED_WEATHER]
+    )
+    (call,) = result.tool_calls
+    assert call.id == "toolu_ts1"
+    assert call.name == "get_weather"
+    assert result.text == "Searching for a weather tool."
+    assert not [p for p in result.parts if p.kind == "unknown"]
+
+
+def test_tool_search_rejected_for_providers_without_it():
+    handler, captured = capture({})
+    with pytest.raises(KeyCallError) as excinfo:
+        make_client("gemini", handler).generate_text(
+            model="gemini-flash-latest", messages=[user()], tools=[DEFERRED_WEATHER]
+        )
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+    assert "count" not in captured

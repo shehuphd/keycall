@@ -54,6 +54,11 @@ class ProviderCapabilities:
 
     tool_calling: bool = False
     web_search: bool = False
+    apply_patch: bool = False
+    code_interpreter: bool = False
+    custom_tool: bool = False
+    tool_search: bool = False
+    streaming_transcription: bool = False
     embeddings: bool = False
     image_generation: bool = False
     speech_generation: bool = False
@@ -144,6 +149,11 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
         reasoning_effort=bool(raw.get("reasoning_effort", False)),
         realtime=bool(raw.get("realtime", False)),
         web_search=bool(raw.get("web_search", False)),
+        apply_patch=bool(raw.get("apply_patch", False)),
+        code_interpreter=bool(raw.get("code_interpreter", False)),
+        custom_tool=bool(raw.get("custom_tool", False)),
+        tool_search=bool(raw.get("tool_search", False)),
+        streaming_transcription=bool(raw.get("streaming_transcription", False)),
         schema_enforcement=raw.get("schema_enforcement"),
         sampling_constraints=tuple(
             SamplingConstraint(

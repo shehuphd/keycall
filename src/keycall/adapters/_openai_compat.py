@@ -180,7 +180,13 @@ class OpenAICompatibleAdapter(ProviderAdapter):
         body = {**(spec.json_body or {}), "stream": True}
         if self.resolved.provider in _STREAM_USAGE_PROVIDERS:
             body["stream_options"] = {"include_usage": True}
-        return RequestSpec(method=spec.method, path=spec.path, params=spec.params, json_body=body)
+        return RequestSpec(
+            method=spec.method,
+            path=spec.path,
+            params=spec.params,
+            json_body=body,
+            headers=spec.headers,
+        )
 
     def stream_assembler(self, request: TextGenerationRequest) -> StreamAssembler:
         return CompatStreamAssembler(self.resolved, request)
@@ -297,7 +303,10 @@ class OpenAICompatibleAdapter(ProviderAdapter):
                     "function": {
                         "name": tool.name,
                         "description": tool.description,
-                        "parameters": dict(tool.input_schema),
+                        # input_schema=None (custom tool) is OpenAI's own
+                        # Responses-API convention and gated before this
+                        # point on the compat family, xAI included.
+                        "parameters": dict(tool.input_schema or {}),
                     },
                 }
                 for tool in request.tools

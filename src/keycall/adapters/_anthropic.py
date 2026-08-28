@@ -17,6 +17,7 @@ from .._transport import RequestSpec
 from .._types import (
     Citation,
     CitationFound,
+    CodeExecutionOutput,
     FileInput,
     ImageInput,
     InvocationResult,
@@ -59,6 +60,26 @@ _PAGE_LIMIT = "1000"
 # calling exists — it's never sent to or interpreted by the model as
 # anything but an arbitrary tool name.
 _STRUCTURED_OUTPUT_TOOL_NAME = "keycall_response"
+
+# Beta feature flag code_interpreter needs (live-verified 2026-08-22); sent
+# only on a request that asks for it, never on every Anthropic request.
+_CODE_EXECUTION_BETA_HEADER = "code-execution-2025-08-25"
+
+
+def _bash_code_execution_output(
+    call_block: Mapping[str, Any], result_block: Mapping[str, Any]
+) -> CodeExecutionOutput:
+    """Build a CodeExecutionOutput from a paired server_tool_use(name=
+    bash_code_execution)/bash_code_execution_tool_result block, matched by
+    tool_use_id. Only this pair is normalized; a chained
+    text_editor_code_execution call (Anthropic sometimes authors a file
+    with one server tool, then runs it with this one) falls through to
+    UnknownOutput — closer in kind to apply_patch's file editing than to
+    code execution, and out of scope here."""
+    command = (call_block.get("input") or {}).get("command", "")
+    content = result_block.get("content")
+    stdout = content.get("stdout", "") if isinstance(content, Mapping) else ""
+    return CodeExecutionOutput(code=str(command), output=str(stdout), language="bash")
 
 
 class _AnthropicStreamAssembler(StreamAssembler):
@@ -177,6 +198,7 @@ class AnthropicAdapter(ProviderAdapter):
             path=spec.path,
             params=spec.params,
             json_body={**(spec.json_body or {}), "stream": True},
+            headers=spec.headers,
         )
 
     def stream_assembler(self, request: TextGenerationRequest) -> StreamAssembler:
@@ -301,16 +323,29 @@ class AnthropicAdapter(ProviderAdapter):
             # `effort` field is refused with "Extra inputs are not
             # permitted" (live-verified 2026-08-14 on claude-opus-4-5).
             body["output_config"] = {"effort": request.reasoning_effort}
-        tools: list[dict[str, Any]] = [
-            {
+        tools: list[dict[str, Any]] = []
+        for tool in request.tools:
+            tool_def: dict[str, Any] = {
                 "name": tool.name,
                 "description": tool.description,
-                "input_schema": dict(tool.input_schema),
+                # input_schema=None (custom tool) is OpenAI-only and gated
+                # before this point on every other provider, Anthropic
+                # included.
+                "input_schema": dict(tool.input_schema or {}),
             }
-            for tool in request.tools
-        ]
+            if tool.defer_loading:
+                tool_def["defer_loading"] = True
+            tools.append(tool_def)
         if request.web_search:
             tools.append({"type": "web_search_20250305", "name": "web_search"})
+        if request.code_interpreter:
+            tools.append({"type": "code_execution_20250825", "name": "code_execution"})
+        if any(tool.defer_loading for tool in request.tools):
+            # BM25 (natural-language queries), the friendlier of the two
+            # search variants for a caller not hand-writing regex.
+            tools.append(
+                {"type": "tool_search_tool_bm25_20251119", "name": "tool_search_tool_bm25"}
+            )
         if tools:
             body["tools"] = tools
         if request.tool_choice is not None:
@@ -330,7 +365,10 @@ class AnthropicAdapter(ProviderAdapter):
                 }
             ]
             body["tool_choice"] = {"type": "tool", "name": _STRUCTURED_OUTPUT_TOOL_NAME}
-        return RequestSpec(method=op["method"], path=op["path"], json_body=body)
+        headers = (
+            {"anthropic-beta": _CODE_EXECUTION_BETA_HEADER} if request.code_interpreter else {}
+        )
+        return RequestSpec(method=op["method"], path=op["path"], json_body=body, headers=headers)
 
     def parse_generation_response(
         self,
@@ -350,11 +388,22 @@ class AnthropicAdapter(ProviderAdapter):
         parts: list[OutputPart] = []
         warnings: list[str] = []
         citations: list[Citation] = []
+        pending_bash_exec: dict[str, dict[str, Any]] = {}
         for block in payload.get("content", []):
             if not isinstance(block, dict):
                 continue
             block_type = block.get("type")
-            if block_type == "text":
+            if block_type == "server_tool_use" and block.get("name") == "bash_code_execution":
+                pending_bash_exec[str(block.get("id", ""))] = block
+                continue
+            if block_type == "bash_code_execution_tool_result":
+                call_block = pending_bash_exec.pop(str(block.get("tool_use_id", "")), None)
+                parts.append(
+                    _bash_code_execution_output(call_block, block)
+                    if call_block is not None
+                    else UnknownOutput(provider_kind="bash_code_execution_tool_result")
+                )
+            elif block_type == "text":
                 parts.append(TextOutput(text=str(block.get("text", ""))))
                 for note in block.get("citations") or []:
                     if isinstance(note, dict) and note.get("url"):
@@ -379,8 +428,18 @@ class AnthropicAdapter(ProviderAdapter):
                 # carries JSON-as-a-string uniformly across every provider,
                 # regardless of which mechanism produced it.
                 parts.append(TextOutput(text=json.dumps(block.get("input", {}))))
-            elif block_type in ("thinking", "server_tool_use", "web_search_tool_result"):
+            elif block_type in (
+                "thinking",
+                "web_search_tool_result",
+                "tool_search_tool_result",
+            ):
                 continue  # traces of server-side work, not output content
+            elif block_type == "server_tool_use" and block.get("name") in (
+                "web_search",
+                "tool_search_tool_regex",
+                "tool_search_tool_bm25",
+            ):
+                continue  # ditto — the call side of the same trace
             else:
                 parts.append(UnknownOutput(provider_kind=str(block_type or "?")))
 

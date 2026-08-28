@@ -147,6 +147,305 @@ def openai_tool_stream(*, arguments=('{"city":', '"London"}'), terminal=True):
     return sse(*events)
 
 
+def openai_apply_patch_stream(*, diff_fragments=("+print(", '"hello"', ")\n")):
+    """create_file streams its diff incrementally via a dedicated event pair
+    (response.apply_patch_call_operation_diff.delta/.done), not the
+    function-call arguments events — verified live 2026-08-22."""
+    full_diff = "".join(diff_fragments)
+    final_item = {
+        "id": "apc_1",
+        "type": "apply_patch_call",
+        "status": "completed",
+        "call_id": "call_p1",
+        "operation": {"type": "create_file", "diff": full_diff, "path": "hello.py"},
+    }
+    events = [
+        (None, {"type": "response.created", "response": {"model": "gpt-5.1"}}),
+        (
+            None,
+            {
+                "type": "response.output_item.added",
+                "item": {
+                    "id": "apc_1",
+                    "type": "apply_patch_call",
+                    "status": "in_progress",
+                    "call_id": "call_p1",
+                    "operation": {"type": "create_file", "diff": "", "path": "hello.py"},
+                },
+            },
+        ),
+    ]
+    for fragment in diff_fragments:
+        events.append(
+            (
+                None,
+                {
+                    "type": "response.apply_patch_call_operation_diff.delta",
+                    "item_id": "apc_1",
+                    "delta": fragment,
+                },
+            )
+        )
+    events.append(
+        (
+            None,
+            {
+                "type": "response.apply_patch_call_operation_diff.done",
+                "item_id": "apc_1",
+                "diff": full_diff,
+            },
+        )
+    )
+    events.append((None, {"type": "response.output_item.done", "item": final_item}))
+    events.append(
+        (
+            None,
+            {
+                "type": "response.completed",
+                "response": {
+                    "model": "gpt-5.1",
+                    "status": "completed",
+                    "output": [final_item],
+                    "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+                },
+            },
+        )
+    )
+    return sse(*events)
+
+
+def openai_apply_patch_delete_stream():
+    """delete_file has no diff to stream at all — confirmed live 2026-08-22
+    to go straight from response.output_item.added to .done, with neither
+    operation_diff event firing. The call still has to open and close
+    correctly with no delta events in between."""
+    final_item = {
+        "id": "apc_2",
+        "type": "apply_patch_call",
+        "status": "completed",
+        "call_id": "call_p2",
+        "operation": {"type": "delete_file", "path": "scratch.tmp"},
+    }
+    events = [
+        (None, {"type": "response.created", "response": {"model": "gpt-5.1"}}),
+        (
+            None,
+            {
+                "type": "response.output_item.added",
+                "item": {
+                    "id": "apc_2",
+                    "type": "apply_patch_call",
+                    "status": "in_progress",
+                    "call_id": "call_p2",
+                    "operation": {"type": "delete_file", "path": "scratch.tmp"},
+                },
+            },
+        ),
+        (None, {"type": "response.output_item.done", "item": final_item}),
+        (
+            None,
+            {
+                "type": "response.completed",
+                "response": {
+                    "model": "gpt-5.1",
+                    "status": "completed",
+                    "output": [final_item],
+                    "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+                },
+            },
+        ),
+    ]
+    return sse(*events)
+
+
+def openai_code_interpreter_stream(*, code_fragments=("17", " *", " 23")):
+    """code_interpreter_call's code streams incrementally, but the
+    terminal response.completed event carries the same item complete,
+    which is what finalize() parses — verified live 2026-08-22."""
+    full_code = "".join(code_fragments)
+    final_item = {
+        "id": "ci_1",
+        "type": "code_interpreter_call",
+        "status": "completed",
+        "code": full_code,
+        "container_id": "cntr_1",
+        "outputs": None,
+    }
+    message_item = {
+        "type": "message",
+        "content": [
+            {"type": "output_text", "annotations": [], "text": "The result is 391."}
+        ],
+    }
+    events = [
+        (None, {"type": "response.created", "response": {"model": "gpt-5.1"}}),
+        (
+            None,
+            {
+                "type": "response.output_item.added",
+                "item": {
+                    "id": "ci_1",
+                    "type": "code_interpreter_call",
+                    "status": "in_progress",
+                    "code": "",
+                    "container_id": "cntr_1",
+                    "outputs": None,
+                },
+            },
+        ),
+        (None, {"type": "response.code_interpreter_call.in_progress", "item_id": "ci_1"}),
+    ]
+    for fragment in code_fragments:
+        events.append(
+            (
+                None,
+                {
+                    "type": "response.code_interpreter_call_code.delta",
+                    "item_id": "ci_1",
+                    "delta": fragment,
+                },
+            )
+        )
+    events.append(
+        (None, {"type": "response.code_interpreter_call_code.done", "item_id": "ci_1"})
+    )
+    events.append((None, {"type": "response.code_interpreter_call.interpreting"}))
+    events.append((None, {"type": "response.code_interpreter_call.completed"}))
+    events.append((None, {"type": "response.output_item.done", "item": final_item}))
+    events.append(
+        (
+            None,
+            {"type": "response.completed", "response": {
+                "model": "gpt-5.1",
+                "status": "completed",
+                "output": [final_item, message_item],
+                "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+            }},
+        )
+    )
+    return sse(*events)
+
+
+def openai_custom_tool_stream(*, input_fragments=("Roses", " are", " red.")):
+    """custom_tool_call_input streams incrementally, but the terminal
+    response.completed event carries the same item complete — same
+    redundant-plumbing pattern as apply_patch and code_interpreter."""
+    full_input = "".join(input_fragments)
+    final_item = {
+        "id": "ctc_1",
+        "type": "custom_tool_call",
+        "status": "completed",
+        "call_id": "call_c1",
+        "name": "write_poem",
+        "input": full_input,
+    }
+    events = [
+        (None, {"type": "response.created", "response": {"model": "gpt-5.1"}}),
+        (
+            None,
+            {
+                "type": "response.output_item.added",
+                "item": {
+                    "id": "ctc_1",
+                    "type": "custom_tool_call",
+                    "status": "in_progress",
+                    "call_id": "call_c1",
+                    "name": "write_poem",
+                    "input": "",
+                },
+            },
+        ),
+    ]
+    for fragment in input_fragments:
+        events.append(
+            (
+                None,
+                {
+                    "type": "response.custom_tool_call_input.delta",
+                    "item_id": "ctc_1",
+                    "delta": fragment,
+                },
+            )
+        )
+    events.append(
+        (None, {"type": "response.custom_tool_call_input.done", "item_id": "ctc_1"})
+    )
+    events.append((None, {"type": "response.output_item.done", "item": final_item}))
+    events.append(
+        (
+            None,
+            {"type": "response.completed", "response": {
+                "model": "gpt-5.1",
+                "status": "completed",
+                "output": [final_item],
+                "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+            }},
+        )
+    )
+    return sse(*events)
+
+
+def gemini_code_execution_stream():
+    """executableCode and its matching codeExecutionResult arrive in
+    separate stream chunks, unlike the non-streaming response where both
+    sit in the same parts array — verified live 2026-08-22."""
+    return sse(
+        (
+            None,
+            {
+                "modelVersion": "gemini-3.7-flash",
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "executableCode": {
+                                        "language": "PYTHON",
+                                        "code": "print(17 * 23)",
+                                        "id": "call_1",
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ],
+            },
+        ),
+        (
+            None,
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "codeExecutionResult": {
+                                        "outcome": "OUTCOME_OK",
+                                        "output": "391\n",
+                                        "id": "call_1",
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ],
+            },
+        ),
+        (
+            None,
+            {
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "The result is 391."}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 3},
+            },
+        ),
+    )
+
+
 def anthropic_tool_stream(*, fragments=('{"city":', ' "London"}'), terminal=True):
     events = [
         (
@@ -399,6 +698,130 @@ def test_openai_streams_started_deltas_and_complete():
     assert result.tool_calls[0].id == "call_1"
     assert captured["body"]["stream"] is True
     assert captured["body"]["tools"][0]["name"] == "get_weather"
+
+
+def test_openai_streams_apply_patch_diff_deltas_and_complete():
+    handler, captured = serve(openai_apply_patch_stream())
+
+    with make_client("openai", handler).stream_text(
+        model="gpt-5.1", messages=messages(), apply_patch=True
+    ) as stream:
+        events = list(stream)
+        result = stream.result()
+
+    assert kinds(events) == [
+        "stream_start",
+        "tool_call_started",
+        "tool_call_arguments_delta",
+        "tool_call_arguments_delta",
+        "tool_call_arguments_delta",
+        "tool_call_complete",
+        "stream_finish",
+    ]
+    started = next(e for e in events if isinstance(e, ToolCallStarted))
+    assert (started.id, started.name) == ("call_p1", "apply_patch")
+    fragments = [e.fragment for e in events if isinstance(e, ToolCallArgumentsDelta)]
+    assert fragments == ["+print(", '"hello"', ")\n"]
+    complete = next(e for e in events if isinstance(e, ToolCallComplete))
+    assert complete.tool_call.arguments == {
+        "type": "create_file",
+        "diff": '+print("hello")\n',
+        "path": "hello.py",
+    }
+    assert result.tool_calls[0].id == "call_p1"
+    assert captured["body"]["tools"] == [{"type": "apply_patch"}]
+
+
+def test_openai_streams_apply_patch_delete_with_no_diff_deltas():
+    handler, _ = serve(openai_apply_patch_delete_stream())
+
+    with make_client("openai", handler).stream_text(
+        model="gpt-5.1", messages=messages(), apply_patch=True
+    ) as stream:
+        events = list(stream)
+        result = stream.result()
+
+    # No diff to stream, so this goes straight from started to complete
+    # with no argument-delta events at all — the operation's type/path
+    # still has to make it through to the final ToolCall.
+    assert kinds(events) == [
+        "stream_start",
+        "tool_call_started",
+        "tool_call_complete",
+        "stream_finish",
+    ]
+    assert result.tool_calls[0].arguments == {"type": "delete_file", "path": "scratch.tmp"}
+
+
+def test_openai_streams_code_interpreter_no_unknown_events():
+    handler, captured = serve(openai_code_interpreter_stream())
+
+    with make_client("openai", handler).stream_text(
+        model="gpt-5.1", messages=messages(), code_interpreter=True
+    ) as stream:
+        events = list(stream)
+        result = stream.result()
+
+    # Every plumbing event (in_progress/interpreting/completed/code
+    # delta/done) is ignored; the terminal response.completed event is
+    # what finalize() parses, same as apply_patch's streaming design.
+    assert "unknown" not in kinds(events)
+    (execution,) = result.code_executions
+    assert execution.code == "17 * 23"
+    assert execution.output == ""
+    assert result.text == "The result is 391."
+    assert captured["body"]["tools"] == [
+        {"type": "code_interpreter", "container": {"type": "auto"}}
+    ]
+
+
+def test_openai_streams_custom_tool_input_deltas_and_complete():
+    handler, captured = serve(openai_custom_tool_stream())
+    write_poem = Tool(name="write_poem", description="Records a poem", input_schema=None)
+
+    with make_client("openai", handler).stream_text(
+        model="gpt-5.1", messages=messages(), tools=[write_poem]
+    ) as stream:
+        events = list(stream)
+        result = stream.result()
+
+    assert kinds(events) == [
+        "stream_start",
+        "tool_call_started",
+        "tool_call_arguments_delta",
+        "tool_call_arguments_delta",
+        "tool_call_arguments_delta",
+        "tool_call_complete",
+        "stream_finish",
+    ]
+    started = next(e for e in events if isinstance(e, ToolCallStarted))
+    assert (started.id, started.name) == ("call_c1", "write_poem")
+    fragments = [e.fragment for e in events if isinstance(e, ToolCallArgumentsDelta)]
+    assert fragments == ["Roses", " are", " red."]
+    complete = next(e for e in events if isinstance(e, ToolCallComplete))
+    assert complete.tool_call.arguments == {"input": "Roses are red."}
+    assert result.tool_calls[0].id == "call_c1"
+    assert {"type": "custom", "name": "write_poem", "description": "Records a poem"} in (
+        captured["body"]["tools"]
+    )
+
+
+def test_gemini_streams_paired_code_execution_across_chunks():
+    handler, captured = serve(gemini_code_execution_stream())
+
+    with make_client("gemini", handler).stream_text(
+        model="gemini-3.7-flash", messages=messages(), code_interpreter=True
+    ) as stream:
+        events = list(stream)
+        result = stream.result()
+
+    assert "unknown" not in kinds(events)
+    (execution,) = result.code_executions
+    assert execution.code == "print(17 * 23)"
+    assert execution.output == "391\n"
+    assert execution.language == "python"
+    assert result.text == "The result is 391."
+    assert {"codeExecution": {}} in captured["body"]["tools"]
 
 
 def test_anthropic_streams_tool_use_block():

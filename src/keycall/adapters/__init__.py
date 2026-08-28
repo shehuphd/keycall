@@ -9,6 +9,7 @@ from ._moonshot import MoonshotAdapter
 from ._openai import OpenAIAdapter
 from ._openai_compat import OpenAICompatibleAdapter
 from ._perplexity import PerplexityAdapter
+from ._stt import AssemblyAIAdapter, DeepgramAdapter
 from ._xai import XAIAdapter
 
 __all__ = ["ProviderAdapter", "adapter_for"]
@@ -18,6 +19,9 @@ _BY_PROTOCOL: dict[ProviderProtocol, type[ProviderAdapter]] = {
     ProviderProtocol.ANTHROPIC: AnthropicAdapter,
     ProviderProtocol.GEMINI: GeminiAdapter,
     ProviderProtocol.OPENAI_COMPATIBLE: OpenAICompatibleAdapter,
+    # No generic STT entry: each STT provider speaks its own dialect, and
+    # resolve_provider already refuses custom targets on this protocol, so
+    # the named overrides below are the only way to reach an STT adapter.
 }
 
 # A provider whose behavior diverges from its protocol's conventions gets a
@@ -26,6 +30,8 @@ _BY_PROVIDER: dict[str, type[ProviderAdapter]] = {
     "moonshot": MoonshotAdapter,
     "perplexity": PerplexityAdapter,
     "xai": XAIAdapter,
+    "assemblyai": AssemblyAIAdapter,
+    "deepgram": DeepgramAdapter,
 }
 
 

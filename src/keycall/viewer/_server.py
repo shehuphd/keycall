@@ -2,7 +2,9 @@
 no dependency to the base package.
 
 Routes (all under the base "/"):
-  GET  /                         the single-page app
+  GET  /                         the single-page app; /models, /playground,
+                                 /verify, and /traces serve the same shell,
+                                 which opens onto the tab the path names
   GET  /static/<file>            CSS and JS
   GET  /api/health               {"status":"ok","version":...,"targets":N}
   GET  /api/targets              keyless list of loaded targets
@@ -16,6 +18,8 @@ Routes (all under the base "/"):
   POST /api/generate/video       {target, model, prompt} -> InvocationResult
   GET  /api/realtime?target=&model=&voice=&instructions=   WebSocket upgrade;
                                   bridges the browser to a realtime session
+  GET  /api/transcribe?target=&model=&sample_rate=   WebSocket upgrade;
+                                  bridges the browser to a transcription session
   GET  /api/conversations        metadata for every saved Playground conversation
   GET  /api/conversations?id=    one conversation's full history and transcript
   POST /api/conversations        {id?, title, mode, target, model, history,
@@ -67,7 +71,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .. import __version__
 from .._sources import Target
-from . import _api, _realtime_bridge
+from . import _api, _realtime_bridge, _transcription_bridge
 from ._registry import Registry
 from ._traces import TraceLog
 from ._ws import WebSocketConnection, accept_key
@@ -115,6 +119,11 @@ _MAX_VERIFY_ATTEMPTS = 32
 # full system prompt, bounded so a malformed query string can't be used
 # to push an unbounded string through a single request line.
 _MAX_REALTIME_INSTRUCTIONS = 4000
+
+# Every path that serves the page shell: each tab has its own URL so a
+# reload or a pasted link opens straight onto it. The page reads the path
+# and shows the matching tab; /dashboard is accepted as an alias for /.
+_TAB_PATHS = frozenset({"/", "/dashboard", "/models", "/playground", "/verify", "/traces"})
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -380,29 +389,48 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         return True
 
-    def _handle_realtime(self, parsed: Any) -> None:
-        """Upgrade to a WebSocket and bridge it to a realtime session for
-        as long as the browser tab keeps it open. Token auth already ran
-        in do_GET, same as every other /api/ route; this adds an Origin
-        check on top because unlike a plain GET, this opens a live,
-        billable connection that stays open until something closes it,
-        the same reasoning _csrf_safe applies to a state-changing POST.
-        """
+    def _websocket_preflight(self) -> str | None:
+        """The checks shared by every WebSocket route, run before any
+        params are read: the Sec-WebSocket-Key on success, None after a
+        refusal was already sent. Token auth already ran in do_GET, same
+        as every other /api/ route; the Origin check comes on top because
+        unlike a plain GET, an upgrade opens a live, billable connection
+        that stays open until something closes it, the same reasoning
+        _csrf_safe applies to a state-changing POST."""
         origin = self.headers.get("Origin")
         if origin is not None and origin not in self._self_origins():
             self._send_json({"error": {"code": "forbidden", "message": "origin rejected"}}, 403)
-            return
-
+            return None
         if (self.headers.get("Upgrade") or "").lower() != "websocket":
             self._send_json(
                 {"error": {"code": "bad_request", "message": "expected a WebSocket upgrade"}}, 400
             )
-            return
+            return None
         sec_key = self.headers.get("Sec-WebSocket-Key")
         if not sec_key:
             self._send_json(
                 {"error": {"code": "bad_request", "message": "missing Sec-WebSocket-Key"}}, 400
             )
+            return None
+        return sec_key
+
+    def _accept_websocket(self, sec_key: str) -> WebSocketConnection:
+        """Complete the RFC 6455 handshake and hand back the framed
+        connection. The base class must not try to read another HTTP
+        request off this socket once WebSocket frames start on it."""
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept_key(sec_key))
+        self.end_headers()
+        self.close_connection = True
+        return WebSocketConnection(self.rfile, self.wfile)
+
+    def _handle_realtime(self, parsed: Any) -> None:
+        """Upgrade to a WebSocket and bridge it to a realtime session for
+        as long as the browser tab keeps it open."""
+        sec_key = self._websocket_preflight()
+        if sec_key is None:
             return
 
         params = parse_qs(parsed.query)
@@ -426,16 +454,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"error": {"code": "bad_request", "message": "unknown target"}}, 400)
             return
 
-        self.send_response(101, "Switching Protocols")
-        self.send_header("Upgrade", "websocket")
-        self.send_header("Connection", "Upgrade")
-        self.send_header("Sec-WebSocket-Accept", accept_key(sec_key))
-        self.end_headers()
-        # The base class must not try to read another HTTP request off
-        # this socket once we start speaking WebSocket frames over it.
-        self.close_connection = True
-
-        wire = WebSocketConnection(self.rfile, self.wfile)
+        wire = self._accept_websocket(sec_key)
         started = time.monotonic()
         try:
             _realtime_bridge.run_bridge(
@@ -453,20 +472,78 @@ class _Handler(BaseHTTPRequestHandler):
                 status=status,
             )
 
+    def _handle_transcribe(self, parsed: Any) -> None:
+        """Upgrade to a WebSocket and bridge it to a streaming
+        transcription session for as long as the browser tab keeps it
+        open. Mirrors _handle_realtime, with a different session type."""
+        sec_key = self._websocket_preflight()
+        if sec_key is None:
+            return
+
+        params = parse_qs(parsed.query)
+        target_id = self._target_id(params)
+        if target_id is None:
+            self._send_json({"error": {"code": "bad_request", "message": "target required"}}, 400)
+            return
+        # Model may be absent: an STT provider runs its default model then.
+        model = (params.get("model") or [None])[0] or None
+        raw_rate = (params.get("sample_rate") or ["16000"])[0]
+        try:
+            sample_rate = int(raw_rate)
+        except ValueError:
+            sample_rate = 0
+        # Mirrors TranscriptionConfig's own floor, refused here as a plain
+        # HTTP error instead of surfacing as a ValueError mid-upgrade.
+        if sample_rate < 8000:
+            self._send_json(
+                {
+                    "error": {
+                        "code": "bad_request",
+                        "message": "sample_rate must be an integer of at least 8000",
+                    }
+                },
+                400,
+            )
+            return
+        try:
+            client = self._registry.client(target_id)
+        except KeyError:
+            self._send_json({"error": {"code": "bad_request", "message": "unknown target"}}, 400)
+            return
+
+        wire = self._accept_websocket(sec_key)
+        started = time.monotonic()
+        try:
+            _transcription_bridge.run_transcription_bridge(
+                client, wire, model=model, sample_rate=sample_rate
+            )
+            status = "ok"
+        except Exception:  # noqa: BLE001, a nameless trace row beats a lost one
+            status = "error: internal"
+        finally:
+            self._record(
+                route="/api/transcribe",
+                method="GET",
+                started=started,
+                body={"target": target_id, "model": model},
+                status=status,
+            )
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         route = parsed.path
 
         # The opened link, before anything else: swap the token for a cookie
-        # and get it out of the URL.
-        if route == "/" and parse_qs(parsed.query).get("token") and self._adopt_token(parsed):
+        # and get it out of the URL. Any tab path qualifies, so a bookmarked
+        # deep link with a token opens onto its tab.
+        if route in _TAB_PATHS and parse_qs(parsed.query).get("token") and self._adopt_token(parsed):
             return
 
         if route.startswith("/api/") and not self._authorised(parsed):
             self._send_json({"error": {"code": "unauthorized", "message": "token required"}}, 403)
             return
 
-        if route == "/":
+        if route in _TAB_PATHS:
             self._send_static("index.html")
         elif route.startswith("/static/"):
             self._send_static(route[len("/static/") :])
@@ -495,6 +572,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(result, 404 if "error" in result else 200)
         elif route == "/api/realtime":
             self._handle_realtime(parsed)
+        elif route == "/api/transcribe":
+            self._handle_transcribe(parsed)
         elif route == "/api/models":
             params = parse_qs(parsed.query)
             target_id = self._target_id(params)

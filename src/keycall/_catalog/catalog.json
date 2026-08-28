@@ -41,6 +41,14 @@
       "capabilities": {
         "tool_calling": true,
         "web_search": true,
+        "apply_patch": true,
+        "apply_patch_note": "Responses API only. Live-verified 2026-08-22 on gpt-5.1 (create_file/update_file/delete_file, streaming and not); gpt-4o-mini refuses it with a typed invalid_request_error.",
+        "code_interpreter": true,
+        "code_interpreter_note": "Responses API code_interpreter tool, container: {type: auto}. Live-verified 2026-08-22 on gpt-5.1, streaming and not. outputs is null even on a successful run; the human-readable result arrives as the following message's text, not on the call item. A generated file surfaces only as a container_file_citation annotation needing a further authenticated download, not yet built.",
+        "custom_tool": true,
+        "custom_tool_note": "Responses API custom tool ({type: custom, name, description}, no JSON Schema). Live-verified 2026-08-22 on gpt-5.1, streaming and not: the model's call arrives as {type: custom_tool_call, call_id, name, input}, input a plain string; the reply is {type: custom_tool_call_output, call_id, output}. Streaming adds response.custom_tool_call_input.delta/.done, redundant with the terminal event same as apply_patch and code_interpreter.",
+        "tool_search": true,
+        "tool_search_note": "Responses API tool_search ({type: tool_search}, hosted mode), gpt-5.4+ only. Deferred function tools set defer_loading: true. Live-verified 2026-08-22, streaming and not: tool_search_call/tool_search_output arrive as ordinary output items (whole, no dedicated streaming deltas), then the discovered tool's function_call/function_call_output round-trips the same way a non-deferred one does; replay needs no special handling.",
         "reasoning_effort": true,
         "reasoning_effort_note": "Maps to the Responses reasoning.effort field. Verified live 2026-08-14 on gpt-5-nano.",
         "schema_enforcement": "native",
@@ -105,6 +113,10 @@
       "capabilities": {
         "tool_calling": true,
         "web_search": true,
+        "code_interpreter": true,
+        "code_interpreter_note": "code_execution_20250825 tool, needs the anthropic-beta: code-execution-2025-08-25 header (sent only on a request that asks for it). Live-verified 2026-08-22 on claude-opus-5, non-streaming: the model invokes an internally-mapped bash_code_execution server tool (server_tool_use + bash_code_execution_tool_result blocks), normalized here; only that pair is normalized, a chained text_editor_code_execution call falls through to UnknownOutput. Non-streaming only in this increment: a streaming call still completes with the correct final text, but its code/output blocks are silently dropped rather than surfaced, since Anthropic's streaming shape for this tool has not yet been live-probed.",
+        "tool_search": true,
+        "tool_search_note": "tool_search_tool_bm25_20251119 (natural-language search variant), no beta header needed. Deferred client tools set defer_loading: true. Live-verified 2026-08-22 on claude-opus-5, streaming and not: search runs as server_tool_use/tool_search_tool_result blocks, the discovered tool's tool_use/tool_result round-trips like any ordinary tool call. Confirmed live that omitting the server_tool_use/tool_search_tool_result blocks entirely on replay still works (the API tolerates it despite docs recommending they ride back unchanged), so KeyCall treats them as trace-of-work, same as web_search's own blocks.",
         "reasoning_effort": true,
         "reasoning_effort_note": "Maps to output_config.effort; a top-level effort field is refused. Verified live 2026-08-14 on claude-opus-4-5.",
         "schema_enforcement": "native",
@@ -194,6 +206,8 @@
       "capabilities": {
         "tool_calling": true,
         "web_search": true,
+        "code_interpreter": true,
+        "code_interpreter_note": "codeExecution tool, live on the standard generateContent/streamGenerateContent endpoints. Live-verified 2026-08-22 on gemini-3.7-flash, streaming and not: a paired executableCode/codeExecutionResult part per run, matched by id; a generated image returns as a separate inlineData part with the bytes inline, needing no further download.",
         "reasoning_effort": true,
         "reasoning_effort_note": "Maps to generationConfig.thinkingConfig.thinkingLevel, uppercased. Thought-token counts follow the level (verified live 2026-08-14 on gemini-flash-latest).",
         "schema_enforcement": "native",
@@ -447,6 +461,8 @@
         "tool_calling": true,
         "web_search": true,
         "web_search_note": "Server-side web search rides POST /v1/responses (the OpenAI Responses shape), with url_citation annotations and the same streaming event names as OpenAI, not chat completions. The old Live Search (search_parameters) answers 410 deprecated. Both verified live 2026-08-14.",
+        "code_interpreter": true,
+        "code_interpreter_note": "Rides POST /v1/responses like web_search and reasoning_effort, reusing OpenAI's adapter and parser. Live-verified 2026-08-22 on grok-4.3, non-streaming and streaming: same code_interpreter_call item type as OpenAI but no container_id field, and outputs is a non-null logs list that is often empty even when the code printed something. No confirmed mechanism to retrieve a generated file at all (unlike OpenAI's opaque reference or Gemini's inline bytes).",
         "reasoning_effort": true,
         "reasoning_effort_note": "Rides POST /v1/responses as reasoning.effort, which binds (reasoning token counts follow the level, measured 2026-08-14); the chat-completions reasoning_effort field answers 200 without binding, so requests naming an effort are routed to the responses surface.",
         "schema_enforcement": "native",
@@ -483,6 +499,76 @@
           "categories": ["realtime"]
         }
       ]
+    },
+    "assemblyai": {
+      "aliases": [],
+      "protocol": "stt",
+      "base_url": "https://api.assemblyai.com",
+      "auth": {
+        "scheme": "api_key",
+        "header": "Authorization"
+      },
+      "operations": {
+        "list_models": {
+          "method": "GET",
+          "path": "/v2/transcript?limit=1"
+        },
+        "streaming_transcription": {
+          "method": "WS",
+          "path": "wss://streaming.assemblyai.com/v3/ws"
+        }
+      },
+      "provider_request_id_header": null,
+      "model_discovery": "catalog",
+      "model_discovery_note": "AssemblyAI exposes no model-list endpoint; the streaming model set is maintained here. The list call hits GET /v2/transcript?limit=1 purely to validate the credential (200 with a valid key, 401 otherwise, verified live 2026-08-28).",
+      "models": [
+        {
+          "id": "universal-3-5-pro",
+          "categories": ["transcription"]
+        }
+      ],
+      "capabilities": {
+        "streaming_transcription": true,
+        "streaming_transcription_note": "Universal Streaming v3 over wss://streaming.assemblyai.com/v3/ws (a different host from the REST API, hence the full URL in the operation path), bare key in the Authorization header. Live-verified 2026-08-28: Begin/Turn/Termination frames, interims as a growing transcript on one turn_order, finals as end_of_turn with per-word ms timings, Termination reporting audio_duration_seconds. Single audio channel only. Sessions auto-close after 3 hours.",
+        "verified": "2026-08-28"
+      }
+    },
+    "deepgram": {
+      "aliases": [],
+      "protocol": "stt",
+      "base_url": "https://api.deepgram.com",
+      "auth": {
+        "scheme": "token",
+        "header": "Authorization"
+      },
+      "operations": {
+        "list_models": {
+          "method": "GET",
+          "path": "/v1/auth/token"
+        },
+        "streaming_transcription": {
+          "method": "WS",
+          "path": "/v1/listen"
+        }
+      },
+      "provider_request_id_header": null,
+      "model_discovery": "catalog",
+      "model_discovery_note": "Deepgram exposes no model-list endpoint on the key's own scope; the streaming model set is maintained here. The list call hits GET /v1/auth/token purely to validate the credential (200 with a valid key, 401 otherwise, verified live 2026-08-28).",
+      "models": [
+        {
+          "id": "nova-3",
+          "categories": ["transcription"]
+        },
+        {
+          "id": "nova-2",
+          "categories": ["transcription"]
+        }
+      ],
+      "capabilities": {
+        "streaming_transcription": true,
+        "streaming_transcription_note": "wss://api.deepgram.com/v1/listen with Token-scheme Authorization. Live-verified 2026-08-28: Results frames with is_final/speech_final, per-word timings in float seconds (normalized to ms), punctuated_word alongside the raw word, terminal Metadata frame reporting duration. No session-begin frame at all; a successful connect is the only accept signal. channel_index present on every result.",
+        "verified": "2026-08-28"
+      }
     }
   }
 }

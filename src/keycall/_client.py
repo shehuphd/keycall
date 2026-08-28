@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from typing_extensions import Self
 
     from ._realtime import AsyncRealtimeSession, RealtimeSession
+    from ._transcription import AsyncTranscriptionSession, TranscriptionSession
 
 import httpx
 
@@ -47,6 +48,7 @@ from ._types import (
     StreamEvent,
     TextGenerationRequest,
     Tool,
+    TranscriptionConfig,
     Usage,
     VideoGenerationRequest,
     VideoJob,
@@ -1118,6 +1120,8 @@ class KeyCall(_BaseClient):
         temperature: float | None = None,
         top_p: float | None = None,
         web_search: bool = False,
+        apply_patch: bool = False,
+        code_interpreter: bool = False,
         reasoning_effort: str | None = None,
         response_schema: Mapping[str, Any] | None = None,
         tools: Sequence[Tool] = (),
@@ -1131,6 +1135,8 @@ class KeyCall(_BaseClient):
                 temperature=temperature,
                 top_p=top_p,
                 web_search=web_search,
+                apply_patch=apply_patch,
+                code_interpreter=code_interpreter,
                 reasoning_effort=reasoning_effort,
                 response_schema=response_schema,
                 tools=tools,
@@ -1147,6 +1153,8 @@ class KeyCall(_BaseClient):
         temperature: float | None = None,
         top_p: float | None = None,
         web_search: bool = False,
+        apply_patch: bool = False,
+        code_interpreter: bool = False,
         reasoning_effort: str | None = None,
         response_schema: Mapping[str, Any] | None = None,
         tools: Sequence[Tool] = (),
@@ -1164,6 +1172,8 @@ class KeyCall(_BaseClient):
                 temperature=temperature,
                 top_p=top_p,
                 web_search=web_search,
+                apply_patch=apply_patch,
+                code_interpreter=code_interpreter,
                 reasoning_effort=reasoning_effort,
                 response_schema=response_schema,
                 tools=tools,
@@ -1199,6 +1209,24 @@ class KeyCall(_BaseClient):
             provider=self.provider,
             config=config,
         )
+
+    def transcribe_stream(
+        self,
+        *,
+        model: str | None = None,
+        sample_rate: int = 16000,
+    ) -> TranscriptionSession:
+        """A live speech-to-text session (AssemblyAI, Deepgram). Use as a
+        context manager; push raw 16-bit mono PCM with send_audio, call
+        finish() when the audio ends, and read normalized events from
+        events(). model None takes the provider's default streaming
+        model."""
+        self._require_open()
+        config = TranscriptionConfig(model=model, sample_rate=sample_rate)
+        path, translator = self._adapter.transcription_plan(config)
+        from ._transcription import TranscriptionSession
+
+        return TranscriptionSession(self._transport, path=path, translator=translator)
 
 
 class AsyncKeyCall(_BaseClient):
@@ -1514,6 +1542,8 @@ class AsyncKeyCall(_BaseClient):
         temperature: float | None = None,
         top_p: float | None = None,
         web_search: bool = False,
+        apply_patch: bool = False,
+        code_interpreter: bool = False,
         reasoning_effort: str | None = None,
         response_schema: Mapping[str, Any] | None = None,
         tools: Sequence[Tool] = (),
@@ -1527,6 +1557,8 @@ class AsyncKeyCall(_BaseClient):
                 temperature=temperature,
                 top_p=top_p,
                 web_search=web_search,
+                apply_patch=apply_patch,
+                code_interpreter=code_interpreter,
                 reasoning_effort=reasoning_effort,
                 response_schema=response_schema,
                 tools=tools,
@@ -1543,6 +1575,8 @@ class AsyncKeyCall(_BaseClient):
         temperature: float | None = None,
         top_p: float | None = None,
         web_search: bool = False,
+        apply_patch: bool = False,
+        code_interpreter: bool = False,
         reasoning_effort: str | None = None,
         response_schema: Mapping[str, Any] | None = None,
         tools: Sequence[Tool] = (),
@@ -1560,6 +1594,8 @@ class AsyncKeyCall(_BaseClient):
                 temperature=temperature,
                 top_p=top_p,
                 web_search=web_search,
+                apply_patch=apply_patch,
+                code_interpreter=code_interpreter,
                 reasoning_effort=reasoning_effort,
                 response_schema=response_schema,
                 tools=tools,
@@ -1594,4 +1630,20 @@ class AsyncKeyCall(_BaseClient):
             translator=translator,
             provider=self.provider,
             config=config,
+        )
+
+    def transcribe_stream(
+        self,
+        *,
+        model: str | None = None,
+        sample_rate: int = 16000,
+    ) -> AsyncTranscriptionSession:
+        """Async twin of KeyCall.transcribe_stream."""
+        self._require_open()
+        config = TranscriptionConfig(model=model, sample_rate=sample_rate)
+        path, translator = self._adapter.transcription_plan(config)
+        from ._transcription import AsyncTranscriptionSession
+
+        return AsyncTranscriptionSession(
+            self._transport, path=path, translator=translator
         )

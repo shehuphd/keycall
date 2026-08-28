@@ -299,6 +299,713 @@ def test_live_streamed_tool_call_every_supporting_target():
     assert not failures, "\n".join(failures)
 
 
+def test_live_apply_patch_round_every_supporting_target():
+    """apply_patch is a provider-owned tool with a fixed schema, not a
+    caller-defined one — this exercises the whole round (call, reply,
+    final text) the same way test_live_tool_round does for ordinary
+    function calls, so a provider-side shape change surfaces here instead
+    of silently breaking the ToolCall/ToolResult mapping. Never writes to
+    disk: the reply is a canned confirmation, not an executed patch."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import KeyCall, Message, ModelCategory, TextInput, ToolResult
+    from keycall._capabilities import APPLY_PATCH_PROVIDERS
+
+    ask = [Message(role="user", content=[
+        TextInput(text="Use apply_patch to create hello.py containing only: print(1)"),
+    ])]
+
+    targets, _ = load_targets(source)
+    failures = []
+    for target in targets:
+        if target.provider not in APPLY_PATCH_PROVIDERS:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            discovery = client.list_models(
+                categories={ModelCategory.TEXT_GENERATION}, refresh=True
+            )
+            attempt_errors = []
+            for model in candidates(discovery):
+                try:
+                    first = client.generate_text(
+                        model=model.id, messages=ask, apply_patch=True,
+                        max_output_tokens=300,
+                    )
+                    if not first.tool_calls:
+                        attempt_errors.append(f"    {model.id}: no tool call made")
+                        continue
+                    call = first.tool_calls[0]
+                    assert call.name == "apply_patch", (
+                        f"{model.id}: expected an apply_patch call, got {call.name!r}"
+                    )
+                    assert call.arguments.get("type") == "create_file", (
+                        f"{model.id}: expected a create_file operation, got "
+                        f"{call.arguments.get('type')!r}"
+                    )
+                    final = client.generate_text(
+                        model=model.id,
+                        messages=[
+                            *ask,
+                            first.to_assistant_message(),
+                            Message(role="user", content=[
+                                ToolResult(tool_call_id=call.id, name=call.name,
+                                           content={"status": "completed",
+                                                    "output": "hello.py created"}),
+                            ]),
+                        ],
+                        apply_patch=True,
+                        max_output_tokens=300,
+                    )
+                    print(
+                        f"{target.display_name}: apply_patch round on {model.id} "
+                        f"(operation {dict(call.arguments)}, "
+                        f"final text {'yes' if final.text else 'NO'})"
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                    attempt_errors.append(f"    {model.id}: {exc}")
+            else:
+                failures.append(
+                    f"{target.display_name}: no model completed an apply_patch round\n"
+                    + "\n".join(attempt_errors)
+                )
+        finally:
+            client.close()
+    assert not failures, "\n".join(failures)
+
+
+def test_live_streamed_apply_patch_call_every_supporting_target():
+    """apply_patch streams through a dedicated event pair
+    (response.apply_patch_call_operation_diff.delta/.done) rather than the
+    function-call arguments events — undocumented enough, and different
+    enough for delete_file (no diff at all, completes straight from
+    response.output_item.done), to deserve its own live check."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import KeyCall, Message, ModelCategory, TextInput
+    from keycall._capabilities import APPLY_PATCH_PROVIDERS
+
+    ask = [Message(role="user", content=[
+        TextInput(text="Use apply_patch to create hello.py containing only: print(1)"),
+    ])]
+
+    targets, _ = load_targets(source)
+    failures = []
+    for target in targets:
+        if target.provider not in APPLY_PATCH_PROVIDERS:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            discovery = client.list_models(
+                categories={ModelCategory.TEXT_GENERATION}, refresh=True
+            )
+            attempt_errors = []
+            for model in candidates(discovery):
+                try:
+                    started, fragments = [], []
+                    with client.stream_text(
+                        model=model.id, messages=ask, apply_patch=True,
+                        max_output_tokens=300,
+                    ) as stream:
+                        for event in stream:
+                            if event.kind == "tool_call_started":
+                                started.append(event.name)
+                            elif event.kind == "tool_call_arguments_delta":
+                                fragments.append(event.fragment)
+                        result = stream.result()
+                    if not result.tool_calls:
+                        attempt_errors.append(f"    {model.id}: no tool call streamed")
+                        continue
+                    call = result.tool_calls[0]
+                    assert call.name == "apply_patch", (
+                        f"{model.id}: expected an apply_patch call, got {call.name!r}"
+                    )
+                    assert started == ["apply_patch"], (
+                        f"{model.id}: expected one apply_patch start event, got {started}"
+                    )
+                    assert call.arguments.get("diff"), (
+                        f"{model.id}: streamed call has no diff — the operation-diff "
+                        "delta/done event shape may have changed"
+                    )
+                    print(
+                        f"{target.display_name}: streamed apply_patch call on {model.id} "
+                        f"({len(fragments)} diff fragment(s), operation {dict(call.arguments)})"
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                    attempt_errors.append(f"    {model.id}: {exc}")
+            else:
+                failures.append(
+                    f"{target.display_name}: no model completed a streamed apply_patch call\n"
+                    + "\n".join(attempt_errors)
+                )
+        finally:
+            client.close()
+    assert not failures, "\n".join(failures)
+
+
+def test_live_code_interpreter_every_supporting_target():
+    """code_interpreter is provider-run, not caller-run — unlike
+    apply_patch, there is no reply round; the model runs code and the
+    code/output pair comes straight back in one call. Exercises all four
+    supporting providers, whose wire forms diverge more than any other
+    normalized tool: OpenAI and xAI report a null-ish outputs field with
+    the human answer only in the following text, Gemini pairs
+    executableCode/codeExecutionResult directly, and Anthropic maps onto
+    an internal bash_code_execution server tool."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import KeyCall, Message, ModelCategory, TextInput
+    from keycall._capabilities import CODE_INTERPRETER_PROVIDERS
+
+    ask = [Message(role="user", content=[
+        TextInput(text="Use the code interpreter to compute 17 * 23 and tell me the result."),
+    ])]
+
+    targets, _ = load_targets(source)
+    failures = []
+    for target in targets:
+        if target.provider not in CODE_INTERPRETER_PROVIDERS:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            discovery = client.list_models(
+                categories={ModelCategory.TEXT_GENERATION}, refresh=True
+            )
+            attempt_errors = []
+            for model in candidates(discovery):
+                try:
+                    result = client.generate_text(
+                        model=model.id, messages=ask, code_interpreter=True,
+                        max_output_tokens=500,
+                    )
+                    if not result.code_executions:
+                        attempt_errors.append(f"    {model.id}: no code execution ran")
+                        continue
+                    execution = result.code_executions[0]
+                    assert "17" in execution.code and "23" in execution.code, (
+                        f"{model.id}: expected the code to reference the operands, got "
+                        f"{execution.code!r}"
+                    )
+                    print(
+                        f"{target.display_name}: code_interpreter round on {model.id} "
+                        f"(code {execution.code!r}, output {execution.output!r}, "
+                        f"final text {'yes' if result.text else 'NO'})"
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                    attempt_errors.append(f"    {model.id}: {exc}")
+            else:
+                failures.append(
+                    f"{target.display_name}: no model completed a code_interpreter round\n"
+                    + "\n".join(attempt_errors)
+                )
+        finally:
+            client.close()
+    assert not failures, "\n".join(failures)
+
+
+def test_live_streamed_code_interpreter_every_supporting_target():
+    """Streaming coverage for OpenAI, Gemini, and xAI — Anthropic is
+    excluded deliberately: its streaming shape for bash_code_execution has
+    not been live-probed, so a streamed Anthropic code_interpreter call
+    currently completes with the right final text but silently drops its
+    code/output (known limitation, catalog.json anthropic.code_interpreter_note)."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import KeyCall, Message, ModelCategory, TextInput
+    from keycall._capabilities import CODE_INTERPRETER_PROVIDERS
+
+    ask = [Message(role="user", content=[
+        TextInput(text="Use the code interpreter to compute 17 * 23 and tell me the result."),
+    ])]
+
+    targets, _ = load_targets(source)
+    failures = []
+    for target in targets:
+        if target.provider not in CODE_INTERPRETER_PROVIDERS or target.provider == "anthropic":
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            discovery = client.list_models(
+                categories={ModelCategory.TEXT_GENERATION}, refresh=True
+            )
+            attempt_errors = []
+            for model in candidates(discovery):
+                try:
+                    with client.stream_text(
+                        model=model.id, messages=ask, code_interpreter=True,
+                        max_output_tokens=500,
+                    ) as stream:
+                        events = list(stream)
+                        result = stream.result()
+                    unknowns = [e for e in events if e.kind == "unknown"]
+                    assert not unknowns, (
+                        f"{model.id}: streamed code_interpreter emitted unrecognized "
+                        f"events {[e.provider_kind for e in unknowns]}"
+                    )
+                    if not result.code_executions:
+                        attempt_errors.append(f"    {model.id}: no code execution streamed")
+                        continue
+                    print(
+                        f"{target.display_name}: streamed code_interpreter on {model.id} "
+                        f"({len(result.code_executions)} execution(s), "
+                        f"final text {'yes' if result.text else 'NO'})"
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                    attempt_errors.append(f"    {model.id}: {exc}")
+            else:
+                failures.append(
+                    f"{target.display_name}: no model completed a streamed code_interpreter "
+                    "call\n" + "\n".join(attempt_errors)
+                )
+        finally:
+            client.close()
+    assert not failures, "\n".join(failures)
+
+
+def test_live_custom_tool_round_every_supporting_target():
+    """A custom (freeform) tool has no JSON Schema — the model's call
+    arrives as a plain string rather than parsed arguments. This exercises
+    the whole round (call, reply, final text) the same way
+    test_live_apply_patch_round does, so a change to the plain-string
+    convention surfaces here instead of silently breaking
+    ToolCall.arguments["input"]."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import KeyCall, Message, ModelCategory, TextInput, Tool, ToolResult
+    from keycall._capabilities import CUSTOM_TOOL_PROVIDERS
+
+    write_poem = Tool(name="write_poem", description="Records a poem", input_schema=None)
+    ask = [Message(role="user", content=[
+        TextInput(text="Use the write_poem tool to write a two-line poem about the moon. "
+                        "Call the tool, don't just answer in text."),
+    ])]
+
+    targets, _ = load_targets(source)
+    failures = []
+    for target in targets:
+        if target.provider not in CUSTOM_TOOL_PROVIDERS:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            discovery = client.list_models(
+                categories={ModelCategory.TEXT_GENERATION}, refresh=True
+            )
+            attempt_errors = []
+            for model in candidates(discovery):
+                try:
+                    first = client.generate_text(
+                        model=model.id, messages=ask, tools=[write_poem],
+                        max_output_tokens=300,
+                    )
+                    if not first.tool_calls:
+                        attempt_errors.append(f"    {model.id}: no tool call made")
+                        continue
+                    call = first.tool_calls[0]
+                    assert call.name == "write_poem", (
+                        f"{model.id}: expected a write_poem call, got {call.name!r}"
+                    )
+                    assert isinstance(call.arguments.get("input"), str) and call.arguments[
+                        "input"
+                    ], (
+                        f"{model.id}: expected a non-empty plain-string input, got "
+                        f"{call.arguments!r}"
+                    )
+                    final = client.generate_text(
+                        model=model.id,
+                        messages=[
+                            *ask,
+                            first.to_assistant_message(),
+                            Message(role="user", content=[
+                                ToolResult(tool_call_id=call.id, name=call.name,
+                                           content="Recorded."),
+                            ]),
+                        ],
+                        tools=[write_poem],
+                        max_output_tokens=300,
+                    )
+                    print(
+                        f"{target.display_name}: custom tool round on {model.id} "
+                        f"(input {call.arguments['input']!r}, "
+                        f"final text {'yes' if final.text else 'NO'})"
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                    attempt_errors.append(f"    {model.id}: {exc}")
+            else:
+                failures.append(
+                    f"{target.display_name}: no model completed a custom tool round\n"
+                    + "\n".join(attempt_errors)
+                )
+        finally:
+            client.close()
+    assert not failures, "\n".join(failures)
+
+
+def test_live_streamed_custom_tool_call_every_supporting_target():
+    """custom_tool_call_input streams through a dedicated event pair
+    (response.custom_tool_call_input.delta/.done), same pattern as
+    apply_patch's dedicated diff-delta events."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import KeyCall, Message, ModelCategory, TextInput, Tool
+    from keycall._capabilities import CUSTOM_TOOL_PROVIDERS
+
+    write_poem = Tool(name="write_poem", description="Records a poem", input_schema=None)
+    ask = [Message(role="user", content=[
+        TextInput(text="Use the write_poem tool to write a two-line poem about the sun. "
+                        "Call the tool, don't just answer in text."),
+    ])]
+
+    targets, _ = load_targets(source)
+    failures = []
+    for target in targets:
+        if target.provider not in CUSTOM_TOOL_PROVIDERS:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            discovery = client.list_models(
+                categories={ModelCategory.TEXT_GENERATION}, refresh=True
+            )
+            attempt_errors = []
+            for model in candidates(discovery):
+                try:
+                    started, fragments = [], []
+                    with client.stream_text(
+                        model=model.id, messages=ask, tools=[write_poem],
+                        max_output_tokens=300,
+                    ) as stream:
+                        for event in stream:
+                            if event.kind == "tool_call_started":
+                                started.append(event.name)
+                            elif event.kind == "tool_call_arguments_delta":
+                                fragments.append(event.fragment)
+                        result = stream.result()
+                    if not result.tool_calls:
+                        attempt_errors.append(f"    {model.id}: no tool call streamed")
+                        continue
+                    call = result.tool_calls[0]
+                    assert call.name == "write_poem", (
+                        f"{model.id}: expected a write_poem call, got {call.name!r}"
+                    )
+                    assert started == ["write_poem"], (
+                        f"{model.id}: expected one write_poem start event, got {started}"
+                    )
+                    assert call.arguments.get("input"), (
+                        f"{model.id}: streamed call has no input — the "
+                        "custom_tool_call_input delta/done event shape may have changed"
+                    )
+                    print(
+                        f"{target.display_name}: streamed custom tool call on {model.id} "
+                        f"({len(fragments)} input fragment(s))"
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                    attempt_errors.append(f"    {model.id}: {exc}")
+            else:
+                failures.append(
+                    f"{target.display_name}: no model completed a streamed custom tool call\n"
+                    + "\n".join(attempt_errors)
+                )
+        finally:
+            client.close()
+    assert not failures, "\n".join(failures)
+
+
+def test_live_tool_search_round_every_supporting_target():
+    """defer_loading=True is a request-size optimization, not a behavior
+    change: the discovered tool's call and reply are ordinary
+    ToolCall/ToolResult parts, identical to a non-deferred tool's. This
+    exercises the whole round the same way test_live_apply_patch_round
+    does, so a change to either provider's tool-search convention surfaces
+    here instead of silently breaking the deferred-tool round trip."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import KeyCall, Message, ModelCategory, TextInput, Tool, ToolResult
+    from keycall._capabilities import TOOL_SEARCH_PROVIDERS
+
+    weather = Tool(
+        name="get_weather",
+        description="Get the current weather at a specific location",
+        input_schema={
+            "type": "object",
+            "properties": {"location": {"type": "string"}},
+            "required": ["location"],
+        },
+        defer_loading=True,
+    )
+    ask = [Message(role="user", content=[
+        TextInput(text="What is the weather in San Francisco? Use the get_weather tool."),
+    ])]
+
+    targets, _ = load_targets(source)
+    failures = []
+    for target in targets:
+        if target.provider not in TOOL_SEARCH_PROVIDERS:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            discovery = client.list_models(
+                categories={ModelCategory.TEXT_GENERATION}, refresh=True
+            )
+            attempt_errors = []
+            for model in candidates(discovery):
+                try:
+                    first = client.generate_text(
+                        model=model.id, messages=ask, tools=[weather],
+                        max_output_tokens=300,
+                    )
+                    if not first.tool_calls:
+                        attempt_errors.append(f"    {model.id}: no tool call made")
+                        continue
+                    call = first.tool_calls[0]
+                    assert call.name == "get_weather", (
+                        f"{model.id}: expected a get_weather call, got {call.name!r}"
+                    )
+                    assert not [p for p in first.parts if p.kind == "unknown"], (
+                        f"{model.id}: a tool-search trace leaked through as UnknownOutput"
+                    )
+                    final = client.generate_text(
+                        model=model.id,
+                        messages=[
+                            *ask,
+                            first.to_assistant_message(),
+                            Message(role="user", content=[
+                                ToolResult(tool_call_id=call.id, name=call.name,
+                                           content="68F, sunny"),
+                            ]),
+                        ],
+                        tools=[weather],
+                        max_output_tokens=300,
+                    )
+                    print(
+                        f"{target.display_name}: tool search round on {model.id} "
+                        f"(args {dict(call.arguments)}, "
+                        f"final text {'yes' if final.text else 'NO'})"
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                    attempt_errors.append(f"    {model.id}: {exc}")
+            else:
+                failures.append(
+                    f"{target.display_name}: no model completed a tool search round\n"
+                    + "\n".join(attempt_errors)
+                )
+        finally:
+            client.close()
+    assert not failures, "\n".join(failures)
+
+
+def test_live_streamed_tool_search_every_supporting_target():
+    """Streaming coverage: tool_search_call/tool_search_output (OpenAI) and
+    server_tool_use/tool_search_tool_result (Anthropic) stream as
+    already-handled event forms — no dedicated events of their own — so
+    this confirms neither leaks an unknown stream event."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import KeyCall, Message, ModelCategory, TextInput, Tool
+    from keycall._capabilities import TOOL_SEARCH_PROVIDERS
+
+    weather = Tool(
+        name="get_weather",
+        description="Get the current weather at a specific location",
+        input_schema={
+            "type": "object",
+            "properties": {"location": {"type": "string"}},
+            "required": ["location"],
+        },
+        defer_loading=True,
+    )
+    ask = [Message(role="user", content=[
+        TextInput(text="What is the weather in Tokyo? Use the get_weather tool."),
+    ])]
+
+    targets, _ = load_targets(source)
+    failures = []
+    for target in targets:
+        if target.provider not in TOOL_SEARCH_PROVIDERS:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            discovery = client.list_models(
+                categories={ModelCategory.TEXT_GENERATION}, refresh=True
+            )
+            attempt_errors = []
+            for model in candidates(discovery):
+                try:
+                    with client.stream_text(
+                        model=model.id, messages=ask, tools=[weather],
+                        max_output_tokens=300,
+                    ) as stream:
+                        events = list(stream)
+                        result = stream.result()
+                    unknowns = [e for e in events if e.kind == "unknown"]
+                    assert not unknowns, (
+                        f"{model.id}: streamed tool search emitted unrecognized "
+                        f"events {[e.provider_kind for e in unknowns]}"
+                    )
+                    if not result.tool_calls:
+                        attempt_errors.append(f"    {model.id}: no tool call streamed")
+                        continue
+                    print(
+                        f"{target.display_name}: streamed tool search on {model.id} "
+                        f"(call {result.tool_calls[0].name!r})"
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 — reported, not hidden
+                    attempt_errors.append(f"    {model.id}: {exc}")
+            else:
+                failures.append(
+                    f"{target.display_name}: no model completed a streamed tool search call\n"
+                    + "\n".join(attempt_errors)
+                )
+        finally:
+            client.close()
+    assert not failures, "\n".join(failures)
+
+
+def test_live_streaming_transcription_every_supporting_target():
+    """A whole transcription round against each STT provider: spoken-word
+    PCM in, interims, finals with word timings, and the session summary's
+    billable-audio duration out. Audio is synthesized on the fly with
+    macOS `say`, so the expected words are known and the assertion is on
+    recognition content, not just frame plumbing."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import shutil
+    import subprocess
+    import tempfile
+    import threading
+    import time as _time
+
+    if not shutil.which("say") or not shutil.which("ffmpeg"):
+        pytest.skip("live transcription check needs `say` and `ffmpeg` to synthesize audio")
+    from keycall import KeyCall
+    from keycall._capabilities import STREAMING_TRANSCRIPTION_PROVIDERS
+
+    with tempfile.TemporaryDirectory() as tmp:
+        aiff = f"{tmp}/speech.aiff"
+        pcm_path = f"{tmp}/speech.pcm"
+        subprocess.run(
+            ["say", "-o", aiff, "The quick brown fox jumps over the lazy dog."],
+            check=True,
+        )
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", aiff, "-ar", "16000", "-ac", "1", "-f", "s16le", pcm_path],
+            check=True,
+            capture_output=True,
+        )
+        with open(pcm_path, "rb") as f:
+            pcm = f.read()
+
+    preferred_model = {"deepgram": "nova-3"}  # its no-model default is a dated base model
+    targets, _ = load_targets(source)
+    failures = []
+    for target in targets:
+        if target.provider not in STREAMING_TRANSCRIPTION_PROVIDERS:
+            continue
+        client = KeyCall(provider=target.provider, api_key=target.key)
+        try:
+            with client.transcribe_stream(
+                model=preferred_model.get(target.provider), sample_rate=16000
+            ) as session:
+
+                def feed(feed_session=session):
+                    chunk = 3200  # 100 ms of 16 kHz 16-bit mono
+                    for i in range(0, len(pcm), chunk):
+                        feed_session.send_audio(pcm[i : i + chunk])
+                        _time.sleep(0.05)
+                    _time.sleep(1.5)
+                    feed_session.finish()
+
+                feeder = threading.Thread(target=feed)
+                feeder.start()
+                finals, unknowns = [], []
+                ended = None
+                for event in session.events(timeout=30):
+                    if event.kind == "final_transcript":
+                        finals.append(event)
+                    elif event.kind == "unknown":
+                        unknowns.append(event.provider_kind)
+                    elif event.kind == "session_ended":
+                        ended = event
+                feeder.join()
+            text = " ".join(f.text for f in finals).lower()
+            assert "fox" in text and "dog" in text, (
+                f"{target.display_name}: transcription missed the spoken words, got {text!r}"
+            )
+            assert not unknowns, (
+                f"{target.display_name}: unrecognized frames {unknowns}"
+            )
+            assert finals and finals[0].words, (
+                f"{target.display_name}: final transcript carries no word timings"
+            )
+            assert ended is not None and ended.audio_duration_seconds, (
+                f"{target.display_name}: session summary reported no billable duration"
+            )
+            print(
+                f"{target.display_name}: transcribed {text!r} "
+                f"({len(finals)} final(s), {ended.audio_duration_seconds}s billed)"
+            )
+        except Exception as exc:  # noqa: BLE001 — reported, not hidden
+            failures.append(f"{target.display_name}: {exc}")
+        finally:
+            client.close()
+    assert not failures, "\n".join(failures)
+
+
 def test_live_perplexity_tools_gate_still_correct():
     """Capability-drift probe: the Perplexity gate rests on live evidence
     that Sonar rejects tools. If this call stops failing with the known

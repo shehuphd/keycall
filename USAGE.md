@@ -252,6 +252,87 @@ with client.stream_text(model="...", messages=messages, tools=[weather]) as stre
 - Argument fragments are provider bytes, not KeyCall's: they split mid-token and only the concatenation is valid JSON. Show them as progress, never parse them. A provider that sends arguments whole (Gemini) emits no fragments at all, so treat their absence as normal.
 - Malformed argument JSON raises `INVALID_PROVIDER_RESPONSE` from the iterator rather than yielding a call with silently dropped arguments.
 
+### apply_patch (OpenAI)
+
+`apply_patch=True` enables OpenAI's file-editing convention: the model proposes create/update/delete operations instead of you defining a tool for it. Calls and replies are ordinary `ToolCall`/`ToolResult` parts with `name == "apply_patch"` — the same replay loop as any other tool, just with a fixed operation instead of arguments you defined:
+
+```python
+result = client.generate_text(model="...", messages=messages, apply_patch=True)
+
+while result.tool_calls:
+    replies = []
+    for call in result.tool_calls:
+        operation = call.arguments  # {"type": "create_file"|"update_file"|"delete_file",
+                                     #  "path": "...", "diff": "..."}  # diff omitted for delete
+        outcome = my_patch_executor(operation)  # your code applies it to disk
+        replies.append(ToolResult(
+            tool_call_id=call.id, name=call.name,
+            content={"status": "completed" if outcome.ok else "failed", "output": outcome.message},
+        ))
+    messages += [result.to_assistant_message(),
+                 Message(role="user", content=replies)]
+    result = client.generate_text(model="...", messages=messages, apply_patch=True)
+```
+
+- `diff` is OpenAI's own V4A format (a bare `@@` marker, then `-`/`+` lines) — not unified diff. KeyCall passes it through verbatim; parsing and applying it is your executor's job.
+- A plain string `content` on the reply defaults to `status: "completed"`; pass a mapping with an explicit `status` to report a failure. A failed status doesn't error the request — the model reads it and reports the failure in its own next reply.
+- Reserved name: a caller-defined `Tool` also named `"apply_patch"` raises `UNSUPPORTED_OPERATION` while `apply_patch=True`, since that name is how KeyCall recognizes the tool's own parts on replay.
+- OpenAI-only (live-verified 2026-08-22, `gpt-5.1`/`gpt-5.6`); other providers raise `UNSUPPORTED_OPERATION`. Per-model support is OpenAI's own typed `invalid_request_error`, surfaced rather than tracked in a model allowlist (`gpt-4o-mini` refuses it, for one).
+
+### Code interpreter (OpenAI, Gemini, xAI, Anthropic)
+
+`code_interpreter=True` enables the provider's hosted code-execution tool: the model writes and runs code server-side, and the run comes back as a `CodeExecutionOutput` part on `result.code_executions` — there's nothing for you to execute or reply to, unlike `apply_patch` and caller-defined tools:
+
+```python
+result = client.generate_text(
+    model="...", messages=messages, code_interpreter=True,
+)
+for execution in result.code_executions:
+    print(execution.language, execution.code, "->", execution.output)
+print(result.text)  # the model's own written-out answer
+```
+
+- **`output` isn't always the answer.** OpenAI and xAI report the run's code but not its printed output at the call level (`output` comes back empty); the human-readable result only appears in `result.text`, on the model's following reply. Gemini and Anthropic do report output directly.
+- **A generated file is only recovered on Gemini.** A code run that saves an image comes back as bytes inline only on Gemini, surfaced as an ordinary `ImageOutput` in `result.parts`. OpenAI, xAI, and Anthropic instead hand back an opaque file reference that needs a further authenticated download — KeyCall doesn't perform that download yet, so a run that only produces a file (no text answer) currently loses it on those three.
+- **Anthropic maps this onto its own `bash_code_execution` server tool** and needs a beta header KeyCall sends automatically only when `code_interpreter=True`. Only that tool's calls are normalized; a chained `text_editor_code_execution` call Anthropic sometimes makes to author a file first surfaces as an `UnknownOutput` instead.
+- **Non-streaming only on Anthropic.** `stream_text(..., code_interpreter=True)` still completes correctly on Anthropic with the right final text, but its code/output currently doesn't survive the stream — call `generate_text()` instead when you need Anthropic's code execution details. OpenAI, Gemini, and xAI stream it fully.
+- Supported on OpenAI, Gemini, xAI, and Anthropic (all live-verified 2026-08-22); other providers raise `UNSUPPORTED_OPERATION`.
+
+### Custom tools (OpenAI)
+
+Pass `input_schema=None` on a `Tool` to declare a custom (freeform) tool instead of an ordinary JSON-Schema one: the model's call arrives as a plain string rather than parsed arguments, since there's no schema to parse against. The rest of the round trip is identical to an ordinary tool:
+
+```python
+write_poem = Tool(name="write_poem", description="Records a poem", input_schema=None)
+result = client.generate_text(model="...", messages=messages, tools=[write_poem])
+
+for call in result.tool_calls:
+    text = call.arguments["input"]  # a plain string, not a JSON object
+```
+
+- The call's argument is always the single key `arguments["input"]`, a plain string — not the JSON dict an ordinary tool's arguments would parse into.
+- Reply the same way as any other tool: `ToolResult(tool_call_id=call.id, name=call.name, content=your_output)`.
+- OpenAI-only (live-verified 2026-08-22); other providers raise `UNSUPPORTED_OPERATION` for a `Tool` declared with `input_schema=None`.
+
+### Tool search (OpenAI, Anthropic)
+
+Pass `defer_loading=True` on a `Tool` to keep its definition out of the model's context until it searches for and finds it. This is a request-size optimization for a large tool library, not a behavior change — the discovered tool's call and reply are ordinary `ToolCall`/`ToolResult` parts, identical to a non-deferred tool's:
+
+```python
+weather = Tool(
+    name="get_weather", description="Get the weather at a location",
+    input_schema={"type": "object", "properties": {"location": {"type": "string"}},
+                  "required": ["location"]},
+    defer_loading=True,
+)
+result = client.generate_text(model="...", messages=messages, tools=[weather])
+# result.tool_calls works the same way it would without defer_loading
+```
+
+- KeyCall sends the provider's tool-search tool automatically whenever any `Tool` in the request sets `defer_loading=True` — there's nothing else to enable.
+- Pays off once a tool library is large enough that sending every definition on every request is wasteful; a handful of tools gets no benefit and standard tool calling is simpler.
+- OpenAI and Anthropic only (live-verified 2026-08-22); other providers raise `UNSUPPORTED_OPERATION` for a `Tool` with `defer_loading=True`.
+
 ## Images, audio, and documents
 
 Pass an `ImageInput`, `AudioInput`, or `FileInput` alongside your text in a user message. Bytes are read directly; no file is uploaded and KeyCall never fetches anything on your behalf:
@@ -408,6 +489,50 @@ Provider notes, all verified live:
 - **Gemini** (`gemini-2.5-flash-native-audio-latest`): audio-only models; the API key rides a header on the WebSocket handshake, never the URL; usage includes thought tokens. Caller audio is 16 kHz 16-bit PCM (OpenAI and xAI take 24 kHz); generated audio is 24 kHz on all three.
 
 Everything KeyCall doesn't model can be passed as `provider_config={...}`, merged verbatim into the provider's session-configuration message; using it reports a warning, since those keys won't port between providers. `AsyncKeyCall.realtime()` is the same surface with `async for` over `events()`. Providers without a realtime API (Anthropic, DeepSeek, Perplexity, Moonshot, custom targets) refuse with `UNSUPPORTED_OPERATION` before any connection.
+
+## Streaming transcription
+
+`transcribe_stream()` opens a live speech-to-text session with an STT provider — AssemblyAI or Deepgram, KeyCall's first non-LLM providers. Push raw 16-bit mono PCM in, read normalized transcript events out:
+
+```python
+client = KeyCall(provider="deepgram", api_key="...")   # or "assemblyai"
+
+with client.transcribe_stream(model="nova-3", sample_rate=16000) as session:
+    # feed audio from another thread (or interleave sends with reads)
+    session.send_audio(pcm_chunk)          # raw 16-bit mono PCM, binary frames
+    session.finish()                       # no more audio; finalize and close
+
+    for event in session.events(timeout=30):
+        if event.kind == "interim_transcript":
+            display(event.text)            # provisional, will be superseded
+        elif event.kind == "final_transcript":
+            process(event.text, event.words)
+        elif event.kind == "session_ended":
+            bill_seconds = event.audio_duration_seconds
+```
+
+| Event kind | Meaning |
+|---|---|
+| `session_started` | the provider accepted the session (AssemblyAI; Deepgram sends no such frame — a successful connect is its accept signal) |
+| `interim_transcript` | provisional text, superseded by later events; for live display only |
+| `final_transcript` | finalized text with per-word timings; this text will not change |
+| `session_ended` | the connection closed; always the final event, carrying the provider's billable-audio-seconds where its session summary arrived |
+| `unknown` | a frame KeyCall doesn't recognize, bounded to its type name |
+
+What a `final_transcript` carries, per the partial-support rule — a field only one provider reports is still normalized, and `None` means "this provider doesn't say":
+
+- **`words`**: per-word `TranscriptWord(text, start_ms, end_ms, confidence)` on both providers. Timings are milliseconds from the session's start regardless of the provider's own unit (AssemblyAI counts ms, Deepgram counts seconds; KeyCall converts). Deepgram's words carry punctuation and casing (`punctuate=true` is always requested); AssemblyAI formats the transcript itself the same way.
+- **`utterance_end`**: whether the speaker also finished the thought. Deepgram can finalize a stretch of text mid-utterance (`is_final` without `speech_final`) — more finals of the same utterance follow; AssemblyAI only finalizes whole turns, so it's always `True` there.
+- **`confidence`**: overall on Deepgram; `None` on AssemblyAI, which scores per-word only (read `words` instead).
+- **`channel`**: Deepgram's audio-channel index; `None` on AssemblyAI, which is single-channel. For dual-channel capture (a mic and system audio recorded separately), run one session per channel.
+
+Both providers bill per second of audio, not per token — `session_ended.audio_duration_seconds` is the billable figure, from AssemblyAI's `Termination` frame or Deepgram's terminal `Metadata` frame. A session that drops before the summary arrives reports `None` there, with the close reason in `reason`.
+
+- `model=None` takes the provider's default streaming model. On AssemblyAI that's its current flagship (`universal-3-5-pro`); on Deepgram it's a dated base model, so pass `model="nova-3"` explicitly there.
+- `sample_rate` (default 16000) must match the PCM you send; both providers accept other rates.
+- Sessions run long: AssemblyAI auto-closes after 3 hours. A dropped connection surfaces as `session_ended` with the close reason and no billing summary. Reconnection is yours: open a new session and resend audio from the point of the last `final_transcript` — everything after it was interim-only and is re-recognized from the resent audio. KeyCall doesn't buffer or replay audio itself.
+- `list_models(categories={ModelCategory.TRANSCRIPTION})` lists each provider's streaming models (maintained by KeyCall — neither provider has a model-list API; the call still validates the credential against a live endpoint). `keycall verify`-style key checking works the same way as for LLM providers.
+- `AsyncKeyCall.transcribe_stream()` is the same surface with `async with` / `async for`. LLM providers refuse `transcribe_stream` with `UNSUPPORTED_OPERATION` before any connection, and the STT providers refuse `generate_text` and every other LLM operation the same way.
 
 On xAI the flag also changes which surface answers: plain generation uses chat completions, while a searched request goes to xAI's agentic route (`/v1/responses`, the same shape as OpenAI's Responses API). KeyCall switches route, body, and parser together — the call you write stays identical, and searched replies still stream, cite, and report usage the same way.
 

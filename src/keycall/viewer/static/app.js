@@ -189,17 +189,52 @@ function attachSort(table) {
 
 // --- tabs -------------------------------------------------------------------
 
+// Each tab has its own URL (/models, /traces, …) so a reload or a pasted
+// link opens straight onto it, and back/forward walk the tabs visited.
+// The server hands out the same page shell for every one of these paths;
+// "/" is the Dashboard.
+const TAB_PATHS = {
+  dashboard: "/",
+  models: "/models",
+  playground: "/playground",
+  verify: "/verify",
+  traces: "/traces",
+};
+
+function tabForPath(pathname) {
+  const entry = Object.entries(TAB_PATHS).find(([, path]) => path === pathname);
+  return entry ? entry[0] : "dashboard";
+}
+
+// The one place a tab comes on screen, however it was asked for (click,
+// page load, back/forward), so per-tab side effects can't be skipped by
+// arriving a different way.
+function activateTab(name) {
+  document.querySelectorAll("#tabs button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.tab === name)
+  );
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === name));
+  // The Playground can only be measured once it is on screen; a hidden
+  // tab has no position to measure from.
+  if (name === "playground") sizePlayground();
+  // Traces polls only while its tab is showing; anywhere else the timer
+  // would refresh a table nobody can see.
+  if (name === "traces") {
+    loadTraces();
+    startTracesTimer();
+  } else {
+    stopTracesTimer();
+  }
+}
+
 document.querySelectorAll("#tabs button").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll("#tabs button").forEach((b) => b.classList.remove("active"));
-    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-    btn.classList.add("active");
-    el(btn.dataset.tab).classList.add("active");
-    // The Playground can only be measured once it is on screen; a hidden
-    // tab has no position to measure from.
-    if (btn.dataset.tab === "playground") sizePlayground();
+    activateTab(btn.dataset.tab);
+    history.pushState(null, "", TAB_PATHS[btn.dataset.tab] || "/");
   });
 });
+
+window.addEventListener("popstate", () => activateTab(tabForPath(location.pathname)));
 
 // --- boot -------------------------------------------------------------------
 
@@ -401,6 +436,9 @@ async function boot() {
     "Press \u201cRun verify\u201d above to test every key you have loaded. Results appear here, one card per key."
   );
   await refreshTargets();
+  // The URL decides the opening tab, so /traces reloads onto Traces
+  // instead of dropping back to the Dashboard.
+  activateTab(tabForPath(location.pathname));
 }
 
 // --- dashboard --------------------------------------------------------------
@@ -420,6 +458,13 @@ function renderDashboard() {
     row.addEventListener("click", () => checkTarget(t.id, row));
     tbody.appendChild(row);
   });
+  // Disabled with a reason when there is nothing to test, per the "disable,
+  // don't just render, a control with nothing to act on" rule.
+  const checkAll = el("dash-check-all");
+  checkAll.disabled = !TARGETS.length;
+  checkAll.title = TARGETS.length
+    ? "Check every key above in one go"
+    : "Load a key first — there is nothing to test yet";
 }
 
 async function checkTarget(id, row) {
@@ -437,6 +482,24 @@ async function checkTarget(id, row) {
   statusCell.appendChild(pill("key valid", "ok"));
   row.children[3].textContent = String(data.models.length);
 }
+
+// One click runs the same check every row's own click runs, all in flight
+// together rather than one after another; each row's status pill reports
+// its own outcome as it arrives. allSettled so one provider erroring in
+// transit can't strand the button in its disabled state.
+async function checkAllTargets() {
+  const button = el("dash-check-all");
+  const rows = [...el("dashboard-table").querySelectorAll("tbody tr")];
+  if (!rows.length) return;
+  button.disabled = true;
+  try {
+    await Promise.allSettled(TARGETS.map((t, i) => checkTarget(t.id, rows[i])));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+el("dash-check-all").addEventListener("click", checkAllTargets);
 
 // --- shared target selects --------------------------------------------------
 
@@ -460,6 +523,7 @@ function modeCategory(mode) {
   return mode === "image" ? "image_generation"
     : mode === "video" ? "video_generation"
     : mode === "voice" ? "realtime"
+    : mode === "transcribe" ? "transcription"
     : null;
 }
 
@@ -656,6 +720,7 @@ async function loadPlaygroundModels() {
     currentMode() === "image" ? "image_generation"
     : currentMode() === "video" ? "video_generation"
     : currentMode() === "voice" ? "realtime"
+    : currentMode() === "transcribe" ? "transcription"
     : "text_generation";
   const sel = el("pg-model");
   clear(sel);
@@ -682,6 +747,7 @@ async function loadPlaygroundModels() {
       currentMode() === "image" ? "this key has no picture models"
       : currentMode() === "video" ? "this key has no video models"
       : currentMode() === "voice" ? "this key has no voice models"
+      : currentMode() === "transcribe" ? "this key has no transcription models"
       : "this key has no text models";
     sel.appendChild(none);
     sel.disabled = true;
@@ -802,29 +868,36 @@ async function applyMode() {
   const image = currentMode() === "image";
   const video = currentMode() === "video";
   const voice = currentMode() === "voice";
-  el("pg-extras").hidden = image || video || voice;
-  el("pg-maxtok-row").hidden = image || video || voice;
+  const transcribe = currentMode() === "transcribe";
+  el("pg-extras").hidden = image || video || voice || transcribe;
+  el("pg-maxtok-row").hidden = image || video || voice || transcribe;
   // Neither generate_image() nor generate_video() sends reasoning_effort
   // at all (their requests are model + prompt, nothing else), so the
   // control would silently do nothing if left up rather than refusing.
-  el("pg-reasoning-row").hidden = image || video || voice;
-  el("pg-system-row").hidden = image || video;
+  el("pg-reasoning-row").hidden = image || video || voice || transcribe;
+  // Transcription has no instructions either: the session takes audio in
+  // and gives words back, with no prompt anywhere in it.
+  el("pg-system-row").hidden = image || video || transcribe;
   el("pg-image-mode-note").hidden = !image;
   el("pg-video-mode-note").hidden = !video;
   el("pg-voice-mode-note").hidden = !voice;
+  el("pg-transcribe-mode-note").hidden = !transcribe;
   el("pg-video-duration-row").hidden = !video;
   if (!video) el("pg-video-duration-warning").hidden = true;
   // An image or video model takes a description and nothing else, so a
   // microphone in the composer would only offer something that cannot be
-  // sent. A voice session has its own microphone control, in its own panel.
-  el("pg-mic").hidden = image || video || voice;
-  el("pg-composer").hidden = voice;
-  el("pg-composer-hint").hidden = voice;
+  // sent. Voice and transcribe sessions each have their own microphone
+  // control, in their own panel.
+  el("pg-mic").hidden = image || video || voice || transcribe;
+  el("pg-composer").hidden = voice || transcribe;
+  el("pg-composer-hint").hidden = voice || transcribe;
   el("pg-voice-panel").hidden = !voice;
-  // Leaving voice mode ends any session in progress rather than leaving
-  // a WebSocket open behind a panel nothing points at any more.
+  el("pg-transcribe-panel").hidden = !transcribe;
+  // Leaving a session mode ends any session in progress rather than
+  // leaving a WebSocket open behind a panel nothing points at any more.
   if (!voice) endVoiceSession();
-  if ((image || video || voice) && REC) discardRecording();
+  if (!transcribe) endTranscribeSession();
+  if ((image || video || voice || transcribe) && REC) discardRecording();
   el("pg-prompt").placeholder = image
     ? `Describe the picture you want. Press Send, or ${MOD_KEY}+Enter.`
     : video
@@ -1438,6 +1511,283 @@ el("pg-voice-prompt").addEventListener("keydown", (event) => {
     sendVoiceText();
   }
 });
+
+// --- live transcription -----------------------------------------------------
+
+// Every STT provider takes 16 kHz 16-bit mono, so the browser downsamples
+// to one rate with no per-provider branch, unlike the realtime table above.
+const STT_SAMPLE_RATE = 16000;
+
+// Non-null for the life of one transcription session: {ws, mic*, running,
+// micStarting, finishing, liveBubble, liveBody, gotFinalMessage}. The same
+// tap-to-toggle flow as a voice session, minus playback and typing:
+// nothing talks back, so audio only flows up.
+let PG_STT = null;
+
+function setTranscribeStatus(text) {
+  el("pg-transcribe-status").textContent = text;
+}
+
+function setTranscribeMicIndicator(active) {
+  const btn = el("pg-transcribe-talk");
+  btn.classList.toggle("live", active);
+  btn.setAttribute("aria-pressed", String(active));
+  btn.title = active ? "Finish transcribing" : "Start transcribing";
+  btn.setAttribute("aria-label", btn.title);
+}
+
+function startTranscribeSession() {
+  if (PG_STT) return;
+  const target = TARGETS.find((t) => String(t.id) === el("pg-target").value);
+  const model = el("pg-model").value;
+  if (!target || !model) {
+    setTranscribeStatus("pick a key and a model first");
+    return;
+  }
+  clearTranscriptPlaceholder();
+  const url = new URL("/api/transcribe", location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("target", target.id);
+  url.searchParams.set("model", model);
+  url.searchParams.set("sample_rate", String(STT_SAMPLE_RATE));
+
+  const ws = new WebSocket(url);
+  PG_STT = {
+    ws,
+    micStream: null,
+    micCtx: null,
+    micNode: null,
+    micSource: null,
+    micMute: null,
+    running: false,
+    micStarting: false,
+    finishing: false,
+    liveBubble: null,
+    liveBody: null,
+    gotFinalMessage: false,
+    firstFinalText: null,
+  };
+  setTranscribeMicIndicator(true);
+  setTranscribeStatus(`connecting to ${target.provider}…`);
+  ws.onmessage = (event) => handleTranscribeMessage(event.data);
+  ws.onclose = () => {
+    // Already torn down via the mic button; this is the socket finishing
+    // its own close handshake after that, not a new event.
+    if (!PG_STT) return;
+    if (!PG_STT.gotFinalMessage) setTranscribeStatus("connection closed");
+    endTranscribeSession();
+  };
+  startTranscribeMic();
+}
+
+function handleTranscribeMessage(raw) {
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (!PG_STT || !data || typeof data.type !== "string") return;
+  switch (data.type) {
+    case "session_started":
+      // The microphone's own start reports "listening…"; this only fills
+      // the window before permission comes through. Some providers send
+      // no session-start frame at all, so nothing else depends on it.
+      if (!PG_STT.running) setTranscribeStatus("connected, starting the microphone…");
+      break;
+    case "interim_transcript":
+      updateTranscribeInterim(data.text || "");
+      break;
+    case "final_transcript":
+      finishTranscribeUtterance(data);
+      break;
+    case "session_ended": {
+      PG_STT.gotFinalMessage = true;
+      const billed = data.audio_duration_seconds;
+      setTranscribeStatus(
+        billed != null
+          ? `session ended, ${billed}s of audio billed`
+          : data.reason
+          ? `session ended: ${data.reason}`
+          : "session ended"
+      );
+      PG_STT.ws.close();
+      break;
+    }
+    case "error":
+      PG_STT.gotFinalMessage = true;
+      setTranscribeStatus(`error: ${data.message}`);
+      break;
+    default:
+      break;
+  }
+}
+
+// The utterance in progress lives in one bubble, replaced wholesale on
+// every interim: the recognizer keeps revising its guess, not only adding
+// to it, the same behavior the voice captions handle.
+function ensureTranscribeBubble() {
+  if (PG_STT.liveBody) return;
+  const bubble = addBubble("user");
+  const body = document.createElement("div");
+  body.className = "result-text";
+  bubble.appendChild(body);
+  PG_STT.liveBubble = bubble;
+  PG_STT.liveBody = body;
+}
+
+function updateTranscribeInterim(text) {
+  if (!PG_STT || !text) return;
+  ensureTranscribeBubble();
+  PG_STT.liveBody.textContent = text;
+  const transcript = el("pg-transcript");
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+// One recognized stretch is done: pin its final text, note the provider's
+// confidence when it reports one, and let the next words start fresh.
+function finishTranscribeUtterance(data) {
+  if (!PG_STT || !data.text) return;
+  // The first recognized words double as the conversation's History title,
+  // the way a text conversation's first prompt does.
+  if (PG_STT.firstFinalText == null) PG_STT.firstFinalText = data.text;
+  ensureTranscribeBubble();
+  PG_STT.liveBody.textContent = data.text;
+  if (typeof data.confidence === "number") {
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = `confidence ${(data.confidence * 100).toFixed(0)}%`;
+    PG_STT.liveBubble.appendChild(meta);
+  }
+  PG_STT.liveBubble = null;
+  PG_STT.liveBody = null;
+  const transcript = el("pg-transcript");
+  transcript.scrollTop = transcript.scrollHeight;
+  // Saved as the words firm up, not only when the session ends, so a page
+  // reload or dropped connection mid-session loses nothing already heard.
+  saveCurrentConversation(PG_STT.firstFinalText);
+}
+
+// The same capture pipeline as the voice session's microphone, at the STT
+// rate: getUserMedia -> ScriptProcessor -> downsample -> 16-bit PCM ->
+// base64 in a JSON frame.
+async function startTranscribeMic() {
+  if (!PG_STT || PG_STT.running || PG_STT.micStarting) return;
+  PG_STT.micStarting = true;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (err) {
+    setTranscribeStatus(
+      err && err.name === "NotAllowedError"
+        ? "your browser blocked microphone access, allow it for this page and try again"
+        : "could not use the microphone"
+    );
+    if (PG_STT) PG_STT.micStarting = false;
+    return;
+  }
+  // The session ended while the permission prompt was up.
+  if (!PG_STT) {
+    stream.getTracks().forEach((track) => track.stop());
+    return;
+  }
+  const context = new (window.AudioContext || window.webkitAudioContext)();
+  const source = context.createMediaStreamSource(stream);
+  const node = context.createScriptProcessor(4096, 1, 1);
+  node.onaudioprocess = (event) => {
+    if (!PG_STT || !PG_STT.running) return;
+    const samples = downsample(
+      new Float32Array(event.inputBuffer.getChannelData(0)), context.sampleRate, STT_SAMPLE_RATE
+    );
+    if (!samples.length) return;
+    const pcm = new Int16Array(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      const clamped = Math.max(-1, Math.min(1, samples[i]));
+      pcm[i] = Math.round(clamped * 32767);
+    }
+    PG_STT.ws.send(JSON.stringify({ type: "audio_chunk", pcm_base64: base64OfBytes(pcm.buffer) }));
+  };
+  source.connect(node);
+  // Same silent-routing trick as the voice session: a ScriptProcessor only
+  // runs while connected to a destination, and this keeps the microphone
+  // from being played back through the speakers.
+  const mute = context.createGain();
+  mute.gain.value = 0;
+  node.connect(mute);
+  mute.connect(context.destination);
+
+  PG_STT.micStream = stream;
+  PG_STT.micCtx = context;
+  PG_STT.micNode = node;
+  PG_STT.micSource = source;
+  PG_STT.micMute = mute;
+  PG_STT.running = true;
+  PG_STT.micStarting = false;
+  setTranscribeStatus("listening…");
+}
+
+function stopTranscribeMic() {
+  if (!PG_STT || !PG_STT.running) return;
+  PG_STT.running = false;
+  const { micStream, micCtx, micNode, micSource, micMute } = PG_STT;
+  micNode.onaudioprocess = null;
+  micSource.disconnect();
+  micNode.disconnect();
+  micMute.disconnect();
+  micStream.getTracks().forEach((track) => track.stop());
+  micCtx.close();
+  PG_STT.micStream = null;
+  PG_STT.micCtx = null;
+  PG_STT.micNode = null;
+  PG_STT.micSource = null;
+  PG_STT.micMute = null;
+}
+
+// First tap starts a session; the second stops the microphone and asks the
+// provider to finish, so its billing summary can arrive before the socket
+// closes. A tap during that finish window (or on a session that never got
+// a microphone) ends the session outright instead of waiting forever.
+function toggleTranscribeSession() {
+  if (!PG_STT) {
+    startTranscribeSession();
+    return;
+  }
+  if (!PG_STT.finishing && PG_STT.running && PG_STT.ws.readyState === WebSocket.OPEN) {
+    PG_STT.finishing = true;
+    stopTranscribeMic();
+    setTranscribeMicIndicator(false);
+    setTranscribeStatus("finishing…");
+    PG_STT.ws.send(JSON.stringify({ type: "finish" }));
+    return;
+  }
+  endTranscribeSession();
+}
+
+// Idempotent: safe from the mic button, from a mode switch away from
+// transcribe, and from the socket's own close event, whichever gets here
+// first. The final status (the billed seconds, or an error) stays on
+// screen rather than being wiped to "not connected".
+function endTranscribeSession() {
+  if (!PG_STT) return;
+  stopTranscribeMic();
+  const { ws, gotFinalMessage, firstFinalText } = PG_STT;
+  PG_STT = null;
+  if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
+  setTranscribeMicIndicator(false);
+  if (!gotFinalMessage) setTranscribeStatus("not yet started");
+  // The session is the whole exchange, so its end is the one save point —
+  // unlike text mode, which saves after every reply. Every way a session
+  // ends funnels through here, and the save declines on its own when the
+  // transcript holds no bubbles at all.
+  saveCurrentConversation(firstFinalText);
+}
+
+el("pg-voice-new").addEventListener("click", startNewConversation);
+el("pg-transcribe-new").addEventListener("click", startNewConversation);
+
+el("pg-transcribe-talk").addEventListener("click", toggleTranscribeSession);
 
 function openLightbox(source) {
   const overlay = document.createElement("div");
@@ -2401,7 +2751,10 @@ function gateCapabilities(off) {
   const reasoningWasSet = reasoningSelect.value !== "";
   reasoningSelect.disabled = !reasoningOk;
   const reasoningNote = el("pg-reasoning-unavailable");
-  reasoningNote.hidden = reasoningOk;
+  // The note stays hidden whenever the control it explains is off screen:
+  // a task mode that hides the reasoning row (picture, video, voice,
+  // transcribe) would otherwise leave the hint dangling under nothing.
+  reasoningNote.hidden = reasoningOk || el("pg-reasoning-row").hidden;
   if (!reasoningOk) {
     reasoningSelect.value = "";
     const loaded = providersAble("reasoning_effort").filter((p) =>
@@ -2452,6 +2805,7 @@ function gateCapabilities(off) {
   taskGate("image", "image_generation", "make a picture");
   taskGate("video", "video_generation", "make a video");
   taskGate("voice", "realtime", "hold a voice conversation");
+  taskGate("transcribe", "transcription", "transcribe speech");
 }
 
 // One pass over everything a key switch can invalidate, ending in a
@@ -2509,7 +2863,13 @@ let PG_HISTORY = [];
 let PG_CONVERSATION_ID = null;
 let PG_CONVERSATION_TITLE = null;
 
-const PG_MODE_LABELS = { text: "Text", image: "Picture", video: "Video", voice: "Voice" };
+// Bumped whenever the open conversation changes (New chat, or opening one
+// from History). A save is fire-and-forget, so one can finish after the
+// user has already moved on; the epoch check keeps that late save from
+// writing its id back over the conversation now open.
+let PG_CONVERSATION_EPOCH = 0;
+
+const PG_MODE_LABELS = { text: "Text", image: "Picture", video: "Video", voice: "Voice", transcribe: "Transcript" };
 
 function deriveConversationTitle(promptText) {
   const text = (promptText || "").trim();
@@ -2521,12 +2881,23 @@ function deriveConversationTitle(promptText) {
 // a reply should wait on. Saved server-side (not just a JS variable) so a
 // conversation survives a page reload, cleared only when the server itself
 // stops — the same lifetime the Playground's third pane promises.
-async function saveCurrentConversation(latestPrompt) {
+//
+// Serialized through a chain: transcription saves after every final
+// transcript, and two saves in flight together could each see no saved id
+// yet and file the same conversation twice. The chain makes each save read
+// the id the one before it was assigned.
+let PG_SAVE_CHAIN = Promise.resolve();
+function saveCurrentConversation(latestPrompt) {
+  PG_SAVE_CHAIN = PG_SAVE_CHAIN.then(() => saveConversationSnapshot(latestPrompt));
+}
+
+async function saveConversationSnapshot(latestPrompt) {
   const transcript = el("pg-transcript");
   if (!transcript.querySelector(".bubble")) return;
   if (!PG_CONVERSATION_TITLE) PG_CONVERSATION_TITLE = deriveConversationTitle(latestPrompt);
   const targetValue = el("pg-target").value;
   const modelValue = el("pg-model").value;
+  const epoch = PG_CONVERSATION_EPOCH;
   const data = await api("/api/conversations", {
     method: "POST",
     body: {
@@ -2540,7 +2911,7 @@ async function saveCurrentConversation(latestPrompt) {
     },
   });
   if (data.error) return;
-  PG_CONVERSATION_ID = data.conversation.id;
+  if (epoch === PG_CONVERSATION_EPOCH) PG_CONVERSATION_ID = data.conversation.id;
   loadConversationList();
 }
 
@@ -2587,6 +2958,7 @@ async function openConversation(id) {
   const data = await api(`/api/conversations?id=${id}`);
   if (data.error) return;
   const conversation = data.conversation;
+  PG_CONVERSATION_EPOCH += 1;
   PG_CONVERSATION_ID = conversation.id;
   PG_CONVERSATION_TITLE = conversation.title;
   PG_HISTORY = conversation.history || [];
@@ -2741,6 +3113,12 @@ el("pg-run").addEventListener("click", () => runGeneration({ continuation: false
 // Shared by New chat and by Clear (once every saved conversation is gone,
 // whatever's on screen no longer has a saved record behind it either).
 function startNewConversation() {
+  // A session in progress belongs to the conversation being left behind;
+  // ending it here also snapshots and saves its transcript before the
+  // clear below wipes the screen. No-ops when no session is open.
+  endVoiceSession();
+  endTranscribeSession();
+  PG_CONVERSATION_EPOCH += 1;
   PG_HISTORY = [];
   // Every exchange up to now is already saved (saveCurrentConversation runs
   // after each one), so this just opens a fresh, as-yet-unsaved slot rather
@@ -3320,17 +3698,6 @@ function startTracesTimer() {
     tracesTimer = setInterval(loadTraces, 2000);
   }
 }
-
-document.querySelectorAll("#tabs button").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    if (btn.dataset.tab === "traces") {
-      loadTraces();
-      startTracesTimer();
-    } else {
-      stopTracesTimer();
-    }
-  });
-});
 
 el("traces-refresh").addEventListener("click", loadTraces);
 el("traces-search").addEventListener("input", renderTraces);

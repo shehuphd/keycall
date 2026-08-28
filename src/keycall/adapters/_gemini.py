@@ -24,8 +24,10 @@ from .._types import (
     AudioInput,
     Citation,
     CitationFound,
+    CodeExecutionOutput,
     FileInput,
     ImageInput,
+    ImageOutput,
     InvocationResult,
     Model,
     OutputPart,
@@ -90,6 +92,35 @@ def _strip_prefix(name: str) -> str:
     return name.removeprefix("models/")
 
 
+def _code_execution_output(
+    code_part: Mapping[str, Any], result_part: Mapping[str, Any]
+) -> CodeExecutionOutput:
+    """Build a CodeExecutionOutput from a paired executableCode/
+    codeExecutionResult part (matched by their shared id). Shared by the
+    non-streaming parser and the streaming assembler, since both see the
+    identical part form — Gemini sends each part whole, never a delta
+    (live-verified 2026-08-22)."""
+    executable = code_part.get("executableCode") or {}
+    result = result_part.get("codeExecutionResult") or {}
+    language = executable.get("language")
+    return CodeExecutionOutput(
+        code=str(executable.get("code", "")),
+        output=str(result.get("output", "")),
+        language=str(language).lower() if language else None,
+    )
+
+
+def _inline_data_output(inline: Mapping[str, Any]) -> OutputPart:
+    """A bare inlineData part: a code_interpreter-generated image comes
+    back this way, bytes included, needing no further download
+    (live-verified 2026-08-22). Any other mime type falls through to
+    UnknownOutput — KeyCall has no output type for it yet."""
+    mime = str(inline.get("mimeType", ""))
+    if mime.startswith("image/"):
+        return ImageOutput(base64_data=inline.get("data"), media_type=mime)
+    return UnknownOutput(provider_kind="inlineData")
+
+
 class _GeminiStreamAssembler(StreamAssembler):
     """Gemini's SSE stream has no event names and no terminal marker: each
     data line is a full GenerateContentResponse chunk, finishReason arrives
@@ -101,6 +132,10 @@ class _GeminiStreamAssembler(StreamAssembler):
         super().__init__(resolved, request)
         self._started = False
         self._seen_citations: set[tuple[str, str | None, str | None]] = set()
+        # executableCode and its matching codeExecutionResult arrive in
+        # separate stream chunks (live-verified 2026-08-22), unlike the
+        # non-streaming response where both sit in the same parts array.
+        self._pending_code: dict[str, dict[str, Any]] = {}
 
     def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
         payload = self._parse_data(data)
@@ -151,6 +186,17 @@ class _GeminiStreamAssembler(StreamAssembler):
                                 )
                             )
                         )
+                    elif isinstance(part, dict) and isinstance(part.get("executableCode"), dict):
+                        self._pending_code[str(part["executableCode"].get("id", ""))] = part
+                    elif isinstance(part, dict) and isinstance(
+                        part.get("codeExecutionResult"), dict
+                    ):
+                        call_id = str(part["codeExecutionResult"].get("id", ""))
+                        code_part = self._pending_code.pop(call_id, None)
+                        if code_part is not None:
+                            self.record_code_execution(_code_execution_output(code_part, part))
+                        else:
+                            events.append(UnknownStreamEvent(provider_kind="codeExecutionResult"))
                     elif isinstance(part, dict):
                         kind = next(iter(part.keys()), "?")
                         events.append(UnknownStreamEvent(provider_kind=str(kind)))
@@ -208,6 +254,7 @@ class GeminiAdapter(ProviderAdapter):
             path=spec.path.replace(":generateContent", ":streamGenerateContent"),
             params={**dict(spec.params), "alt": "sse"},
             json_body=spec.json_body,
+            headers=spec.headers,
         )
 
     def stream_assembler(self, request: TextGenerationRequest) -> StreamAssembler:
@@ -678,7 +725,10 @@ class GeminiAdapter(ProviderAdapter):
                         {
                             "name": tool.name,
                             "description": tool.description,
-                            "parameters": dict(tool.input_schema),
+                            # input_schema=None (custom tool) is OpenAI-only
+                            # and gated before this point on every other
+                            # provider, Gemini included.
+                            "parameters": dict(tool.input_schema or {}),
                         }
                         for tool in request.tools
                     ]
@@ -686,12 +736,16 @@ class GeminiAdapter(ProviderAdapter):
             )
         if request.web_search:
             tools.append({"google_search": {}})
+        if request.code_interpreter:
+            tools.append({"codeExecution": {}})
         if tools:
             body["tools"] = tools
         tool_config: dict[str, Any] = {}
-        if request.tools and request.web_search:
+        if request.tools and (request.web_search or request.code_interpreter):
             # Gemini rejects mixing functionDeclarations with built-in tools
-            # unless this flag is set (live-verified 2026-08-08).
+            # unless this flag is set (live-verified 2026-08-08 for
+            # google_search; code_interpreter is the same built-in-tool
+            # family so the same rule is applied defensively here).
             tool_config["includeServerSideToolInvocations"] = True
         if request.tool_choice is not None:
             mode = {"auto": "AUTO", "required": "ANY", "none": "NONE"}[request.tool_choice]
@@ -727,6 +781,7 @@ class GeminiAdapter(ProviderAdapter):
                 finish_reason = candidate.get("finishReason")
                 content = candidate.get("content")
                 if isinstance(content, dict):
+                    pending_code: dict[str, dict[str, Any]] = {}
                     for part in content.get("parts", []):
                         if not isinstance(part, dict):
                             continue
@@ -750,6 +805,22 @@ class GeminiAdapter(ProviderAdapter):
                                     opaque=json.dumps(echo) if echo else None,
                                 )
                             )
+                        elif "executableCode" in part and isinstance(part["executableCode"], dict):
+                            # Held until its matching codeExecutionResult
+                            # arrives (same id, later in this same array).
+                            pending_code[str(part["executableCode"].get("id", ""))] = part
+                        elif "codeExecutionResult" in part and isinstance(
+                            part["codeExecutionResult"], dict
+                        ):
+                            call_id = str(part["codeExecutionResult"].get("id", ""))
+                            code_part = pending_code.pop(call_id, None)
+                            parts.append(
+                                _code_execution_output(code_part, part)
+                                if code_part is not None
+                                else UnknownOutput(provider_kind="codeExecutionResult")
+                            )
+                        elif "inlineData" in part and isinstance(part["inlineData"], dict):
+                            parts.append(_inline_data_output(part["inlineData"]))
                         else:
                             kind = next(iter(part.keys()), "?")
                             parts.append(UnknownOutput(provider_kind=str(kind)))

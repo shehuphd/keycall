@@ -63,7 +63,11 @@ class XAIAdapter(OpenAICompatibleAdapter):
         return OpenAIAdapter(rebound)
 
     def _needs_responses_route(self, request: TextGenerationRequest) -> bool:
-        return request.web_search or request.reasoning_effort is not None
+        return (
+            request.web_search
+            or request.reasoning_effort is not None
+            or request.code_interpreter
+        )
 
     def build_generation_spec(self, request: TextGenerationRequest) -> RequestSpec:
         if self._needs_responses_route(request):

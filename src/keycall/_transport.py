@@ -100,6 +100,11 @@ class RequestSpec:
     path: str
     params: Mapping[str, str] = field(default_factory=dict)
     json_body: Mapping[str, Any] | None = None
+    # Per-request headers layered on top of the provider's standard set
+    # (auth, api_version_header, Content-Type) — for a header a request
+    # needs only conditionally, such as Anthropic's beta feature flags,
+    # which must not be sent on every request the way api_version_header is.
+    headers: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -164,13 +169,24 @@ def _warn_if_proxy_bypasses_guard(provider: str) -> None:
         )
 
 
-def _build_headers(resolved: ResolvedProvider, credential: Credential) -> dict[str, str]:
+_EMPTY_HEADERS: Mapping[str, str] = {}
+
+
+def _build_headers(
+    resolved: ResolvedProvider,
+    credential: Credential,
+    *,
+    extra: Mapping[str, str] = _EMPTY_HEADERS,
+) -> dict[str, str]:
     # The one reveal() site in the package. Keep it that way.
     revealed = credential.reveal()
     if resolved.auth_scheme == "bearer":
         headers = {resolved.auth_header: f"Bearer {revealed}"}
     elif resolved.auth_scheme == "api_key":
         headers = {resolved.auth_header: revealed}
+    elif resolved.auth_scheme == "token":
+        # Deepgram's convention: "Token <key>", same header, different word.
+        headers = {resolved.auth_header: f"Token {revealed}"}
     else:
         raise KeyCallError(
             f"unknown auth scheme {resolved.auth_scheme!r} in provider profile",
@@ -181,6 +197,7 @@ def _build_headers(resolved: ResolvedProvider, credential: Credential) -> dict[s
         name, value = resolved.api_version_header
         headers[name] = value
     headers["Content-Type"] = "application/json"
+    headers.update(extra)
     return headers
 
 
@@ -256,7 +273,13 @@ class _TransportCore:
 
     def _realtime_url(self, path: str) -> str:
         # Realtime paths are host-rooted: the base URL's own path prefix
-        # (/v1, /v1beta) does not apply to the WebSocket endpoints.
+        # (/v1, /v1beta) does not apply to the WebSocket endpoints. A full
+        # wss:// path passes through as-is, for the provider whose
+        # WebSocket host differs from its REST host (AssemblyAI streams
+        # from streaming.assemblyai.com while api.assemblyai.com answers
+        # the credential check).
+        if path.startswith("wss://"):
+            return path
         host = urlsplit(self._resolved.base_url).netloc
         return f"wss://{host}{path}"
 
@@ -533,7 +556,7 @@ class Transport(_TransportCore):
                     self._url(spec.path),
                     params=dict(spec.params) or None,
                     json=spec.json_body,
-                    headers=_build_headers(self._resolved, self._credential),
+                    headers=_build_headers(self._resolved, self._credential, extra=spec.headers),
                 )
                 response = self._client.send(http_request, stream=True)
                 try:
@@ -649,7 +672,7 @@ class Transport(_TransportCore):
                 self._url(spec.path),
                 params=dict(spec.params) or None,
                 json=spec.json_body,
-                headers=_build_headers(self._resolved, self._credential),
+                headers=_build_headers(self._resolved, self._credential, extra=spec.headers),
             )
             response = self._client.send(http_request, stream=True)
         except httpx.HTTPError as exc:
@@ -778,7 +801,7 @@ class AsyncTransport(_TransportCore):
                     self._url(spec.path),
                     params=dict(spec.params) or None,
                     json=spec.json_body,
-                    headers=_build_headers(self._resolved, self._credential),
+                    headers=_build_headers(self._resolved, self._credential, extra=spec.headers),
                 )
                 response = await self._client.send(http_request, stream=True)
                 try:
@@ -886,7 +909,7 @@ class AsyncTransport(_TransportCore):
                 self._url(spec.path),
                 params=dict(spec.params) or None,
                 json=spec.json_body,
-                headers=_build_headers(self._resolved, self._credential),
+                headers=_build_headers(self._resolved, self._credential, extra=spec.headers),
             )
             response = await self._client.send(http_request, stream=True)
         except httpx.HTTPError as exc:
@@ -945,6 +968,10 @@ class RealtimeWire:
     def send(self, message: str) -> None:
         self._ws.send_text(message)
 
+    def send_bytes(self, data: bytes) -> None:
+        """A binary frame — how STT providers take raw audio."""
+        self._ws.send_bytes(data)
+
     def receive(self, timeout: float | None = None) -> str | bytes | None:
         from httpx_ws import WebSocketDisconnect
 
@@ -981,6 +1008,10 @@ class AsyncRealtimeWire:
 
     async def send(self, message: str) -> None:
         await self._ws.send_text(message)
+
+    async def send_bytes(self, data: bytes) -> None:
+        """A binary frame — how STT providers take raw audio."""
+        await self._ws.send_bytes(data)
 
     async def receive(self, timeout: float | None = None) -> str | bytes | None:
         from httpx_ws import WebSocketDisconnect

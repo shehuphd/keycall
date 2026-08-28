@@ -96,6 +96,11 @@ def list_targets(registry: Registry) -> dict[str, Any]:
                 "video_generation": caps.video_generation,
                 "reasoning_effort": caps.reasoning_effort,
                 "realtime": caps.realtime,
+                # Keyed by the model category name rather than the
+                # capability flag's, so the page can use one string for
+                # both the provider gate and the model-list filter, the
+                # same way "realtime" already doubles for voice.
+                "transcription": caps.streaming_transcription,
             }
             for name in supported_providers()
             for caps in (resolve_provider(name).capabilities,)

@@ -17,6 +17,7 @@ from .._transport import RequestSpec
 from .._types import (
     Citation,
     CitationFound,
+    CodeExecutionOutput,
     FileInput,
     ImageInput,
     InvocationResult,
@@ -31,6 +32,9 @@ from .._types import (
     TextInput,
     TextOutput,
     ToolCall,
+    ToolCallArgumentsDelta,
+    ToolCallComplete,
+    ToolCallStarted,
     ToolResult,
     UnknownOutput,
     UnknownStreamEvent,
@@ -48,17 +52,31 @@ from ._base import (
 
 # Stream plumbing events that carry no content of their own; the terminal
 # response.completed/incomplete event carries the whole final response.
-# Live-verified 2026-08-08.
+# Live-verified 2026-08-08 (apply_patch_call_operation_diff.done added
+# 2026-08-22): its diff also arrives complete on response.output_item.done,
+# which is what the assembler completes the call from, so the dedicated
+# done event is redundant confirmation, not a second source.
 _STREAM_PLUMBING = frozenset(
     {
         "response.in_progress",
-        "response.output_item.done",
         "response.content_part.added",
         "response.content_part.done",
         "response.output_text.done",
         "response.reasoning_summary_part.added",
         "response.reasoning_summary_part.done",
         "response.reasoning_summary_text.done",
+        "response.apply_patch_call_operation_diff.done",
+        # code_interpreter_call's code and status arrive incrementally, but
+        # the terminal response.completed/incomplete event carries the same
+        # item complete (live-verified 2026-08-22), which is what
+        # finalize() parses via parse_generation_response — so these are
+        # progress notices only, never a second source of truth.
+        "response.code_interpreter_call.in_progress",
+        "response.code_interpreter_call.interpreting",
+        "response.code_interpreter_call.completed",
+        "response.code_interpreter_call_code.delta",
+        "response.code_interpreter_call_code.done",
+        "response.custom_tool_call_input.done",
     }
 )
 
@@ -73,16 +91,74 @@ def _image_url(part: ImageInput, *, provider: str = "openai") -> str:
 
 
 def _call_echo(item: dict[str, Any], reasoning: dict[str, Any] | None) -> str | None:
-    """Provider echo data a function_call needs back verbatim on replay:
-    its own item id, plus the reasoning item it belongs to when the model
-    produced one. Reasoning items appear only when the model actually
-    reasons, so a response can legitimately carry none."""
+    """Provider echo data a function_call or apply_patch_call needs back
+    verbatim on replay: its own item id, plus the reasoning item it
+    belongs to when the model produced one. Reasoning items appear only
+    when the model reasons, so a response can legitimately carry none."""
     echo: dict[str, Any] = {}
     if item.get("id"):
         echo["id"] = item["id"]
     if reasoning is not None:
         echo["reasoning"] = reasoning
     return json.dumps(echo) if echo else None
+
+
+def _parse_apply_patch_call(item: dict[str, Any], reasoning: dict[str, Any] | None) -> ToolCall:
+    """Build the ToolCall for one apply_patch_call item. Shared by the
+    non-streaming parser and the streaming assembler's completion handler
+    (response.output_item.done), since both see the identical final item
+    shape — streaming's incremental diff deltas are for live display only,
+    never for reassembling the result. ``arguments`` carries the operation
+    dict verbatim (create_file/update_file/delete_file, path, and diff —
+    diff omitted for delete_file), not caller-defined JSON to parse."""
+    return ToolCall(
+        id=str(item.get("call_id", "")),
+        name="apply_patch",
+        arguments=dict(item.get("operation") or {}),
+        opaque=_call_echo(item, reasoning),
+    )
+
+
+def _parse_custom_tool_call(item: dict[str, Any], reasoning: dict[str, Any] | None) -> ToolCall:
+    """Build the ToolCall for one custom_tool_call item. A custom tool has
+    no JSON Schema, so the model's call arrives as a plain string
+    (``input``) rather than parsed arguments — carried as the single key
+    ``arguments["input"]`` so ToolCall's Mapping-typed arguments field
+    needs no new shape to hold it."""
+    return ToolCall(
+        id=str(item.get("call_id", "")),
+        name=str(item.get("name", "")),
+        arguments={"input": str(item.get("input", ""))},
+        opaque=_call_echo(item, reasoning),
+    )
+
+
+def _parse_code_interpreter_call(item: dict[str, Any]) -> CodeExecutionOutput:
+    """Build the CodeExecutionOutput for one code_interpreter_call item.
+    ``outputs`` is null even for a successful run that printed something
+    (live-verified 2026-08-22) — the human-readable answer arrives
+    separately as the following message's output_text, not here. When
+    outputs is a non-null list of {type: "logs", logs: str} entries, its
+    text is joined; otherwise output is empty and the following text part
+    carries the answer on its own."""
+    outputs = item.get("outputs")
+    output = (
+        "".join(str(o.get("logs", "")) for o in outputs if isinstance(o, dict))
+        if isinstance(outputs, list)
+        else ""
+    )
+    return CodeExecutionOutput(code=str(item.get("code", "")), output=output, language="python")
+
+
+def _apply_patch_result_fields(content: str | Mapping[str, Any]) -> tuple[str, str]:
+    """apply_patch_call_output needs a status ("completed" or "failed")
+    alongside its output text — unlike an ordinary function_call_output,
+    which is output-only. A caller that only has text to report gets
+    "completed" by default; one that knows the patch failed passes a
+    mapping with an explicit status instead."""
+    if isinstance(content, Mapping):
+        return str(content.get("status", "completed")), str(content.get("output", ""))
+    return "completed", str(content)
 
 
 class _OpenAIStreamAssembler(StreamAssembler):
@@ -98,6 +174,17 @@ class _OpenAIStreamAssembler(StreamAssembler):
         # Reasoning items arrive as their own output item before the call
         # they belong to; the call can't be replayed without one.
         self._reasoning: dict[str, Any] | None = None
+        # apply_patch_call item id -> call_id, so a diff delta (keyed by
+        # item id) can be labeled with the id a caller replies to.
+        # The operation itself (type/path/diff) isn't tracked here: unlike
+        # function_call's arguments, response.output_item.done delivers it
+        # complete in one shot for every operation kind, including
+        # delete_file, which streams no diff deltas at all.
+        self._pending_patch_calls: dict[str, str] = {}
+        # Same purpose, for custom_tool_call: item id -> call_id, so an
+        # input delta (keyed by item id) can be labeled with the id a
+        # caller replies to.
+        self._pending_custom_calls: dict[str, str] = {}
 
     def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
         payload = self._parse_data(data)
@@ -132,6 +219,16 @@ class _OpenAIStreamAssembler(StreamAssembler):
                         opaque=_call_echo(item, self._reasoning),
                     )
                 ]
+            elif isinstance(item, dict) and item.get("type") == "apply_patch_call":
+                item_id = str(item.get("id", ""))
+                call_id = str(item.get("call_id", ""))
+                self._pending_patch_calls[item_id] = call_id
+                return [ToolCallStarted(id=call_id, name="apply_patch")]
+            elif isinstance(item, dict) and item.get("type") == "custom_tool_call":
+                item_id = str(item.get("id", ""))
+                call_id = str(item.get("call_id", ""))
+                self._pending_custom_calls[item_id] = call_id
+                return [ToolCallStarted(id=call_id, name=str(item.get("name", "")))]
             return []
         if kind == "response.function_call_arguments.delta":
             return self.append_tool_arguments(
@@ -141,6 +238,35 @@ class _OpenAIStreamAssembler(StreamAssembler):
             return self.complete_tool_call(
                 str(payload.get("item_id", "")), arguments=payload.get("arguments")
             )
+        if kind == "response.apply_patch_call_operation_diff.delta":
+            patch_call_id = self._pending_patch_calls.get(str(payload.get("item_id", "")))
+            if patch_call_id is None:
+                return []
+            return [
+                ToolCallArgumentsDelta(id=patch_call_id, fragment=str(payload.get("delta", "")))
+            ]
+        if kind == "response.custom_tool_call_input.delta":
+            custom_call_id = self._pending_custom_calls.get(str(payload.get("item_id", "")))
+            if custom_call_id is None:
+                return []
+            return [
+                ToolCallArgumentsDelta(id=custom_call_id, fragment=str(payload.get("delta", "")))
+            ]
+        if kind == "response.output_item.done":
+            item = payload.get("item")
+            if not isinstance(item, dict):
+                return []
+            if item.get("type") == "apply_patch_call":
+                self._pending_patch_calls.pop(str(item.get("id", "")), None)
+                call = _parse_apply_patch_call(item, self._reasoning)
+                self.tool_calls.append(call)
+                return [ToolCallComplete(tool_call=call)]
+            if item.get("type") == "custom_tool_call":
+                self._pending_custom_calls.pop(str(item.get("id", "")), None)
+                call = _parse_custom_tool_call(item, self._reasoning)
+                self.tool_calls.append(call)
+                return [ToolCallComplete(tool_call=call)]
+            return []  # plumbing for every other item type
         if kind in ("response.completed", "response.incomplete"):
             self.saw_terminal = True
             self._final = self._adapter.parse_generation_response(
@@ -186,6 +312,7 @@ class OpenAIAdapter(ProviderAdapter):
             path=spec.path,
             params=spec.params,
             json_body={**(spec.json_body or {}), "stream": True},
+            headers=spec.headers,
         )
 
     def stream_assembler(self, request: TextGenerationRequest) -> StreamAssembler:
@@ -373,6 +500,7 @@ class OpenAIAdapter(ProviderAdapter):
         op = self.resolved.operations["text_generation"]
         input_items: list[dict[str, Any]] = []
         replayed_reasoning: set[str] = set()
+        custom_tool_names = {tool.name for tool in request.tools if tool.input_schema is None}
         for message in request.messages:
             # Responses API: assistant history uses output_text parts, and
             # tool calls/results are top-level input items, not message
@@ -411,22 +539,57 @@ class OpenAIAdapter(ProviderAdapter):
                         if reasoning_id not in replayed_reasoning:
                             replayed_reasoning.add(reasoning_id)
                             input_items.append(reasoning)
-                    item: dict[str, Any] = {
-                        "type": "function_call",
-                        "call_id": part.id,
-                        "name": part.name,
-                        "arguments": json.dumps(dict(part.arguments)),
-                    }
+                    item: dict[str, Any]
+                    if part.name == "apply_patch":
+                        item = {
+                            "type": "apply_patch_call",
+                            "call_id": part.id,
+                            "status": "completed",
+                            "operation": dict(part.arguments),
+                        }
+                    elif part.name in custom_tool_names:
+                        item = {
+                            "type": "custom_tool_call",
+                            "call_id": part.id,
+                            "name": part.name,
+                            "input": str(part.arguments.get("input", "")),
+                        }
+                    else:
+                        item = {
+                            "type": "function_call",
+                            "call_id": part.id,
+                            "name": part.name,
+                            "arguments": json.dumps(dict(part.arguments)),
+                        }
                     item.update(echo)
                     input_items.append(item)
                 elif isinstance(part, ToolResult):
-                    input_items.append(
-                        {
-                            "type": "function_call_output",
-                            "call_id": part.tool_call_id,
-                            "output": self.tool_result_text(part.content),
-                        }
-                    )
+                    if part.name == "apply_patch":
+                        status, output = _apply_patch_result_fields(part.content)
+                        input_items.append(
+                            {
+                                "type": "apply_patch_call_output",
+                                "call_id": part.tool_call_id,
+                                "status": status,
+                                "output": output,
+                            }
+                        )
+                    elif part.name in custom_tool_names:
+                        input_items.append(
+                            {
+                                "type": "custom_tool_call_output",
+                                "call_id": part.tool_call_id,
+                                "output": self.tool_result_text(part.content),
+                            }
+                        )
+                    else:
+                        input_items.append(
+                            {
+                                "type": "function_call_output",
+                                "call_id": part.tool_call_id,
+                                "output": self.tool_result_text(part.content),
+                            }
+                        )
         body: dict[str, Any] = {"model": request.model, "input": input_items}
         if request.max_output_tokens is not None:
             body["max_output_tokens"] = request.max_output_tokens
@@ -435,17 +598,28 @@ class OpenAIAdapter(ProviderAdapter):
             # The Responses effort control (live-verified 2026-08-14);
             # xAI's responses surface takes the same shape.
             body["reasoning"] = {"effort": request.reasoning_effort}
-        tools: list[dict[str, Any]] = [
-            {
+        tools: list[dict[str, Any]] = []
+        for tool in request.tools:
+            if tool.input_schema is None:
+                tools.append({"type": "custom", "name": tool.name, "description": tool.description})
+                continue
+            function_tool: dict[str, Any] = {
                 "type": "function",
                 "name": tool.name,
                 "description": tool.description,
                 "parameters": dict(tool.input_schema),
             }
-            for tool in request.tools
-        ]
+            if tool.defer_loading:
+                function_tool["defer_loading"] = True
+            tools.append(function_tool)
         if request.web_search:
             tools.append({"type": "web_search"})
+        if request.apply_patch:
+            tools.append({"type": "apply_patch"})
+        if request.code_interpreter:
+            tools.append({"type": "code_interpreter", "container": {"type": "auto"}})
+        if any(tool.defer_loading for tool in request.tools):
+            tools.append({"type": "tool_search"})
         if tools:
             body["tools"] = tools
         if request.tool_choice is not None:
@@ -510,11 +684,17 @@ class OpenAIAdapter(ProviderAdapter):
                         opaque=_call_echo(item, reasoning),
                     )
                 )
+            elif item_type == "apply_patch_call":
+                parts.append(_parse_apply_patch_call(item, reasoning))
+            elif item_type == "custom_tool_call":
+                parts.append(_parse_custom_tool_call(item, reasoning))
+            elif item_type == "code_interpreter_call":
+                parts.append(_parse_code_interpreter_call(item))
             elif item_type == "reasoning":
                 # Not output content, but required echo data for any call
                 # that follows it in this response.
                 reasoning = item
-            elif item_type == "web_search_call":
+            elif item_type in ("web_search_call", "tool_search_call", "tool_search_output"):
                 continue  # trace of server-side work, not output content
             elif item_type:
                 parts.append(UnknownOutput(provider_kind=item_type))
