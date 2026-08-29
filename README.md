@@ -88,7 +88,7 @@ print(result.round_trip_duration_ms)
 - **Tool search.** `Tool(defer_loading=True)` keeps a large tool library out of the model's context until it searches for what it needs (OpenAI, Anthropic); discovered tools call and reply like ordinary ones.
 - **Prompt caching.** `TextInput(cacheable=True)` marks a stable prefix (a big system prompt, reference material) for caching. Anthropic is the one provider where caching doesn't happen at all without this marker; OpenAI already caches automatically and the marker opts into its optional explicit mode; every other provider ignores the flag and keeps caching automatically on its own. `Usage.cached_input_tokens` reports a cache hit uniformly everywhere, marked or not.
 - **Structured output.** `response_schema=<JSON Schema>` is enforced provider-side on OpenAI, Anthropic, Gemini, Moonshot, and Perplexity; on providers without enforcement (DeepSeek, unverified custom targets) KeyCall falls back to guaranteed-valid-JSON mode and adds a result warning rather than claiming a guarantee it can't back. `result.text` is always the JSON string, regardless of which mechanism produced it.
-- **Hardened transport.** TLS always verified, redirects refused, response sizes capped, SSRF and DNS-rebinding guards on custom endpoints, and generation is never silently retried.
+- **Hardened transport.** TLS always verified, redirects refused, response sizes capped, SSRF and DNS-rebinding guards on custom endpoints that fail closed when a proxy would bypass them, and generation is never silently retried.
 
 ## Provider support
 

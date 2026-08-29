@@ -76,6 +76,8 @@ One verified example: Thinking Machines' Tinker exposes an OpenAI-compatible end
 
 Rules for `base_url`: absolute HTTPS, no query string, fragment, or userinfo. Plain HTTP is allowed only for localhost with `allow_insecure_localhost=True`. Literal private/internal IP addresses require `allow_private_network=True`. Hostnames are DNS-pinned per request: KeyCall resolves once, refuses to proceed if any resolved address is private, and connects to the validated address while TLS still verifies the original hostname.
 
+A proxy environment variable (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, in either case) would route requests around this guard, since the proxy resolves DNS itself. Constructing a client for a custom target while one is set therefore raises `UNSUPPORTED_OPERATION` instead of proceeding unguarded. The ways out: unset the variable, pass `trust_env=False` to ignore it for this client, or pass `allow_private_network=True` if routing this target through the proxy is deliberate. Named providers are unaffected; their hostnames come from the catalog, not from caller input.
+
 ### Constructor options
 
 | Parameter | Default | Purpose |
@@ -87,7 +89,7 @@ Rules for `base_url`: absolute HTTPS, no query string, fragment, or userinfo. Pl
 | `connect_timeout` | `10.0` | Seconds |
 | `read_timeout` | `60.0` | Seconds |
 | `max_response_bytes` | 10 MB | Response bodies are read incrementally against this cap |
-| `trust_env` | `True` | Set `False` to ignore `HTTP_PROXY`/`HTTPS_PROXY` |
+| `trust_env` | `True` | Set `False` to ignore `HTTP_PROXY`/`HTTPS_PROXY`; a set proxy variable refuses construction for a guarded custom target (see above) |
 | `allow_insecure_localhost` | `False` | Permit `http://localhost` targets |
 | `allow_private_network` | `False` | Permit literal private-IP targets |
 
@@ -755,7 +757,7 @@ except KeyCallError as error:
 | `MODEL_NOT_AVAILABLE` | Model missing, retired, or rejected by name | no |
 | `MODEL_NOT_SUITABLE` | Model can't serve this request: sampling parameters it pins or refuses, or a feature the provider has that this model lacks (web search on an older model) | no |
 | `UNSUPPORTED_PROVIDER` | Unknown name or invalid custom target | no |
-| `UNSUPPORTED_OPERATION` | Request shape not supported in this version | no |
+| `UNSUPPORTED_OPERATION` | Request shape not supported in this version, or a refused configuration (a proxy variable set for a guarded custom target, an unsupported cache TTL) | no |
 | `CATALOG_UPDATE_REQUIRED` | Bundled catalog too old for this client | no |
 
 Error messages are sanitized: no credentials, no raw request bodies, no unsanitized provider text.
@@ -872,7 +874,7 @@ Security properties, in brief: a fresh auth token is generated per run, required
 
 ## Tracing (optional)
 
-If the host application configures [TraceAct](https://github.com/traceact/traceact), KeyCall emits `keycall.list_models` and `keycall.text_generation` spans with safe fields only: provider, model IDs, counts, status, durations, token totals. Prompts, responses, and credentials are never captured, and KeyCall pins input capture off with the `api_keys`/`ai_prompts` redaction presets on its spans regardless of global settings.
+If the host application configures [TraceAct](https://github.com/traceact/traceact), KeyCall emits `keycall.list_models` and `keycall.text_generation` spans with safe fields only: provider, model IDs, counts, status, durations, token totals. Prompts, responses, and credentials are never captured. On its own spans, KeyCall pins every capture flag off (function inputs, event inputs, outputs) and both redaction layers on (field-name and value-pattern, with the `api_keys`/`ai_prompts` presets), regardless of the host's global TraceAct settings.
 
 ```python
 import traceact

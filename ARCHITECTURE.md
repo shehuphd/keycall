@@ -75,7 +75,7 @@ Everything between those two points handles the opaque `Credential` wrapper. Sup
 | `_sanitize.py` | Credential scrubbing, request-id and display-name bounding | Depend on TraceAct for safety |
 | `_cache.py` | Process-local TTL model cache keyed by provider + base URL + fingerprint | Persist to disk or outlive the process |
 | `_verify_core.py` | The verify walk shared by CLI and viewer | Hide an attempt or fall through unreported |
-| `_tracing.py` | Optional TraceAct spans with input capture forced off | Capture prompts, responses, or credentials |
+| `_tracing.py` | Optional TraceAct spans with every capture flag forced off and both redaction layers forced on | Capture prompts, responses, or credentials |
 
 ## Provider resolution
 
@@ -95,7 +95,7 @@ provider name ──► catalog profile ──► protocol ──► adapter
   <custom> + base_url openai-compatible              OpenAICompatibleAdapter (is_custom)
 ```
 
-An unknown name is an error unless the caller explicitly passes `protocol="openai-compatible"` with a validated HTTPS `base_url`. Custom targets get the DNS-rebinding guard; named providers route to catalog-maintained hostnames and don't.
+An unknown name is an error unless the caller explicitly passes `protocol="openai-compatible"` with a validated HTTPS `base_url`. Custom targets get the DNS-rebinding guard; named providers route to catalog-maintained hostnames and don't. The guard fails closed against the environment too: a set proxy variable would route requests around it (the proxy resolves DNS itself), so constructing a guarded custom-target client with one set raises a typed error naming the resolutions (`trust_env=False`, `allow_private_network=True`, or unsetting the variable) rather than proceeding with the guard silently disabled.
 
 ## Retry policy
 

@@ -7,8 +7,9 @@ When an incompatible version is installed, KeyCall disables the integration
 with one warning rather than emitting through an API it can't trust.
 
 Safety posture: every span carries a per-call TraceConfig override that
-disables function-input and event-input capture, and pins the api_keys and
-ai_prompts redaction presets. KeyCall additionally only ever hands TraceAct
+disables function-input, event-input, and output capture, forces both
+redaction layers on (field-name and value-pattern), and pins the api_keys
+and ai_prompts redaction presets. KeyCall additionally only ever hands TraceAct
 explicitly chosen safe fields (provider, model IDs, counts, status,
 durations) — the override is defense in depth; KeyCall's own boundary
 sanitization is the primary protection. Prompts, responses, credentials,
@@ -79,11 +80,20 @@ def _load() -> Any:
 
 
 def _safe_config(traceact: Any) -> Any:
-    # Never capture function/event inputs on KeyCall spans regardless of the
-    # host's global settings; pin the credential/prompt redaction presets.
+    # Never capture function/event inputs or outputs on KeyCall spans
+    # regardless of the host's global settings, and pin both redaction
+    # layers on along with the credential/prompt presets. KeyCall already
+    # hands TraceAct only chosen safe fields, so most of these can never
+    # fire today — they exist so a host weakening its global TraceAct
+    # settings, or a future KeyCall change passing one field too many,
+    # still can't put a prompt or credential in a trace. All of these
+    # fields exist across the whole supported traceact range (>= 0.13).
     return traceact.TraceConfig(
         capture_inputs=False,
         capture_event_inputs=False,
+        capture_outputs=False,
+        redact_by_default=True,
+        redact_values=True,
         redaction_presets=["api_keys", "ai_prompts"],
     )
 

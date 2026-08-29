@@ -148,24 +148,27 @@ class TransportResult:
     duration_ms: float
 
 
-def _warn_if_proxy_bypasses_guard(provider: str) -> None:
+def _refuse_if_proxy_bypasses_guard(provider: str) -> None:
     """httpx routes proxied requests through its own proxy transports, not
     the guarded default transport, so the DNS-rebinding guard can't see
     them. With a proxy the proxy resolves DNS anyway, but the private-address
-    check is also skipped — surface that instead of staying silent."""
+    check is also skipped. Every other guard in KeyCall fails closed, so
+    this one refuses at construction too (it used to warn and proceed):
+    a custom target whose guard the environment would silently disable is
+    a configuration error until the caller says which way to resolve it."""
     import os
 
     names = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
     if any(os.environ.get(name) for name in names):
-        import warnings
-
-        warnings.warn(
-            f"keycall: a proxy environment variable is set; requests to custom "
-            f"target {provider!r} will route through the proxy and bypass the "
-            "DNS-rebinding/private-address guard. Unset the proxy or pass "
-            "trust_env=False if this is not intended",
-            RuntimeWarning,
-            stacklevel=4,
+        raise KeyCallError(
+            f"a proxy environment variable is set, which would route requests "
+            f"to custom target {provider!r} through the proxy and bypass the "
+            "DNS-rebinding/private-address guard. Unset the proxy variable, "
+            "pass trust_env=False to ignore it for this client, or pass "
+            "allow_private_network=True if routing this target through the "
+            "proxy is deliberate",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=provider,
         )
 
 
@@ -494,7 +497,7 @@ class Transport(_TransportCore):
         if httpx_transport is None and resolved.is_custom and not allow_private_network:
             # Custom targets are user-supplied: pin DNS to defeat rebinding.
             if trust_env:
-                _warn_if_proxy_bypasses_guard(resolved.provider)
+                _refuse_if_proxy_bypasses_guard(resolved.provider)
             httpx_transport = _dnsguard.GuardedTransport(
                 httpx.HTTPTransport(trust_env=trust_env), provider=resolved.provider
             )
@@ -737,7 +740,7 @@ class AsyncTransport(_TransportCore):
         )
         if httpx_transport is None and resolved.is_custom and not allow_private_network:
             if trust_env:
-                _warn_if_proxy_bypasses_guard(resolved.provider)
+                _refuse_if_proxy_bypasses_guard(resolved.provider)
             httpx_transport = _dnsguard.AsyncGuardedTransport(
                 httpx.AsyncHTTPTransport(trust_env=trust_env), provider=resolved.provider
             )

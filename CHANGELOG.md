@@ -11,6 +11,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - **`TextInput(cacheable=True)` marks a stable prefix for prompt caching.** Anthropic is the one provider where caching does not happen at all without this marker (sets a `cache_control` breakpoint; `cache_ttl_seconds` chooses its "5m" or "1h" tier, refused before the network call if it's any other value). OpenAI already caches automatically and the marker opts into its optional explicit-breakpoint mode. Every other provider (Gemini, DeepSeek, Moonshot, xAI, Perplexity) ignores the flag and keeps caching automatically on its own, unchanged. `Usage.cached_input_tokens` already reported a cache hit uniformly on every provider before this; this only adds the write side. Anthropic's own docs describe its cache as best-effort with no hit-rate guarantee, confirmed live: nine identical trials hit five times and missed four with no correlation to the delay between calls. OpenAI's explicit marker hit on every trial's very next call.
 - **The Playground can cache its standing instructions.** A new toggle under Standing instructions sends them with `cacheable=True`, gated per key like every other Extra (on for Anthropic and OpenAI, disabled with an inline note everywhere else).
 
+### Changed
+
+- **A set proxy environment variable now refuses construction for a guarded custom target instead of warning.** `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` (in either case) route requests through httpx's proxy transports, around the DNS-rebinding/private-address guard, so the previous behavior (a `RuntimeWarning`, then proceeding unguarded) was the one place KeyCall failed open. Construction now raises `UNSUPPORTED_OPERATION` with the resolutions named: unset the variable, pass `trust_env=False` to ignore it, or pass `allow_private_network=True` if the proxy route is deliberate. Named providers are unaffected.
+- **KeyCall's TraceAct spans pin more safety settings.** The per-span override now also forces output capture off and both redaction layers on (field-name and value-pattern), in addition to the input-capture and preset pins it already carried. KeyCall only ever hands TraceAct chosen safe fields, so this is defense in depth against a host weakening its global TraceAct settings, not a behavior change in what gets traced.
+
 ## [1.4.0] — 2026-08-28
 
 ### Added

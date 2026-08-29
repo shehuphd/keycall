@@ -81,6 +81,49 @@ def test_prompt_and_response_content_never_in_traces(trace_file):
         assert PROMPT_CANARY not in json.dumps(record)
 
 
+def test_hostile_host_config_still_captures_nothing(tmp_path):
+    """The end-to-end version of the pin test: the host globally turns
+    every capture flag ON, and KeyCall's per-span override must still win.
+    The pin test alone only proves KeyCall built the right config object,
+    not that TraceAct honours it over the global settings."""
+    path = tmp_path / "traces.jsonl"
+    traceact.configure(
+        project="keycall-tests",
+        sinks=[traceact.JsonlSink(str(path))],
+        config=traceact.TraceConfig(
+            capture_inputs=True,
+            capture_event_inputs=True,
+            capture_outputs=True,
+            redact_by_default=False,
+            redact_values=False,
+        ),
+    )
+    _tracing._reset_for_tests()
+    try:
+        run_operations()
+    finally:
+        traceact.reset_config()
+        _tracing._reset_for_tests()
+    content = path.read_text()
+    assert "keycall.text_generation" in content  # spans did emit
+    assert CANARY not in content
+    assert PROMPT_CANARY not in content
+
+
+def test_safe_config_pins_every_capture_off_and_every_redaction_on():
+    """The per-span override is defense in depth against a host weakening
+    its global TraceAct settings: no capture of any kind, both redaction
+    layers forced on, credential/prompt presets pinned. Asserted field by
+    field so dropping one in a refactor fails here, not in a host's traces."""
+    config = _tracing._safe_config(traceact)
+    assert config.capture_inputs is False
+    assert config.capture_event_inputs is False
+    assert config.capture_outputs is False
+    assert config.redact_by_default is True
+    assert config.redact_values is True
+    assert list(config.redaction_presets) == ["api_keys", "ai_prompts"]
+
+
 def test_operations_work_without_traceact(monkeypatch, tmp_path):
     # Simulate absence: force the loader to report unavailable.
     monkeypatch.setattr(_tracing, "_traceact_module", False)

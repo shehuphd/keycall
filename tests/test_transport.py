@@ -210,30 +210,109 @@ def test_untruncated_list_has_no_truncation_warning():
     assert not any("truncated" in warning for warning in discovery.warnings)
 
 
-def test_proxy_env_with_guarded_custom_target_warns(monkeypatch):
+def test_proxy_env_with_guarded_custom_target_refuses(monkeypatch):
+    """A proxy env var routes custom-target requests around the
+    DNS-rebinding/private-address guard, so construction fails closed
+    (it used to warn and proceed with the guard silently disabled)."""
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
-    with pytest.warns(RuntimeWarning, match="bypass the DNS-rebinding"):
-        client = KeyCall(
+    with pytest.raises(KeyCallError) as excinfo:
+        KeyCall(
             provider="my-lab",
             api_key=CANARY,
             protocol="openai-compatible",
             base_url="https://llm.example.edu/v1",
         )
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+    assert "bypass the DNS-rebinding" in excinfo.value.message
+    # The message names every way out.
+    assert "trust_env=False" in excinfo.value.message
+    assert "allow_private_network=True" in excinfo.value.message
+    assert CANARY not in excinfo.value.message
+
+
+def test_proxy_env_with_trust_env_false_constructs(monkeypatch):
+    """trust_env=False ignores the proxy variables, so the guard applies
+    and construction goes through."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
+    client = KeyCall(
+        provider="my-lab",
+        api_key=CANARY,
+        protocol="openai-compatible",
+        base_url="https://llm.example.edu/v1",
+        trust_env=False,
+    )
     client.close()
 
 
-def test_no_proxy_env_no_warning(monkeypatch):
+def test_proxy_env_with_allow_private_network_constructs(monkeypatch):
+    """allow_private_network=True waives the guard explicitly, so a
+    deliberate proxy route is accepted rather than refused."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
+    client = KeyCall(
+        provider="my-lab",
+        api_key=CANARY,
+        protocol="openai-compatible",
+        base_url="https://llm.example.edu/v1",
+        allow_private_network=True,
+    )
+    client.close()
+
+
+def test_no_proxy_env_constructs(monkeypatch):
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
         monkeypatch.delenv(name, raising=False)
         monkeypatch.delenv(name.lower(), raising=False)
-    import warnings as warnings_module
+    client = KeyCall(
+        provider="my-lab",
+        api_key=CANARY,
+        protocol="openai-compatible",
+        base_url="https://llm.example.edu/v1",
+    )
+    client.close()
 
-    with warnings_module.catch_warnings():
-        warnings_module.simplefilter("error", RuntimeWarning)
-        client = KeyCall(
+
+@pytest.mark.parametrize(
+    "name",
+    ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"],
+)
+def test_every_proxy_variable_spelling_refuses(monkeypatch, name):
+    """The check must cover every spelling httpx honours; losing one from
+    the tuple would silently fail open for that spelling alone."""
+    for other in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.delenv(other, raising=False)
+        monkeypatch.delenv(other.lower(), raising=False)
+    monkeypatch.setenv(name, "http://proxy.example.com:8080")
+    with pytest.raises(KeyCallError):
+        KeyCall(
             provider="my-lab",
             api_key=CANARY,
             protocol="openai-compatible",
             base_url="https://llm.example.edu/v1",
         )
+
+
+def test_proxy_env_does_not_refuse_named_providers(monkeypatch):
+    """The refusal is scoped to guarded custom targets. Named providers
+    route to catalog hostnames and never had the guard, so a corporate
+    proxy must not break them — widening the check would."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
+    client = KeyCall(provider="openai", api_key=CANARY)
     client.close()
+
+
+def test_async_client_refuses_proxy_env_for_guarded_custom_target(monkeypatch):
+    """AsyncTransport duplicates the guard wiring, so it needs its own
+    refusal test: a mutation removing only the async-side check survived
+    the sync-only test (found by mutation testing 2026-08-29)."""
+    from keycall import AsyncKeyCall
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
+    with pytest.raises(KeyCallError) as excinfo:
+        AsyncKeyCall(
+            provider="my-lab",
+            api_key=CANARY,
+            protocol="openai-compatible",
+            base_url="https://llm.example.edu/v1",
+        )
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+    assert CANARY not in excinfo.value.message
