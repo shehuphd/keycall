@@ -31,7 +31,7 @@ keycall verify --provider openai --source env:OPENAI_API_KEY --generate
 ✓ OPENAI_API_KEY: generated with gpt-5.6-luna (filtered position 0, provider-list position 123, 830 ms, total tokens: 18)
 ```
 
-That is one command telling you the key is valid, how many text models it can reach, and that a generation came back — including which model answered and where it sat in the provider's own list. Swap `openai` for `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, or `xai` and it works the same way.
+That is one command telling you the key is valid, how many text models it can reach, and that a generation came back — including which model answered and its position in the provider's own list. Swap `openai` for `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, or `xai` and it works the same way. An `assemblyai` or `deepgram` key verifies too — leave `--generate` off, since a speech-to-text provider has no text models to generate with.
 
 Prefer to click around? Same key, one word different:
 
@@ -91,7 +91,7 @@ print(result.round_trip_duration_ms)
 
 ## Provider support
 
-Live-verified 2026-08-10. Every release re-runs a model list, a bounded generation, a stream, a full tool round (streamed and not), an image, sound, and document read, embeddings, image generation, an async round trip, and a probe that each provider still reaches a working model well inside the attempt budget, against every provider that supports them, and blocks publishing if any of it fails:
+Live-verified 2026-08-28. Every release re-runs a model list, a bounded generation, a stream, a full tool round (streamed and not), an image, sound, and document read, embeddings, image generation, an async round trip, a live streaming-transcription session, and a probe that each provider still reaches a working model well inside the attempt budget, against every provider that supports them, and blocks publishing if any of it fails:
 
 | Provider | Protocol | Listing | Generation |
 |---|---|---|---|
@@ -102,7 +102,11 @@ Live-verified 2026-08-10. Every release re-runs a model list, a bounded generati
 | Perplexity | openai-compatible | verified | verified |
 | Moonshot/Kimi | openai-compatible | verified | verified |
 | xAI (Grok) | openai-compatible | verified | verified |
+| AssemblyAI | stt | verified | streaming transcription verified |
+| Deepgram | stt | verified | streaming transcription verified |
 | Custom endpoint (explicit `base_url`) | openai-compatible | fixtures only | fixtures only |
+
+AssemblyAI and Deepgram are speech-to-text providers: their generation column is `transcribe_stream()`, since they have no text-generation API, and their model lists are maintained catalog data behind a live credential check.
 
 **OpenAI** advertises `-latest` aliases its own account can't invoke, and is retiring that family wholesale. On 2026-08-10 all four were dead: `gpt-5-chat-latest` and `gpt-5.1-chat-latest` returned "Model not found", and `gpt-5.2-chat-latest` and `gpt-5.3-chat-latest` were newly deprecated hours after both had worked. The numbered models were healthy throughout. This is the same failure as Gemini's retired models, on a provider people assume is tidier, and it is why `verify` walks the candidates and reports every attempt rather than trusting the first listed model.
 

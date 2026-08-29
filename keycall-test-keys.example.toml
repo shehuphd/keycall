@@ -39,6 +39,24 @@ provider = "moonshot"
 key = "REPLACE-ME"
 name = "kimi-test"
 
+[[targets]]
+provider = "xai"
+key = "REPLACE-ME"
+name = "grok-test"
+
+# Speech-to-text providers: verified the same way, but with `--generate`
+# left off, since they have no text models to generate with.
+
+[[targets]]
+provider = "assemblyai"
+key = "REPLACE-ME"
+name = "assemblyai-test"
+
+[[targets]]
+provider = "deepgram"
+key = "REPLACE-ME"
+name = "deepgram-test"
+
 # [[targets]]
 # provider = "my-lab"
 # protocol = "openai-compatible"
