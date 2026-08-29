@@ -2,7 +2,7 @@
 
 One consistent interface for validating AI-provider API keys, listing and filtering the models available to them, and making normalized calls, so every product stops rebuilding the same model-picker filters and provider wrappers.
 
-Key validation, model listing and filtering, text generation, streaming, tool calling, native web search with normalized citations, hosted code execution, structured JSON output, embeddings, image, speech, realtime voice, and video generation, streaming speech-to-text, and image, audio, and document input all work and are live-verified against every provider that supports them. The API is stable.
+Key validation, model listing and filtering, text generation, streaming, tool calling (with tool search, custom freeform tools, and OpenAI's apply_patch convention), native web search with normalized citations, hosted code execution, structured JSON output, reasoning-effort control, prompt caching, embeddings, image, speech, realtime voice, and video generation, streaming speech-to-text, and image, audio, and document input all work and are live-verified against every provider that supports them. The API is stable.
 
 Docs: [USAGE.md](https://github.com/shehuphd/keycall/blob/main/USAGE.md) for the full API and CLI reference · [ARCHITECTURE.md](https://github.com/shehuphd/keycall/blob/main/ARCHITECTURE.md) for the layer diagram and component contracts · [CHANGELOG.md](https://github.com/shehuphd/keycall/blob/main/CHANGELOG.md) for version history.
 
@@ -86,13 +86,15 @@ print(result.round_trip_duration_ms)
 - **Streaming transcription.** `transcribe_stream()` opens a live speech-to-text session on AssemblyAI or Deepgram — raw PCM audio up, normalized interim/final transcripts with per-word millisecond timings down, and the provider's billable audio seconds on the session-ended event. Sync and async, same header-auth rule as realtime.
 - **Hosted code execution.** `code_interpreter=True` lets the model write and run code on the provider's own sandbox (OpenAI, Anthropic, Gemini, xAI), with each run returned as a typed part — nothing executes on your machine.
 - **Tool search.** `Tool(defer_loading=True)` keeps a large tool library out of the model's context until it searches for what it needs (OpenAI, Anthropic); discovered tools call and reply like ordinary ones.
+- **File-editing tool convention.** `apply_patch=True` enables OpenAI's built-in file-editing tool: the model proposes create/update/delete operations as V4A diffs, arriving as ordinary `ToolCall`/`ToolResult` parts named `"apply_patch"` in the same replay loop as any other tool. OpenAI-only; other providers refuse before the network.
+- **Custom (freeform) tools.** `Tool(input_schema=None)` declares a tool with no JSON Schema: the model's call arrives as a plain string instead of parsed arguments. OpenAI-only; other providers refuse before the network.
 - **Prompt caching.** `TextInput(cacheable=True)` marks a stable prefix (a big system prompt, reference material) for caching. Anthropic is the one provider where caching doesn't happen at all without this marker; OpenAI already caches automatically and the marker opts into its optional explicit mode; every other provider ignores the flag and keeps caching automatically on its own. `Usage.cached_input_tokens` reports a cache hit uniformly everywhere, marked or not.
 - **Structured output.** `response_schema=<JSON Schema>` is enforced provider-side on OpenAI, Anthropic, Gemini, Moonshot, and Perplexity; on providers without enforcement (DeepSeek, unverified custom targets) KeyCall falls back to guaranteed-valid-JSON mode and adds a result warning rather than claiming a guarantee it can't back. `result.text` is always the JSON string, regardless of which mechanism produced it.
 - **Hardened transport.** TLS always verified, redirects refused, response sizes capped, SSRF and DNS-rebinding guards on custom endpoints that fail closed when a proxy would bypass them, and generation is never silently retried.
 
 ## Provider support
 
-Live-verified 2026-08-28. Every release re-runs a model list, a bounded generation, a stream, a full tool round (streamed and not), an image, sound, and document read, embeddings, image generation, an async round trip, a live streaming-transcription session, and a probe that each provider still reaches a working model well inside the attempt budget, against every provider that supports them, and blocks publishing if any of it fails:
+Live-verified 2026-08-29. Every release re-runs a model list, a bounded generation, a stream, a full tool round (streamed and not, including apply_patch, custom tools, and tool search), hosted code execution, an image, sound, and document read, embeddings, image generation, a video render, a prompt-caching round trip, an async round trip, a live streaming-transcription session, capability-drift probes against previously observed provider behavior, and a probe that each provider still reaches a working model well inside the attempt budget, against every provider that supports them, and blocks publishing if any of it fails:
 
 | Provider | Protocol | Listing | Generation |
 |---|---|---|---|

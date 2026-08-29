@@ -71,6 +71,7 @@ Everything between those two points handles the opaque `Credential` wrapper. Sup
 | `_transport.py` | HTTP and WebSocket execution, retries, size cap, redirect refusal, header construction, `DownloadPlan` enforcement | Retry generation, follow a redirect, emit unscrubbed provider text |
 | `_realtime.py` | Sync/async realtime session sequencing over the transport's WebSocket wire | Perform I/O directly (the transport owns the socket) |
 | `_transcription.py` | Sync/async streaming-transcription session sequencing over the same WebSocket wire | Perform I/O directly (the transport owns the socket) |
+| `_sources.py` | Credential-source loading (TXT/JSON/TOML files, `env:` references), target parsing, git-exposure warnings on tracked key files | Write to, delete, or echo the contents of a credential file |
 | `_dnsguard.py` | Per-request resolve-validate-pin for custom targets | Wrap named providers (their hostnames come from the catalog) |
 | `_sanitize.py` | Credential scrubbing, request-id and display-name bounding | Depend on TraceAct for safety |
 | `_cache.py` | Process-local TTL model cache keyed by provider + base URL + fingerprint | Persist to disk or outlive the process |

@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.08.14.4",
+  "catalog_version": "2026.08.29.1",
   "verified_at": "2026-08-10T00:00:00Z",
   "providers": {
     "openai": {
@@ -122,7 +122,7 @@
         "reasoning_effort": true,
         "reasoning_effort_note": "Maps to output_config.effort; a top-level effort field is refused. Verified live 2026-08-14 on claude-opus-4-5.",
         "prompt_caching": true,
-        "prompt_caching_note": "TextInput(cacheable=True) sets a cache_control: {type: ephemeral, ttl} block on that content block; a system TextInput switches the system field from a joined string to a block array only when a cache marker is present. Anthropic is the one provider where caching does not happen at all without this marker. cache_ttl_seconds must be 300 (\"5m\", default, no extra cost) or 3600 (\"1h\", billed at double the base input rate) — any other value is refused before the network call rather than rounded.",
+        "prompt_caching_note": "TextInput(cacheable=True) sets a cache_control: {type: ephemeral, ttl} block on that content block; a system TextInput switches the system field from a joined string to a block array only when a cache marker is present. Anthropic is the one provider where caching doesn't happen at all without this marker. cache_ttl_seconds must be 300 (\"5m\", default, no extra cost) or 3600 (\"1h\", billed at double the base input rate) — any other value is refused before the network call rather than rounded.",
         "schema_enforcement": "native",
         "sampling_constraints": [
           {
