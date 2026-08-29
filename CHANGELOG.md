@@ -20,7 +20,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
-- **Stale provider lists across the docs.** USAGE.md's quick start and supported-names line had never gained xAI (or the `grok`/`x-ai` aliases), and neither doc, the provider-support table, nor the bundled example key file mentioned AssemblyAI and Deepgram; all of them now list every provider. The README's LICENSE link was relative, which rendered as a dead link on every PyPI release page to date — now absolute, and a docs-hygiene test asserts every README link stays that way.
+- **Provider lists.** USAGE.md, the README's provider-support table, and both bundled example key files now list every provider, xAI and the speech-to-text pair included, with the `grok`/`x-ai` aliases documented. The README's LICENSE link is now absolute so it resolves on PyPI.
 - **The new git-tracking warning fired on KeyCall's own bundled example files.** `keycall-test-keys.example.toml`/`.txt` are meant to stay tracked as templates, and every key in them is the literal placeholder `REPLACE-ME` — the "tracked by git, rotate every key it held" warning was accurate about the tracking but wrong about the risk, since no key ever existed there. A source file whose every key is that placeholder no longer gets a git warning at all.
 
 ## [1.3.1] — 2026-08-22

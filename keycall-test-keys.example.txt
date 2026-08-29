@@ -18,4 +18,9 @@ provider=gemini key=REPLACE-ME name=gemini-test
 provider=deepseek key=REPLACE-ME name=deepseek-test
 provider=perplexity key=REPLACE-ME name=pplx-test
 provider=moonshot key=REPLACE-ME name=kimi-test
+provider=xai key=REPLACE-ME name=grok-test
+# Speech-to-text providers: verified the same way, but with --generate
+# left off, since they have no text models to generate with.
+provider=assemblyai key=REPLACE-ME name=assemblyai-test
+provider=deepgram key=REPLACE-ME name=deepgram-test
 # protocol=openai-compatible provider=my-lab base_url=https://llm.example.edu/v1 key=REPLACE-ME name="my lab"
