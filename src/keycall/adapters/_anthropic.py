@@ -65,6 +65,20 @@ _STRUCTURED_OUTPUT_TOOL_NAME = "keycall_response"
 # only on a request that asks for it, never on every Anthropic request.
 _CODE_EXECUTION_BETA_HEADER = "code-execution-2025-08-25"
 
+# Anthropic's own two TTL strings; the pre-flight gate in _base.py already
+# refuses any other cache_ttl_seconds value before this is ever reached.
+_CACHE_TTL_LABEL = {300: "5m", 3600: "1h"}
+
+
+def _text_block(part: TextInput) -> dict[str, Any]:
+    block: dict[str, Any] = {"type": "text", "text": part.text}
+    if part.cacheable:
+        block["cache_control"] = {
+            "type": "ephemeral",
+            "ttl": _CACHE_TTL_LABEL[part.cache_ttl_seconds],
+        }
+    return block
+
 
 def _bash_code_execution_output(
     call_block: Mapping[str, Any], result_block: Mapping[str, Any]
@@ -245,19 +259,19 @@ class AnthropicAdapter(ProviderAdapter):
     def build_generation_spec(self, request: TextGenerationRequest) -> RequestSpec:
         self.validate_generation_request(request)
         op = self.resolved.operations["text_generation"]
-        system_texts: list[str] = []
+        system_parts: list[TextInput] = []
         messages: list[dict[str, Any]] = []
         for message in request.messages:
             if message.role == "system":
                 # Anthropic takes system content as a top-level parameter.
-                system_texts.extend(
-                    part.text for part in message.content if isinstance(part, TextInput)
+                system_parts.extend(
+                    part for part in message.content if isinstance(part, TextInput)
                 )
                 continue
             blocks: list[dict[str, Any]] = []
             for part in message.content:
                 if isinstance(part, TextInput):
-                    blocks.append({"type": "text", "text": part.text})
+                    blocks.append(_text_block(part))
                 elif isinstance(part, ImageInput):
                     # Both source forms verified 2026-08-09.
                     source = (
@@ -315,8 +329,15 @@ class AnthropicAdapter(ProviderAdapter):
             "messages": messages,
             "max_tokens": request.max_output_tokens or _DEFAULT_MAX_OUTPUT_TOKENS,
         }
-        if system_texts:
-            body["system"] = "\n\n".join(system_texts)
+        if system_parts:
+            # A block array only when a marker is present: Anthropic
+            # reads a plain string and an all-plain block array as the same
+            # prompt, but switching unconditionally would be a needless
+            # shape change for every caller who never touches caching.
+            if any(part.cacheable for part in system_parts):
+                body["system"] = [_text_block(part) for part in system_parts]
+            else:
+                body["system"] = "\n\n".join(part.text for part in system_parts)
         body.update(self.sampling_fields(request))
         if request.reasoning_effort is not None:
             # Anthropic's control is output_config.effort; a top-level

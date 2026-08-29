@@ -77,8 +77,24 @@ _VALID_ROLES: tuple[str, ...] = ("system", "user", "assistant")
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TextInput:
+    """``cacheable=True`` marks this block as a stable prefix boundary: on
+    Anthropic and OpenAI (the two providers whose caching requires a caller
+    marker rather than happening automatically), KeyCall sets that
+    provider's own breakpoint here. Every other provider ignores the flag
+    and keeps caching automatically, the same as it already does with no
+    marker at all. ``cache_ttl_seconds`` only means something on Anthropic,
+    which offers only two tiers (300s/"5m", 3600s/"1h"); any other value
+    is refused before the network call rather than silently rounded, since
+    the 1-hour tier is billed at double the base input rate."""
+
     text: str
     kind: Literal["text"] = "text"
+    cacheable: bool = False
+    cache_ttl_seconds: int = 300
+
+    def __post_init__(self) -> None:
+        if self.cache_ttl_seconds <= 0:
+            raise ValueError("cache_ttl_seconds must be positive")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

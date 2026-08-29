@@ -31,6 +31,7 @@ __all__ = [
     "CODE_INTERPRETER_PROVIDERS",
     "CUSTOM_TOOL_PROVIDERS",
     "JSON_SCHEMA_COMPAT_PROVIDERS",
+    "PROMPT_CACHING_PROVIDERS",
     "SCHEMA_ENFORCING_PROVIDERS",
     "STREAMING_TRANSCRIPTION_PROVIDERS",
     "TOOL_CALLING_PROVIDERS",
@@ -47,6 +48,7 @@ CUSTOM_TOOL_PROVIDERS = providers_with("custom_tool")
 TOOL_SEARCH_PROVIDERS = providers_with("tool_search")
 TOOL_CALLING_PROVIDERS = providers_with("tool_calling")
 STREAMING_TRANSCRIPTION_PROVIDERS = providers_with("streaming_transcription")
+PROMPT_CACHING_PROVIDERS = providers_with("prompt_caching")
 SCHEMA_ENFORCING_PROVIDERS = providers_enforcing_schema()
 # Enforcement mechanism differs within the OpenAI-compatible family:
 # "json_schema" providers accept response_format={"type":"json_schema"},

@@ -192,6 +192,18 @@
               <input id="pg-system" type="text"
                      placeholder="Optional, e.g. &quot;answer in one short sentence&quot;">
             </div>
+            <div id="pg-cache-row">
+              <label class="pg-toggle" id="pg-cache-toggle">
+                <span>Cache standing instructions</span>
+                <input id="pg-cache-system" type="checkbox">
+                <span class="switch" aria-hidden="true"></span>
+              </label>
+              <p class="hint" id="pg-cache-unavailable" hidden></p>
+              <p class="hint" id="pg-cache-note">
+                A call that repeats the standing instructions within the
+                cache's TTL bills the cached rate instead of full price.
+              </p>
+            </div>
             <p class="hint" id="pg-image-mode-note" hidden>
               Picture models take a description and nothing else. Generating one
               takes longer than text, often half a minute.

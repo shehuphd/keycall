@@ -845,6 +845,22 @@ class ProviderAdapter(ABC):
                     provider=self.resolved.provider,
                     operation=Operation.TEXT_GENERATION.value,
                 )
+        if self.resolved.provider == "anthropic":
+            for message in request.messages:
+                for part in message.content:
+                    if (
+                        isinstance(part, TextInput)
+                        and part.cacheable
+                        and part.cache_ttl_seconds not in (300, 3600)
+                    ):
+                        raise KeyCallError(
+                            "anthropic's cache_control ttl accepts only 300 "
+                            "(\"5m\") or 3600 (\"1h\") seconds, not "
+                            f"{part.cache_ttl_seconds}",
+                            code=ErrorCode.UNSUPPORTED_OPERATION,
+                            provider=self.resolved.provider,
+                            operation=Operation.TEXT_GENERATION.value,
+                        )
         violation = sampling_violation(
             self.resolved,
             request.model,

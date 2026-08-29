@@ -95,6 +95,7 @@ def list_targets(registry: Registry) -> dict[str, Any]:
                 "image_generation": caps.image_generation,
                 "video_generation": caps.video_generation,
                 "reasoning_effort": caps.reasoning_effort,
+                "prompt_caching": caps.prompt_caching,
                 "realtime": caps.realtime,
                 # Keyed by the model category name rather than the
                 # capability flag's, so the page can use one string for
@@ -459,7 +460,8 @@ def _generation_fields(body: dict[str, Any]) -> dict[str, Any] | None:
     messages = []
     system = body.get("system")
     if system:
-        messages.append(Message(role="system", content=[TextInput(text=str(system))]))
+        system_part = TextInput(text=str(system), cacheable=bool(body.get("cache_system", False)))
+        messages.append(Message(role="system", content=[system_part]))
     # Prior turns first, then the turn being asked now: the conversation
     # must reach the provider in the order it happened.
     messages.extend(history)

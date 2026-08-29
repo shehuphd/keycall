@@ -51,6 +51,8 @@
         "tool_search_note": "Responses API tool_search ({type: tool_search}, hosted mode), gpt-5.4+ only. Deferred function tools set defer_loading: true. Live-verified 2026-08-22, streaming and not: tool_search_call/tool_search_output arrive as ordinary output items (whole, no dedicated streaming deltas), then the discovered tool's function_call/function_call_output round-trips the same way a non-deferred one does; replay needs no special handling.",
         "reasoning_effort": true,
         "reasoning_effort_note": "Maps to the Responses reasoning.effort field. Verified live 2026-08-14 on gpt-5-nano.",
+        "prompt_caching": true,
+        "prompt_caching_note": "TextInput(cacheable=True) sets prompt_cache_options.mode=explicit at the top level and prompt_cache_breakpoint: {mode: explicit} on that content block. Automatic (implicit) caching already runs above ~1024-2048 tokens with no marker at all; the explicit marker is an optional reliability aid on top of that, not a requirement. cache_ttl_seconds is not a concept on OpenAI's side and is silently unused.",
         "schema_enforcement": "native",
         "sampling_constraints": [
           {
@@ -119,6 +121,8 @@
         "tool_search_note": "tool_search_tool_bm25_20251119 (natural-language search variant), no beta header needed. Deferred client tools set defer_loading: true. Live-verified 2026-08-22 on claude-opus-5, streaming and not: search runs as server_tool_use/tool_search_tool_result blocks, the discovered tool's tool_use/tool_result round-trips like any ordinary tool call. Confirmed live that omitting the server_tool_use/tool_search_tool_result blocks entirely on replay still works (the API tolerates it despite docs recommending they ride back unchanged), so KeyCall treats them as trace-of-work, same as web_search's own blocks.",
         "reasoning_effort": true,
         "reasoning_effort_note": "Maps to output_config.effort; a top-level effort field is refused. Verified live 2026-08-14 on claude-opus-4-5.",
+        "prompt_caching": true,
+        "prompt_caching_note": "TextInput(cacheable=True) sets a cache_control: {type: ephemeral, ttl} block on that content block; a system TextInput switches the system field from a joined string to a block array only when a cache marker is present. Anthropic is the one provider where caching does not happen at all without this marker. cache_ttl_seconds must be 300 (\"5m\", default, no extra cost) or 3600 (\"1h\", billed at double the base input rate) — any other value is refused before the network call rather than rounded.",
         "schema_enforcement": "native",
         "sampling_constraints": [
           {

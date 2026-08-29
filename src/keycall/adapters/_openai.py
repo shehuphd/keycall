@@ -501,6 +501,7 @@ class OpenAIAdapter(ProviderAdapter):
         input_items: list[dict[str, Any]] = []
         replayed_reasoning: set[str] = set()
         custom_tool_names = {tool.name for tool in request.tools if tool.input_schema is None}
+        any_cache_marker = False
         for message in request.messages:
             # Responses API: assistant history uses output_text parts, and
             # tool calls/results are top-level input items, not message
@@ -509,7 +510,11 @@ class OpenAIAdapter(ProviderAdapter):
             content: list[dict[str, Any]] = []
             for part in message.content:
                 if isinstance(part, TextInput):
-                    content.append({"type": part_type, "text": part.text})
+                    text_item: dict[str, Any] = {"type": part_type, "text": part.text}
+                    if part.cacheable:
+                        any_cache_marker = True
+                        text_item["prompt_cache_breakpoint"] = {"mode": "explicit"}
+                    content.append(text_item)
                 elif isinstance(part, ImageInput):
                     content.append({"type": "input_image", "image_url": _image_url(part)})
                 elif isinstance(part, FileInput):
@@ -591,6 +596,12 @@ class OpenAIAdapter(ProviderAdapter):
                             }
                         )
         body: dict[str, Any] = {"model": request.model, "input": input_items}
+        if any_cache_marker:
+            # Left unset otherwise: OpenAI's implicit (automatic) caching
+            # already runs on every request with no marker at all, and this
+            # mode switch only needs sending when a caller asks for an
+            # explicit breakpoint.
+            body["prompt_cache_options"] = {"mode": "explicit"}
         if request.max_output_tokens is not None:
             body["max_output_tokens"] = request.max_output_tokens
         body.update(self.sampling_fields(request))

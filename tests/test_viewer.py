@@ -864,6 +864,65 @@ def test_generate_sends_history_before_the_current_prompt():
         reg.close()
 
 
+def test_generate_cache_system_sets_cache_control_for_anthropic():
+    """The Playground's cache-standing-instructions toggle must reach the
+    wire as Anthropic's cache_control marker, and stay off it when the
+    toggle isn't set, so an existing Playground conversation isn't billed
+    differently just because the feature now exists."""
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "claude-opus-5"}]})
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 3,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                },
+            },
+        )
+
+    targets = [Target(provider="anthropic", key=CANARY, name="my-claude")]
+    reg = Registry(targets, httpx_transport=httpx.MockTransport(handler))
+    try:
+        generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "claude-opus-5",
+                "prompt": "hello",
+                "system": "Be brief.",
+                "cache_system": True,
+            },
+        )
+        block = seen[0]["system"][0]
+        assert block["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
+
+        generate(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "claude-opus-5",
+                "prompt": "hello again",
+                "system": "Be brief.",
+            },
+        )
+        # No marker: the system field stays the plain string it always was.
+        assert seen[1]["system"] == "Be brief."
+    finally:
+        reg.close()
+
+
 def test_malformed_tools_and_history_are_named_bad_requests():
     reg = make_registry()
     try:
@@ -1432,6 +1491,9 @@ def test_targets_tell_the_browser_what_each_key_can_accept():
     assert caps["assemblyai"]["transcription"] is True
     assert caps["deepgram"]["transcription"] is True
     assert caps["openai"]["transcription"] is False
+    assert caps["anthropic"]["prompt_caching"] is True
+    assert caps["openai"]["prompt_caching"] is True
+    assert caps["gemini"]["prompt_caching"] is False
     assert CANARY not in json.dumps(body)
 
 

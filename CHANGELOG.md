@@ -4,6 +4,13 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`TextInput(cacheable=True)` marks a stable prefix for prompt caching.** Anthropic is the one provider where caching does not happen at all without this marker (sets a `cache_control` breakpoint; `cache_ttl_seconds` chooses its "5m" or "1h" tier, refused before the network call if it's any other value). OpenAI already caches automatically and the marker opts into its optional explicit-breakpoint mode. Every other provider (Gemini, DeepSeek, Moonshot, xAI, Perplexity) ignores the flag and keeps caching automatically on its own, unchanged. `Usage.cached_input_tokens` already reported a cache hit uniformly on every provider before this; this only adds the write side. Anthropic's own docs describe its cache as best-effort with no hit-rate guarantee, confirmed live: nine identical trials hit five times and missed four with no correlation to the delay between calls. OpenAI's explicit marker hit on every trial's very next call.
+- **The Playground can cache its standing instructions.** A new toggle under Standing instructions sends them with `cacheable=True`, gated per key like every other Extra (on for Anthropic and OpenAI, disabled with an inline note everywhere else).
+
 ## [1.4.0] — 2026-08-28
 
 ### Added
@@ -385,6 +392,7 @@ First release. Key validation, model discovery and filtering, and text generatio
 - Perplexity's Sonar models aren't API-discoverable and are maintained in the bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
+[Unreleased]: https://github.com/shehuphd/keycall/compare/v1.4.0...HEAD
 [1.4.0]: https://github.com/shehuphd/keycall/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/shehuphd/keycall/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/shehuphd/keycall/compare/v1.2.0...v1.3.0

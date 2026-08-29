@@ -878,6 +878,10 @@ async function applyMode() {
   // Transcription has no instructions either: the session takes audio in
   // and gives words back, with no prompt anywhere in it.
   el("pg-system-row").hidden = image || video || transcribe;
+  // The cache marker only reaches generate_text/stream_text; voice runs
+  // over its own realtime connection, a different protocol the marker
+  // never touches, so the toggle would silently do nothing there.
+  el("pg-cache-row").hidden = image || video || voice || transcribe;
   el("pg-image-mode-note").hidden = !image;
   el("pg-video-mode-note").hidden = !video;
   el("pg-voice-mode-note").hidden = !voice;
@@ -2739,6 +2743,8 @@ function gateCapabilities(off) {
 
   gateToggle("pg-search", "pg-search-toggle", "pg-search-unavailable",
     "web_search", "search the web");
+  gateToggle("pg-cache-system", "pg-cache-toggle", "pg-cache-unavailable",
+    "prompt_caching", "cache standing instructions");
   gateToggle("pg-tools-on", "pg-tools-toggle", "pg-tools-unavailable",
     "tool_calling", "offer tools");
   if (el("pg-tools-on").disabled) el("pg-tools-panel").hidden = true;
@@ -3264,6 +3270,7 @@ async function runGeneration({ continuation }) {
     model,
     prompt,
     system: el("pg-system").value.trim() || undefined,
+    cache_system: el("pg-cache-system").checked,
     max_output_tokens: Number(el("pg-maxtok").value) || undefined,
     reasoning_effort: el("pg-reasoning").value || undefined,
     web_search: el("pg-search").checked,

@@ -65,6 +65,10 @@ class ProviderCapabilities:
     video_generation: bool = False
     reasoning_effort: bool = False
     realtime: bool = False
+    # Whether TextInput(cacheable=True) sets a breakpoint here at all.
+    # False doesn't mean "no caching" — every provider without this flag
+    # still caches automatically; it just needs no marker from KeyCall.
+    prompt_caching: bool = False
     # None: no provider-side enforcement, KeyCall falls back to JSON mode.
     schema_enforcement: str | None = None
     sampling_constraints: tuple[SamplingConstraint, ...] = ()
@@ -154,6 +158,7 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
         custom_tool=bool(raw.get("custom_tool", False)),
         tool_search=bool(raw.get("tool_search", False)),
         streaming_transcription=bool(raw.get("streaming_transcription", False)),
+        prompt_caching=bool(raw.get("prompt_caching", False)),
         schema_enforcement=raw.get("schema_enforcement"),
         sampling_constraints=tuple(
             SamplingConstraint(

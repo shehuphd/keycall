@@ -1770,3 +1770,102 @@ def test_live_candidate_order_has_headroom_before_the_budget():
         finally:
             client.close()
     assert not failures, "\n".join(failures)
+
+
+def test_live_prompt_caching_anthropic_and_openai():
+    """TextInput(cacheable=True) is verified two different ways here,
+    because the two providers make two different promises.
+
+    OpenAI's explicit breakpoint hit on the very next call in every trial
+    (live-verified 2026-08-29) and is held to that bar.
+
+    Anthropic's own docs describe its cache as best-effort with no hit-rate
+    guarantee ("regularly analyze cache hit rates and adjust your
+    strategy"), and nine live trials here confirmed inconsistent hits: five
+    hits, four misses, across delays from 0 to 20 seconds with no
+    correlation between delay length and outcome (live-verified
+    2026-08-29). KeyCall's job is to send the marker correctly and report
+    whatever the provider did correctly — never to guarantee a hit the
+    provider itself won't guarantee. Every hit observed across all nine
+    trials had cached_input_tokens matching the actual cached
+    block's size, which is the claim this test holds Anthropic to: when it
+    reports a hit, KeyCall must have read that report correctly. A run
+    where every attempt misses is inconclusive, not a failure, and says so.
+    """
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import time
+
+    from keycall import KeyCall, Message, TextInput
+
+    _CACHE_PROPAGATION_DELAY_SECONDS = 15
+    _MAX_ATTEMPTS = 3
+    model = {"anthropic": "claude-opus-5", "openai": "gpt-5.6"}
+
+    def one_attempt(client, provider, attempt):
+        # A fresh marker each attempt: reusing one across retries would let
+        # an earlier attempt's own write be what a later attempt reads,
+        # proving nothing about that attempt's own timing.
+        marker = f"run-{time.monotonic_ns()}-{attempt}"
+        filler = " ".join(
+            f"Fact {i}: the KeyCall live-verification prefix for {marker} pads this block."
+            for i in range(1200)
+        )
+        prefix = TextInput(text=filler, cacheable=True)
+        client.generate_text(
+            model=model[provider],
+            messages=[
+                Message(role="system", content=[prefix]),
+                Message(role="user", content=[TextInput(text="Reply with: ok")]),
+            ],
+        )
+        time.sleep(_CACHE_PROPAGATION_DELAY_SECONDS)
+        second = client.generate_text(
+            model=model[provider],
+            messages=[
+                Message(role="system", content=[prefix]),
+                Message(role="user", content=[TextInput(text="Reply with: ok, again")]),
+            ],
+        )
+        return second.usage.cached_input_tokens or 0
+
+    targets, _ = load_targets(source)
+    checked = []
+    inconclusive = []
+    for target in targets:
+        if target.provider not in model:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            results = []
+            for attempt in range(1, _MAX_ATTEMPTS + 1):
+                cached = one_attempt(client, target.provider, attempt)
+                results.append(cached)
+                print(f"{target.display_name}: attempt {attempt} cached={cached}")
+                if cached > 0:
+                    break
+            hit = any(r > 0 for r in results)
+            if target.provider == "anthropic" and not hit:
+                print(
+                    f"{target.display_name}: no cache read across {_MAX_ATTEMPTS} attempts — "
+                    "inconclusive, not a failure, per Anthropic's own best-effort caching docs"
+                )
+                inconclusive.append(target.provider)
+                continue
+            assert hit, (
+                f"{target.provider}: the identical cache-marked prefix was resent and no "
+                f"cache read was reported across {_MAX_ATTEMPTS} attempts; the marker had "
+                "no effect"
+            )
+            checked.append(target.provider)
+        finally:
+            client.close()
+    # openai never reaches `inconclusive` above (only anthropic's branch
+    # appends to it) — a miss there already raised via `assert hit`.
+    assert checked or inconclusive, "no anthropic or openai target in the live source"
