@@ -66,10 +66,11 @@ Everything between those two points handles the opaque `Credential` wrapper. Sup
 | Component | Owns | Must never |
 |---|---|---|
 | `_client.py` | Identity binding, page loop, cache use, tracing spans, category filtering | Expose the credential through any property or repr |
-| `_registry.py` + `_catalog/catalog.json` | Name → endpoint/auth/operations resolution (text generation, embeddings, image generation, speech generation, video generation and status), custom-URL validation, per-provider capability evidence (tool calling, web search, schema enforcement, media input forms, sampling constraints, video download hosts), each dated | Accept credential-routing data from outside the bundled catalog |
+| `_registry.py` + `_catalog/catalog.json` | Name → endpoint/auth/operations resolution (text generation, embeddings, image generation, speech generation, video generation and status, streaming transcription), custom-URL validation, per-provider capability evidence (tool calling, web search, schema enforcement, media input forms, sampling constraints, video download hosts), each dated | Accept credential-routing data from outside the bundled catalog |
 | `adapters/` | Request building, response parsing, error translation, model classification evidence | Perform I/O, see the credential, leak raw provider objects |
 | `_transport.py` | HTTP and WebSocket execution, retries, size cap, redirect refusal, header construction, `DownloadPlan` enforcement | Retry generation, follow a redirect, emit unscrubbed provider text |
 | `_realtime.py` | Sync/async realtime session sequencing over the transport's WebSocket wire | Perform I/O directly (the transport owns the socket) |
+| `_transcription.py` | Sync/async streaming-transcription session sequencing over the same WebSocket wire | Perform I/O directly (the transport owns the socket) |
 | `_dnsguard.py` | Per-request resolve-validate-pin for custom targets | Wrap named providers (their hostnames come from the catalog) |
 | `_sanitize.py` | Credential scrubbing, request-id and display-name bounding | Depend on TraceAct for safety |
 | `_cache.py` | Process-local TTL model cache keyed by provider + base URL + fingerprint | Persist to disk or outlive the process |
@@ -78,7 +79,7 @@ Everything between those two points handles the opaque `Credential` wrapper. Sup
 
 ## Provider resolution
 
-Provider identity and wire protocol are separate. The catalog maps seven named providers onto four protocols; the adapter is chosen by protocol, with named overrides for providers whose behavior diverges:
+Provider identity and wire protocol are separate. The catalog maps nine named providers onto five protocols; the adapter is chosen by protocol, with named overrides for providers whose behavior diverges. The `stt` protocol has no protocol-level adapter: no generic STT-compatible wire exists the way OpenAI-compatible does, so its two providers resolve by name alone and custom targets cannot claim it:
 
 ```text
 provider name ──► catalog profile ──► protocol ──► adapter
@@ -89,6 +90,8 @@ provider name ──► catalog profile ──► protocol ──► adapter
   moonshot            openai-compatible              OpenAICompatibleAdapter
   perplexity          openai-compatible              PerplexityAdapter (override)
   xai                 openai-compatible              XAIAdapter (override)
+  assemblyai          stt                            AssemblyAIAdapter (by name)
+  deepgram            stt                            DeepgramAdapter (by name)
   <custom> + base_url openai-compatible              OpenAICompatibleAdapter (is_custom)
 ```
 
@@ -115,11 +118,15 @@ Some providers run a tool server-side and hand the caller a tool call to echo ba
 
 Realtime keeps the same component boundaries over a WebSocket. The transport owns the connection: it builds the `wss://` URL from the catalog host (realtime paths are host-rooted, since the WebSocket endpoints don't live under the base URL's `/v1`-style prefix), attaches the auth header (the credential never enters a URL on any provider) and wraps the socket so close reasons are scrubbed before they can surface. Adapters own the two frame dialects (the Realtime API for OpenAI and xAI, `BidiGenerateContent` for Gemini) as pure translators: provider frames in, normalized `RealtimeEvent`s out, caller turns in, provider messages out, no I/O. `_realtime.py` sequences the two, and the sync and async sessions differ only in awaits.
 
+Streaming transcription reuses this machinery with its own session and event types: the same transport wire (grown a binary `send_bytes` for raw PCM audio, and accepting a full `wss://` operation path for AssemblyAI's separate streaming host), the same header-auth rule (Deepgram adds a `token` auth scheme, `Token <key>`), and pure per-provider translators in `adapters/_stt.py` turning Turn/Results frames into normalized transcription events. `_transcription.py` sequences it the way `_realtime.py` does; the STT providers' every LLM operation refuses with a typed error, and vice versa.
+
 ## The viewer
 
 `keycall view` starts a localhost-only stdlib HTTP server (`viewer/_server.py`). Credentials stay server-side in a `Registry` (`viewer/_registry.py`) that maps integer target ids to live clients; the browser only ever sends and receives target ids and `TargetView` records. The provider read timeout is a `Registry`-level setting, not fixed at client construction: `/api/settings` rebuilds every loaded key's client with a new value, retiring rather than closing the replaced client so a request already in flight keeps the timeout it started with. Every `/api/*` request requires a per-run token generated fresh at startup and never persisted. The frontend is dependency-free and builds DOM through `textContent` only, under a `default-src 'self'` content security policy. `viewer/_traces.py` holds an in-memory, process-lifetime log of request outcomes (timing and status, never prompts or replies) for the Traces tab. Each generation request still carries the whole conversation as `history`, which the server places before the current turn when it builds the provider request — the request/response cycle itself holds nothing between turns. A separate, session-scoped `Conversation` store on the `Registry` (`save_conversation`/`list_conversations`/`get_conversation`/`clear_conversations`, behind `/api/conversations*`) keeps a saved copy of each finished conversation's history and rendered transcript for the History pane, so a conversation survives a page reload; it mirrors what the browser already holds rather than replacing it as the source of truth for replay, and like every other in-memory registry state it is gone when the process stops.
 
-The Playground's voice conversation task is the one exception that holds state mid-turn: `/api/realtime` upgrades the HTTP connection to a WebSocket, hand-rolled in `viewer/_ws.py` (RFC 6455 framing over the hijacked socket, no dependency added for it) rather than opened as a normal request/response. `viewer/_realtime_bridge.py` then runs for the life of that connection, translating the browser's small JSON control protocol into calls on a `RealtimeSession` and normalized `RealtimeEvent`s back into JSON frames, one thread reading each direction. The server never buffers a transcript, live or after the fact; the browser holds it alone, unlike every other Playground task, whose finished turns are saved to the Conversation store above.
+The Playground's two session tasks — voice conversation and live transcription — are the exceptions that hold state mid-turn: `/api/realtime` and `/api/transcribe` each upgrade the HTTP connection to a WebSocket, hand-rolled in `viewer/_ws.py` (RFC 6455 framing over the hijacked socket, no dependency added for it) rather than opened as a normal request/response. `viewer/_realtime_bridge.py` and `viewer/_transcription_bridge.py` then run for the life of their connection, translating the browser's small JSON control protocol into calls on a `RealtimeSession` or `TranscriptionSession` and normalized events back into JSON frames, one thread reading each direction. The server never buffers a transcript live: the browser holds the in-flight text alone and saves finished content to the Conversation store above — a voice conversation's turns stay browser-only, while a transcription session's finalized utterances are saved as they arrive, the same route every other Playground task's finished turns take.
+
+Every tab has its own URL (`/models`, `/playground`, `/verify`, `/traces`, with `/` and `/dashboard` both the Dashboard): the server hands the same page shell to each of those paths, the page reads the path to pick the tab, and the printed `?token=` link performs its cookie handshake on any of them, redirecting back to the same path with the token stripped.
 
 `--reload` restarts the server process when KeyCall's own source changes, keeping the bound port and the run token so an open browser tab survives the restart. The token and port pass through the environment rather than argv, invisible to `ps`. It's a development aid for working on KeyCall itself, not a viewer feature: an installed package never changes, so the watcher stays idle.
 
