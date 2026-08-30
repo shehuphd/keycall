@@ -1,12 +1,14 @@
 """KeyCall: one consistent interface for validating AI-provider API keys,
 listing and filtering their models, and making normalized calls."""
 
+from ._classify import alias_fact
 from ._client import AsyncKeyCall, AsyncTextStream, KeyCall, TextStream
 from ._enums import ModelCategory, Operation, ProviderProtocol
 from ._errors import ErrorCode, KeyCallError, VideoJobTimeout
 from ._realtime import AsyncRealtimeSession, RealtimeSession
 from ._transcription import AsyncTranscriptionSession, TranscriptionSession
 from ._types import (
+    AliasFact,
     AudioInput,
     AudioOutput,
     Citation,
@@ -68,9 +70,10 @@ from ._types import (
     VideoOutput,
 )
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 __all__ = [
+    "AliasFact",
     "AsyncKeyCall",
     "AsyncRealtimeSession",
     "AsyncTextStream",
@@ -145,4 +148,5 @@ __all__ = [
     "VideoJobTimeout",
     "VideoOutput",
     "__version__",
+    "alias_fact",
 ]

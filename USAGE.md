@@ -115,6 +115,31 @@ Results are cached in-process for 5 minutes, keyed by an HMAC fingerprint of the
 
 A successful listing proves the credential works for discovery. It doesn't prove every listed model can be invoked; some providers advertise retired or quota-walled models with no lifecycle field to filter on.
 
+## Model aliases
+
+Some providers publish rolling alias ids — pointers they retarget over time (`gemini-flash-latest`), distinct from dated snapshots (`gemini-2.5-pro-002`). `alias_fact()` classifies an id against the provider's recorded naming convention, with no credential and no network call:
+
+```python
+from keycall import alias_fact
+
+fact = alias_fact(provider="openai", model_id="gpt-5.3-chat-latest")
+if fact is not None:
+    print(fact.convention, fact.maintained, fact.verified, fact.note)
+```
+
+It returns an `AliasFact` only when the id matches a convention KeyCall's catalog records, and `None` otherwise — a dated id, and any provider with no recorded convention, gets no guess. An unknown provider name raises `UNSUPPORTED_PROVIDER`, the same as constructing a client would. `AliasFact` carries `provider`, `model_id`, `convention` (which rule matched), `maintained`, `verified` (the evidence date), and `note` (one sentence of the evidence).
+
+`maintained` is the per-provider fact that makes this more than a shape check, because alias reliability inverts between providers:
+
+| Provider | Recorded convention | `maintained` |
+|---|---|---|
+| Gemini | `-latest` suffix | `True` — Gemini keeps these aimed at a live model (verified 2026-08-09); they're the ids KeyCall's own verify walk tries first there |
+| OpenAI | `-chat-latest` suffix | `False` — the family was observed retired wholesale on 2026-08-10 while dated models answered |
+
+Providers not in the table have no recorded convention, so every id returns `None` there. A recorded convention is dated evidence, re-verified by a live probe on every release.
+
+`list_models()` attaches the same fact to each model as `Model.alias`, populated only where a convention matches, and the viewer's Models tab badges those rows with the evidence a hover away. Whether to prefer, avoid, or exclude alias ids stays your decision — the fact says what the id is, never what to do with it.
+
 ## Generating text
 
 ```python

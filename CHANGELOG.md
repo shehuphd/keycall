@@ -4,6 +4,12 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-08-29
+
+### Added
+
+- **`alias_fact()` classifies rolling-alias model ids from recorded, per-provider evidence.** `keycall.alias_fact(provider, model_id)` needs no credential and returns an `AliasFact` (convention matched, whether the provider maintains the alias aimed at a live model, the evidence date, and a one-sentence note) only when the id matches a convention the catalog records — currently OpenAI's `-chat-latest` family (observed retired wholesale, 2026-08-10) and Gemini's maintained `-latest` aliases (verified 2026-08-09). Everything else returns `None`: a dated id, and any provider with no recorded convention, gets no guess. An unknown provider raises `UNSUPPORTED_PROVIDER`. `Model` gains the same fact as `Model.alias` at discovery, the viewer's Models tab badges matching rows with the evidence on hover, and a live drift probe verifies the recorded conventions still hold on every release.
+
 ## [1.5.0] — 2026-08-29
 
 ### Added
@@ -401,6 +407,7 @@ First release. Key validation, model discovery and filtering, and text generatio
 - Perplexity's Sonar models aren't API-discoverable and are maintained in the bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
+[1.6.0]: https://github.com/shehuphd/keycall/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/shehuphd/keycall/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/shehuphd/keycall/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/shehuphd/keycall/compare/v1.3.0...v1.3.1

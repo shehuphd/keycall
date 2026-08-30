@@ -47,6 +47,19 @@ class SamplingConstraint:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class AliasConvention:
+    """One recorded rolling-alias naming convention for a provider, with
+    the dated evidence behind it. ``maintained`` is per-provider fact, not
+    a property of alias-ness: Gemini keeps its aliases aimed at a live
+    model, while OpenAI's -chat-latest family was observed retired."""
+
+    suffix: str
+    maintained: bool | None
+    verified: str
+    note: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ProviderCapabilities:
     """What a provider can do, as maintained catalog data rather than a
     constant in code. Capability claims are evidence-backed: each entry
@@ -103,6 +116,10 @@ class ResolvedProvider:
     # the provider's own API host, pinned from live evidence.
     video_download_hosts: tuple[str, ...] = ()
     capabilities: ProviderCapabilities = ProviderCapabilities()
+    # Rolling-alias naming conventions, present only where the catalog
+    # records live evidence for one. No entry means "no recorded
+    # convention", never "no aliases exist".
+    alias_conventions: tuple[AliasConvention, ...] = ()
 
 
 @lru_cache(maxsize=1)
@@ -354,6 +371,15 @@ def resolve_provider(
             min_max_output_tokens=profile.get("min_max_output_tokens"),
             video_download_hosts=tuple(profile.get("video_download_hosts", ())),
             capabilities=_parse_capabilities(profile),
+            alias_conventions=tuple(
+                AliasConvention(
+                    suffix=str(entry["suffix"]),
+                    maintained=entry.get("maintained"),
+                    verified=str(entry.get("verified", "")),
+                    note=str(entry.get("note", "")),
+                )
+                for entry in profile.get("alias_conventions", ())
+            ),
         )
 
     # Unknown name: only valid as an explicit custom openai-compatible target.

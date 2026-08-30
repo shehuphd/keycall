@@ -1869,3 +1869,91 @@ def test_live_prompt_caching_anthropic_and_openai():
     # openai never reaches `inconclusive` above (only anthropic's branch
     # appends to it) — a miss there already raised via `assert hit`.
     assert checked or inconclusive, "no anthropic or openai target in the live source"
+
+
+def test_live_alias_convention_evidence_still_holds():
+    """Capability-drift probe for the catalog's alias_conventions evidence,
+    which alias_fact() and Model.alias serve to consumers (rates bakes it
+    into its ledger at build time):
+
+    - Gemini, maintained=True: a -latest alias must answer a live
+      generation, since the catalog says Gemini keeps those aimed at a
+      live model (verified 2026-08-09).
+    - OpenAI, maintained=False: the -chat-latest family was observed
+      retired wholesale (2026-08-10). If a listed -chat-latest id answers
+      a generation again, that claim has drifted — update the openai
+      alias_conventions entry, the USAGE/README alias notes, and this
+      probe. A family absent from the listing altogether is consistent
+      with retirement and passes with a printed note.
+
+    Probed through the ordinary client (the claim is about which ids
+    answer, not about wire parsing)."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+
+    from keycall import KeyCall, Message, ModelCategory, TextInput
+
+    targets, _ = load_targets(source)
+    probed = []
+
+    gemini = next((t for t in targets if t.provider == "gemini"), None)
+    if gemini is not None:
+        client = KeyCall(provider="gemini", api_key=gemini.key, read_timeout=120)
+        try:
+            try:
+                client.generate_text(
+                    model="gemini-flash-latest",
+                    messages=[Message(role="user", content=[TextInput(text="Say ok.")])],
+                    max_output_tokens=200,
+                )
+                probed.append("gemini")
+            except KeyCallError as error:
+                # Only a model-is-gone class of refusal is drift
+                # evidence; a transient (overload, rate limit, timeout) says
+                # nothing about whether the alias is maintained.
+                if error.retryable:
+                    print(f"gemini probe inconclusive (transient: {error.code.value})")
+                else:
+                    raise AssertionError(
+                        f"capability drift: gemini-flash-latest was refused "
+                        f"({error.code.value}) — re-verify the gemini "
+                        "alias_conventions entry (maintained=True, 2026-08-09)"
+                    ) from error
+        finally:
+            client.close()
+
+    openai = next((t for t in targets if t.provider == "openai"), None)
+    if openai is not None:
+        client = KeyCall(provider="openai", api_key=openai.key, read_timeout=120)
+        try:
+            listed = client.list_models(categories={ModelCategory.TEXT_GENERATION})
+            chat_latest = [m.id for m in listed.models if m.id.endswith("-chat-latest")]
+            if not chat_latest:
+                print("openai lists no -chat-latest ids; consistent with the retirement claim")
+            else:
+                answered = []
+                for model_id in sorted(chat_latest, reverse=True)[:2]:
+                    try:
+                        client.generate_text(
+                            model=model_id,
+                            messages=[
+                                Message(role="user", content=[TextInput(text="Say ok.")])
+                            ],
+                            max_output_tokens=16,
+                        )
+                        answered.append(model_id)
+                    except KeyCallError:
+                        pass
+                assert not answered, (
+                    f"capability drift: {answered} answered a generation, but the catalog "
+                    "records OpenAI's -chat-latest family as retired (maintained=False, "
+                    "2026-08-10) — re-verify and update the openai alias_conventions "
+                    "entry, the USAGE/README alias notes, and this probe"
+                )
+            probed.append("openai")
+        finally:
+            client.close()
+
+    if not probed:
+        pytest.skip("no gemini or openai target in the live source")

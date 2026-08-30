@@ -668,7 +668,23 @@ async function loadModelsInner(refresh) {
     : "";
   data.models.forEach((m) => {
     const row = document.createElement("tr");
-    row.appendChild(td(m.id));
+    const idCell = td(m.id);
+    // Badge only where the server sent an alias fact: the id matches the
+    // provider's recorded rolling-alias convention. No fact, no badge —
+    // the page never infers alias-ness from the id's shape itself.
+    if (m.alias) {
+      const badge = document.createElement("span");
+      badge.className = "alias-badge";
+      badge.textContent = "alias";
+      badge.title =
+        (m.alias.maintained === false
+          ? "A rolling alias the provider was seen retiring. "
+          : m.alias.maintained === true
+            ? "A rolling alias the provider keeps aimed at a live model. "
+            : "A rolling alias. ") + m.alias.note;
+      idCell.appendChild(badge);
+    }
+    row.appendChild(idCell);
     row.appendChild(td(m.categories.map(categoryLabel).join(", ")));
     row.appendChild(td(m.classification_source));
     row.appendChild(

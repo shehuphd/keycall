@@ -224,6 +224,19 @@ def _model_dict(model: Any) -> dict[str, Any]:
         "context_limit": model.context_limit,
         "classification_source": model.classification_source,
         "warnings": list(model.warnings),
+        # Present only when the id matches the provider's recorded
+        # rolling-alias convention; null otherwise, so the page can badge
+        # aliases without inventing facts for providers with no convention.
+        "alias": (
+            {
+                "convention": model.alias.convention,
+                "maintained": model.alias.maintained,
+                "verified": model.alias.verified,
+                "note": model.alias.note,
+            }
+            if model.alias is not None
+            else None
+        ),
     }
 
 

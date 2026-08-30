@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 import httpx
 
-from . import _cache, _capabilities, _tracing
+from . import _cache, _capabilities, _classify, _tracing
 from ._cache import CachedModels
 from ._credential import Credential
 from ._enums import ModelCategory, ProviderProtocol
@@ -331,6 +331,14 @@ class _BaseClient:
                     f"{_MAX_LIST_PAGES}-page limit; this list is truncated"
                 ),
             )
+        # One annotation site for both clients, before caching, so cached
+        # reads carry the fact too. Only ids matching a recorded convention
+        # gain one; everything else keeps alias=None.
+        if self._resolved.alias_conventions:
+            models = [
+                dataclasses.replace(model, alias=_classify.alias_fact(self.provider, model.id))
+                for model in models
+            ]
         cached = CachedModels(
             models=tuple(models), fetched_at=datetime.now(timezone.utc), warnings=warnings
         )

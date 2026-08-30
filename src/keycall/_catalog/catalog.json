@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.08.29.1",
+  "catalog_version": "2026.08.29.2",
   "verified_at": "2026-08-10T00:00:00Z",
   "providers": {
     "openai": {
@@ -38,6 +38,14 @@
         }
       },
       "provider_request_id_header": "x-request-id",
+      "alias_conventions": [
+        {
+          "suffix": "-chat-latest",
+          "maintained": false,
+          "verified": "2026-08-10",
+          "note": "A legacy rolling-alias family being retired wholesale: on 2026-08-10 all four advertised -chat-latest ids were dead (two unknown to the API, two newly deprecated) while the dated models answered."
+        }
+      ],
       "capabilities": {
         "tool_calling": true,
         "web_search": true,
@@ -207,6 +215,14 @@
         }
       },
       "provider_request_id_header": null,
+      "alias_conventions": [
+        {
+          "suffix": "-latest",
+          "maintained": true,
+          "verified": "2026-08-09",
+          "note": "Gemini maintains its -latest aliases aimed at a live model: on 2026-08-09 the first six dated text models advertised to a new key were all withdrawn while the aliases answered."
+        }
+      ],
       "capabilities": {
         "tool_calling": true,
         "web_search": true,
@@ -500,7 +516,9 @@
       "models": [
         {
           "id": "grok-voice-latest",
-          "categories": ["realtime"]
+          "categories": [
+            "realtime"
+          ]
         }
       ]
     },
@@ -528,7 +546,9 @@
       "models": [
         {
           "id": "universal-3-5-pro",
-          "categories": ["transcription"]
+          "categories": [
+            "transcription"
+          ]
         }
       ],
       "capabilities": {
@@ -561,11 +581,15 @@
       "models": [
         {
           "id": "nova-3",
-          "categories": ["transcription"]
+          "categories": [
+            "transcription"
+          ]
         },
         {
           "id": "nova-2",
-          "categories": ["transcription"]
+          "categories": [
+            "transcription"
+          ]
         }
       ],
       "capabilities": {

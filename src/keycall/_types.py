@@ -16,6 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 from ._enums import ModelCategory, Operation
 
 __all__ = [
+    "AliasFact",
     "AudioInput",
     "AudioOutput",
     "Citation",
@@ -891,6 +892,25 @@ class Usage:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class AliasFact:
+    """This model id is a rolling alias per its provider's recorded naming
+    convention: a pointer the provider retargets over time, not a dated
+    snapshot. ``maintained`` is the per-provider liveness fact — ``True``
+    where the provider keeps the alias aimed at a live model (Gemini),
+    ``False`` where the family was observed retired (OpenAI's
+    ``-chat-latest``), ``None`` where the convention is recorded but
+    liveness is unverified. ``verified`` dates the evidence; ``note``
+    carries one sentence of it."""
+
+    provider: str
+    model_id: str
+    convention: str
+    maintained: bool | None
+    verified: str
+    note: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Model:
     id: str
     provider: str
@@ -915,6 +935,10 @@ class Model:
     capabilities: frozenset[str] = frozenset()
     classification_source: str = "unknown"
     warnings: tuple[str, ...] = ()
+    # Present only when the id matches a recorded rolling-alias convention
+    # for this provider. None covers both "dated/pinned id" and "no
+    # convention recorded" — absent, never a guess.
+    alias: AliasFact | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

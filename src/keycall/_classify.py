@@ -9,8 +9,37 @@ silently enter the default text picker.
 from __future__ import annotations
 
 from ._enums import ModelCategory
+from ._registry import resolve_provider
+from ._types import AliasFact
 
-__all__ = ["classify_model_id"]
+__all__ = ["alias_fact", "classify_model_id"]
+
+
+def alias_fact(provider: str, model_id: str) -> AliasFact | None:
+    """Whether ``model_id`` is a rolling alias under ``provider``'s
+    recorded naming convention.
+
+    Keyless: reads only the bundled catalog's convention evidence, so a
+    build pipeline can classify ids without holding any credential.
+    Returns an :class:`AliasFact` only when the id matches a recorded
+    convention; ``None`` otherwise, covering both a dated/pinned id and a
+    provider with no recorded convention — absent, never a guess. An
+    unknown provider name raises ``UNSUPPORTED_PROVIDER``, the same as
+    client construction would.
+    """
+    resolved = resolve_provider(provider)
+    lowered = model_id.lower()
+    for convention in resolved.alias_conventions:
+        if lowered.endswith(convention.suffix.lower()):
+            return AliasFact(
+                provider=resolved.provider,
+                model_id=model_id,
+                convention=f"{convention.suffix} suffix",
+                maintained=convention.maintained,
+                verified=convention.verified,
+                note=convention.note,
+            )
+    return None
 
 # Ordered: first match wins. More specific non-text signals come before the
 # broad text-family patterns so "gpt-image-1" never classifies as text.
