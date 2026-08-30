@@ -1957,3 +1957,87 @@ def test_live_alias_convention_evidence_still_holds():
 
     if not probed:
         pytest.skip("no gemini or openai target in the live source")
+
+
+def test_live_compat_reasoning_token_reporting_still_holds():
+    """Capability-drift probe for reasoning-token reporting on the four
+    openai-compatible providers, which Usage.reasoning_tokens normalizes
+    from completion_tokens_details.reasoning_tokens:
+
+    - deepseek, moonshot, and xai report the field on their reasoning
+      models (verified 2026-08-30: deepseek-v4-pro, kimi-k3, and
+      grok-4.20-0309-reasoning all returned positive counts).
+    - perplexity reports no reasoning-token count at all: its raw usage
+      object carries cost fields and plain token counts, with thinking
+      emitted as visible text (verified against the raw API 2026-08-30
+      on sonar-reasoning-pro). If a count starts arriving, that claim
+      has drifted - update the USAGE reasoning-tokens note and this
+      probe.
+
+    A transient error, or a preferred model missing from the live
+    listing, is printed as inconclusive; only a live answer with the
+    wrong reporting shape is drift evidence."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+
+    from keycall import KeyCall, Message, TextInput
+
+    preferred = {
+        "deepseek": ("deepseek-v4-pro",),
+        "moonshot": ("kimi-k3", "kimi-k2.6"),
+        "xai": ("grok-4.20-0309-reasoning", "grok-4.6"),
+        "perplexity": ("sonar-reasoning-pro", "sonar-reasoning"),
+    }
+    reporters = {"deepseek", "moonshot", "xai"}
+    targets, _ = load_targets(source)
+    probed = []
+    for target in targets:
+        wanted = preferred.get(target.provider)
+        if wanted is None:
+            continue
+        client = KeyCall(provider=target.provider, api_key=target.key, read_timeout=300)
+        try:
+            listed = {m.id for m in client.list_models().models}
+            model = next((m for m in wanted if m in listed), None)
+            if model is None:
+                print(
+                    f"{target.provider} probe inconclusive: none of {wanted} "
+                    "in the live listing - refresh the probe's model ids"
+                )
+                continue
+            try:
+                result = client.generate_text(
+                    model=model,
+                    messages=[Message(role="user", content=[TextInput(text="What is 17*23?")])],
+                    max_output_tokens=2048,
+                )
+            except KeyCallError as error:
+                if error.retryable:
+                    print(
+                        f"{target.provider} probe inconclusive "
+                        f"(transient: {error.code.value})"
+                    )
+                    continue
+                raise
+            reported = result.usage.reasoning_tokens
+            if target.provider in reporters:
+                assert isinstance(reported, int) and reported > 0, (
+                    f"capability drift: {target.provider} ({model}) answered without a "
+                    "reasoning-token count, but the adapter's evidence says it reports "
+                    "completion_tokens_details.reasoning_tokens (2026-08-30) - re-verify "
+                    "and update the USAGE reasoning-tokens note and this probe"
+                )
+            else:
+                assert reported is None, (
+                    f"capability drift: {target.provider} ({model}) reported "
+                    f"reasoning_tokens={reported}, but the recorded evidence says it "
+                    "sends no reasoning-token count (raw-verified 2026-08-30) - update "
+                    "the USAGE reasoning-tokens note and this probe"
+                )
+            probed.append(target.provider)
+        finally:
+            client.close()
+
+    if not probed:
+        pytest.skip("no compat-provider target in the live source")

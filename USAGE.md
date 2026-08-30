@@ -492,6 +492,10 @@ On xAI, naming an effort switches the request to `/v1/responses` the same way `w
 
 DeepSeek accepts the parameter and ignores it the same way (HTTP 200, unmoved token counts), and Moonshot's thinking model wasn't available to verify — so on DeepSeek, Moonshot, and custom targets, `reasoning_effort` raises `UNSUPPORTED_OPERATION` before any network call rather than shipping a knob that does nothing.
 
+### Reasoning-token counts
+
+`result.usage.reasoning_tokens` carries how many tokens the model spent thinking, wherever the provider reports a count: OpenAI, Gemini, DeepSeek, Moonshot, and xAI, streaming and not (each verified live 2026-08-30 or earlier). It stays `None` where no count is sent — Perplexity's reasoning models emit their thinking as visible text in the reply instead, and Anthropic reports thinking spend inside `output_tokens` without a separate figure. As everywhere in `Usage`, `None` means "the provider didn't report a value" and `0` means it reported zero.
+
 ## Realtime sessions
 
 `realtime()` opens a live WebSocket conversation with a voice model — one connection, many turns, audio and words streaming back as they are generated:

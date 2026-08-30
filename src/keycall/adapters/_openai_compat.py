@@ -118,11 +118,13 @@ class CompatStreamAssembler(StreamAssembler):
         usage_raw = payload.get("usage")
         if isinstance(usage_raw, dict) and usage_raw.get("completion_tokens") is not None:
             details = usage_raw.get("prompt_tokens_details") or {}
+            completion_details = usage_raw.get("completion_tokens_details") or {}
             self.usage = Usage(
                 input_tokens=usage_raw.get("prompt_tokens"),
                 output_tokens=usage_raw.get("completion_tokens"),
                 cached_input_tokens=details.get("cached_tokens")
                 or usage_raw.get("prompt_cache_hit_tokens"),
+                reasoning_tokens=completion_details.get("reasoning_tokens"),
                 total_tokens=usage_raw.get("total_tokens"),
             )
             self.usage_reported = True
@@ -424,11 +426,13 @@ class OpenAICompatibleAdapter(ProviderAdapter):
         usage_raw = payload.get("usage")
         if isinstance(usage_raw, dict):
             details = usage_raw.get("prompt_tokens_details") or {}
+            completion_details = usage_raw.get("completion_tokens_details") or {}
             usage = Usage(
                 input_tokens=usage_raw.get("prompt_tokens"),
                 output_tokens=usage_raw.get("completion_tokens"),
                 cached_input_tokens=details.get("cached_tokens")
                 or usage_raw.get("prompt_cache_hit_tokens"),
+                reasoning_tokens=completion_details.get("reasoning_tokens"),
                 total_tokens=usage_raw.get("total_tokens"),
                 provider_units=_provider_units(usage_raw),
             )

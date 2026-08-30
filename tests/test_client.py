@@ -174,6 +174,83 @@ def test_invalid_key_maps_to_typed_error_without_leaking_credential():
     assert CANARY not in repr(error)
 
 
+# Each provider's observed bad-key rejection: status code and body shape as the
+# provider sends them, key echoes included where the provider echoes the key.
+# A provider added to the catalog without an entry here fails the test below.
+BAD_KEY_RESPONSES = {
+    "openai": (401, {"error": {"message": f"Incorrect API key provided: {CANARY}"}}),
+    "anthropic": (
+        401,
+        {
+            "type": "error",
+            "error": {"type": "authentication_error", "message": "invalid x-api-key"},
+        },
+    ),
+    "gemini": (
+        400,
+        {
+            "error": {
+                "code": 400,
+                "message": "API key not valid. Please pass a valid API key.",
+                "status": "INVALID_ARGUMENT",
+            }
+        },
+    ),
+    "deepseek": (
+        401,
+        {
+            "error": {
+                "message": f"Authentication Fails, Your api key: {CANARY} is invalid",
+                "type": "authentication_error",
+            }
+        },
+    ),
+    "perplexity": (401, {"error": {"message": "Unauthorized", "type": "unauthorized"}}),
+    "moonshot": (
+        401,
+        {
+            "error": {
+                "message": "auth failed: invalid api key",
+                "type": "invalid_authentication_error",
+            }
+        },
+    ),
+    "xai": (401, {"error": f"Incorrect API key provided: {CANARY}", "code": "..."}),
+    "assemblyai": (401, {"error": "Authentication error, API token missing/invalid"}),
+    "deepgram": (401, {"err_code": "INVALID_AUTH", "err_msg": "Invalid credentials."}),
+}
+
+
+def _all_providers():
+    from keycall._registry import supported_providers
+
+    return supported_providers()
+
+
+@pytest.mark.parametrize("provider", _all_providers())
+def test_every_provider_maps_bad_key_to_typed_error(provider):
+    assert provider in BAD_KEY_RESPONSES, (
+        f"{provider} has no recorded bad-key response; add its observed "
+        "rejection shape to BAD_KEY_RESPONSES so its mapping is covered"
+    )
+    status, body = BAD_KEY_RESPONSES[provider]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json=body)
+
+    client = KeyCall(
+        provider=provider, api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(KeyCallError) as excinfo:
+        client.list_models(refresh=True)
+    error = excinfo.value
+    client.close()
+    assert error.code is ErrorCode.INVALID_API_KEY
+    assert not error.retryable
+    assert CANARY not in str(error)
+    assert CANARY not in repr(error)
+
+
 @pytest.mark.anyio
 async def test_async_client_parity():
     async with AsyncKeyCall(

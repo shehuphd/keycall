@@ -4,6 +4,12 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-08-30
+
+### Added
+
+- **`Usage.reasoning_tokens` now populates on the openai-compatible providers.** DeepSeek, Moonshot, and xAI report `completion_tokens_details.reasoning_tokens` on their reasoning models, and the count now normalizes into `usage.reasoning_tokens`, streaming and not, matching what OpenAI and Gemini already reported. Perplexity sends no count (its reasoning models emit their thinking as visible reply text), so it stays `None` there; a live probe watches all four for drift.
+
 ## [1.6.1] — 2026-08-30
 
 ### Changed
@@ -413,6 +419,7 @@ First release. Key validation, model discovery and filtering, and text generatio
 - Perplexity's Sonar models aren't API-discoverable and are maintained in the bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
+[1.7.0]: https://github.com/shehuphd/keycall/compare/v1.6.1...v1.7.0
 [1.6.1]: https://github.com/shehuphd/keycall/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/shehuphd/keycall/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/shehuphd/keycall/compare/v1.4.0...v1.5.0

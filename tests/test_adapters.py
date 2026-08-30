@@ -367,6 +367,63 @@ def test_compat_adapter_string_content_and_usage():
     assert result.usage.total_tokens == 8
 
 
+COMPAT_PROVIDERS = ("deepseek", "moonshot", "xai", "perplexity")
+
+
+def compat_usage_handler(usage):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "test-model"}]})
+        return httpx.Response(
+            200,
+            json={
+                "model": "test-model",
+                "choices": [{"message": {"content": "done"}, "finish_reason": "stop"}],
+                "usage": usage,
+            },
+        )
+
+    return handler
+
+
+@pytest.mark.parametrize("provider", COMPAT_PROVIDERS)
+def test_compat_reasoning_tokens_normalized(provider):
+    usage = {
+        "prompt_tokens": 6,
+        "completion_tokens": 9,
+        "total_tokens": 15,
+        "completion_tokens_details": {"reasoning_tokens": 7},
+    }
+    result = run_generation(provider, compat_usage_handler(usage))
+    assert result.usage.reasoning_tokens == 7
+
+
+@pytest.mark.parametrize("provider", COMPAT_PROVIDERS)
+@pytest.mark.parametrize(
+    "usage_extra",
+    [
+        {},  # no completion_tokens_details at all
+        {"completion_tokens_details": None},  # explicit null
+        {"completion_tokens_details": {}},  # details without the field
+    ],
+)
+def test_compat_unreported_reasoning_tokens_stay_none(provider, usage_extra):
+    usage = {"prompt_tokens": 6, "completion_tokens": 9, "total_tokens": 15, **usage_extra}
+    result = run_generation(provider, compat_usage_handler(usage))
+    assert result.usage.reasoning_tokens is None
+
+
+def test_compat_reasoning_tokens_zero_stays_zero():
+    usage = {
+        "prompt_tokens": 6,
+        "completion_tokens": 9,
+        "total_tokens": 15,
+        "completion_tokens_details": {"reasoning_tokens": 0},
+    }
+    result = run_generation("deepseek", compat_usage_handler(usage))
+    assert result.usage.reasoning_tokens == 0
+
+
 def test_anthropic_paginated_list():
     pages = [
         {

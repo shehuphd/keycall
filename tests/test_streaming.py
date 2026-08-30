@@ -296,6 +296,52 @@ def test_compat_stream_done_terminal_and_stream_options():
     assert result.finish_reason == "stop"
 
 
+@pytest.mark.parametrize("provider", ("deepseek", "moonshot", "xai"))
+def test_compat_stream_reasoning_tokens_normalized(provider):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return stream_response(
+            sse(
+                (None, compat_chunk("o")),
+                (None, compat_chunk("k", finish="stop", usage={
+                    "prompt_tokens": 3,
+                    "completion_tokens": 12,
+                    "total_tokens": 15,
+                    "completion_tokens_details": {"reasoning_tokens": 10},
+                })),
+                (None, "[DONE]"),
+            )
+        )
+
+    with make_client(provider, handler).stream_text(
+        model="test-model", messages=messages()
+    ) as stream:
+        list(stream)
+        result = stream.result()
+    assert result.usage.reasoning_tokens == 10
+    assert result.usage.output_tokens == 12
+
+
+def test_compat_stream_unreported_reasoning_tokens_stay_none():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return stream_response(
+            sse(
+                (None, compat_chunk("ok", finish="stop", usage={
+                    "prompt_tokens": 3,
+                    "completion_tokens": 2,
+                    "total_tokens": 5,
+                })),
+                (None, "[DONE]"),
+            )
+        )
+
+    with make_client("deepseek", handler).stream_text(
+        model="test-model", messages=messages()
+    ) as stream:
+        list(stream)
+        result = stream.result()
+    assert result.usage.reasoning_tokens is None
+
+
 def test_custom_target_gets_no_stream_options():
     captured = {}
 

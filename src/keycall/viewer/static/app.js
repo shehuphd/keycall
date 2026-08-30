@@ -3457,11 +3457,12 @@ function usageLabel(usage) {
   // Providers report different fields: a missing total is not a missing
   // count, so fall back to the parts rather than claiming nothing arrived.
   if (!usage) return "usage unreported";
-  if (usage.total_tokens != null) return `${usage.total_tokens} tokens`;
+  const reasoning = usage.reasoning_tokens != null ? ` (${usage.reasoning_tokens} reasoning)` : "";
+  if (usage.total_tokens != null) return `${usage.total_tokens} tokens${reasoning}`;
   const parts = [];
   if (usage.input_tokens != null) parts.push(`${usage.input_tokens} in`);
   if (usage.output_tokens != null) parts.push(`${usage.output_tokens} out`);
-  return parts.length ? `${parts.join(" / ")} tokens` : "usage unreported";
+  return parts.length ? `${parts.join(" / ")} tokens${reasoning}` : "usage unreported";
 }
 
 function renderGeneration(out, data) {
