@@ -4,6 +4,12 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] — 2026-08-30
+
+### Changed
+
+- **The Models tab's alias-badge evidence appears the instant you hover.** The badge's detail is now a CSS tooltip anchored to the badge, replacing the native title tooltip and the second-long delay the browser imposes on it; the same text rides `aria-label` for screen readers.
+
 ## [1.6.0] — 2026-08-29
 
 ### Added
@@ -407,6 +413,7 @@ First release. Key validation, model discovery and filtering, and text generatio
 - Perplexity's Sonar models aren't API-discoverable and are maintained in the bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
+[1.6.1]: https://github.com/shehuphd/keycall/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/shehuphd/keycall/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/shehuphd/keycall/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/shehuphd/keycall/compare/v1.3.1...v1.4.0

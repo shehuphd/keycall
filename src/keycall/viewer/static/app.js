@@ -676,12 +676,18 @@ async function loadModelsInner(refresh) {
       const badge = document.createElement("span");
       badge.className = "alias-badge";
       badge.textContent = "alias";
-      badge.title =
+      // data-tip + a CSS :hover tooltip, not the title attribute: the
+      // browser's own ~1s title delay can't be tuned, and hover popups
+      // must appear with zero added delay. aria-label carries the same
+      // text for screen readers.
+      const tip =
         (m.alias.maintained === false
           ? "A rolling alias the provider was seen retiring. "
           : m.alias.maintained === true
             ? "A rolling alias the provider keeps aimed at a live model. "
             : "A rolling alias. ") + m.alias.note;
+      badge.dataset.tip = tip;
+      badge.setAttribute("aria-label", tip);
       idCell.appendChild(badge);
     }
     row.appendChild(idCell);

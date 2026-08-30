@@ -175,8 +175,12 @@ tbody tr.clickable:hover { background: var(--card); }
 .pill.err { color: var(--err); border: 1px solid var(--err); }
 .pill.warn { color: var(--warn); border: 1px solid var(--warn); }
 .pill.pending { color: var(--muted); border: 1px solid var(--border); }
-/* Rolling-alias marker on a model row; hover carries the recorded evidence. */
+/* Rolling-alias marker on a model row; hover carries the recorded evidence.
+   The tooltip is a CSS :hover ::after so it appears with zero added delay
+   (the native title attribute's ~1s browser delay can't be tuned), anchored
+   to the badge itself. */
 .alias-badge {
+  position: relative;
   font-size: 0.7rem;
   padding: 0.05rem 0.4rem;
   border-radius: 999px;
@@ -185,6 +189,23 @@ tbody tr.clickable:hover { background: var(--card); }
   margin-left: 0.5rem;
   cursor: help;
   white-space: nowrap;
+}
+.alias-badge:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  left: 0;
+  z-index: 10;
+  width: 22rem;
+  max-width: 60vw;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  white-space: normal;
 }
 
 .card {
