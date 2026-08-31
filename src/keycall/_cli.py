@@ -17,6 +17,7 @@ import difflib
 import os
 import re
 import sys
+from typing import TextIO
 
 from ._sanitize import safe_display_name
 from ._sources import SourceError, load_targets, remind_deletion
@@ -32,7 +33,7 @@ _COMMANDS = ("verify", "view")
 _GREEN, _RED, _YELLOW = "32", "31", "33"
 
 
-def _color_on(stream: object) -> bool:
+def _color_on(stream: TextIO) -> bool:
     if os.environ.get("NO_COLOR") is not None:
         return False
     if os.environ.get("TERM") == "dumb":
@@ -41,7 +42,7 @@ def _color_on(stream: object) -> bool:
     return bool(isatty and isatty())
 
 
-def _paint(text: str, code: str, stream: object) -> str:
+def _paint(text: str, code: str, stream: TextIO) -> str:
     if not _color_on(stream):
         return text
     return f"\x1b[{code}m{text}\x1b[0m"
@@ -50,7 +51,7 @@ def _paint(text: str, code: str, stream: object) -> str:
 _MARKER_COLORS = {"✓": _GREEN, "✗": _RED, "!": _YELLOW}
 
 
-def _emit(line: str, stream: object) -> None:
+def _emit(line: str, stream: TextIO) -> None:
     """Print one report line, coloring only its leading ✓/✗/! marker."""
     stripped = line.lstrip()
     marker = stripped[:1]
@@ -90,13 +91,17 @@ def _suggest(token: str, candidates: list[str]) -> str | None:
 
 
 _KEY_GUIDANCE = (
-    "Anything typed on the command line is saved in your shell history, so "
-    "treat that key as exposed: clear the history line, and rotate the key "
-    "if it's live.",
-    "keycall asks for keys in safer ways. Run `keycall verify` and paste the "
-    "key at the hidden prompt, point at a file with "
-    "`keycall verify --source keys.toml`, or name an environment variable "
-    "with `keycall verify --source env:MY_KEY`.",
+    (
+        "Anything typed on the command line is saved in your shell history, so "
+        "treat that key as exposed: clear the history line, and rotate the key "
+        "if it's live."
+    ),
+    (
+        "keycall asks for keys in safer ways. Run `keycall verify` and paste the "
+        "key at the hidden prompt, point at a file with "
+        "`keycall verify --source keys.toml`, or name an environment variable "
+        "with `keycall verify --source env:MY_KEY`."
+    ),
 )
 
 
@@ -120,9 +125,9 @@ def _option_names(parser: argparse.ArgumentParser) -> list[str]:
     flag surfaces on the top-level parser even when it was meant for a
     subcommand, so the suggestion pool has to span all of them."""
     names: list[str] = []
-    for action in parser._actions:  # noqa: SLF001 - argparse offers no public listing
+    for action in parser._actions:  # argparse offers no public listing
         names.extend(s for s in action.option_strings if s.startswith("--"))
-        if isinstance(action, argparse._SubParsersAction):  # noqa: SLF001
+        if isinstance(action, argparse._SubParsersAction):
             for sub in action.choices.values():
                 names.extend(_option_names(sub))
     return sorted(set(names))
@@ -169,9 +174,11 @@ def _usage_error(error: _UsageError) -> int:
         hidden = _looks_like_key(token)
         display = f'"{token[:3]}…" (hidden — it looks like an API key)' if hidden else f'"{token}"'
         pieces = [
-            f"{display} isn't a keycall command. keycall knows two: "
-            "`verify` checks keys against their live providers, and `view` "
-            "opens the local viewer in your browser."
+            (
+                f"{display} isn't a keycall command. keycall knows two: "
+                "`verify` checks keys against their live providers, and `view` "
+                "opens the local viewer in your browser."
+            )
         ]
         if hidden:
             pieces.extend(_KEY_GUIDANCE)
@@ -183,8 +190,10 @@ def _usage_error(error: _UsageError) -> int:
         name, value = bad_int.groups()
         example = {"--port": "8823"}.get(name, "4")
         pieces = [
-            f'{name} needs a whole number, and "{value}" isn\'t one. '
-            f"For example: {name} {example}."
+            (
+                f'{name} needs a whole number, and "{value}" isn\'t one. '
+                f"For example: {name} {example}."
+            )
         ]
     elif needs_value:
         name = needs_value.group(1)
