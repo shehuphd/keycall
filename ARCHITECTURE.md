@@ -76,6 +76,11 @@ Everything between those two points handles the opaque `Credential` wrapper. Sup
 | `_sanitize.py` | Credential scrubbing, request-id and display-name bounding | Depend on TraceAct for safety |
 | `_cache.py` | Process-local TTL model cache keyed by provider + base URL + fingerprint | Persist to disk or outlive the process |
 | `_verify_core.py` | The verify walk shared by CLI and viewer | Hide an attempt or fall through unreported |
+| `_cli.py` | The `keycall` command: verify and view subcommands, the no-command welcome, plain-language usage errors with one confident suggestion, category-only color gated on a terminal and `NO_COLOR` | Echo a token that reads as a pasted key, or print a raw parser dump |
+| `_classify.py` | Conservative model classification and `alias_fact()` rolling-alias facts, both from catalog evidence | Guess a category or an alias convention without recorded evidence |
+| `_capabilities.py` | Typed capability lookups over the catalog's dated per-provider evidence | Answer from anywhere but the bundled catalog |
+| `_credential.py` | The internal redacting credential wrapper, applied at client construction | Reveal the raw key through str, repr, or serialization |
+| `_types.py` + `_enums.py` + `_errors.py` | The public surface's frozen records, closed enums, and typed error codes | Carry provider-specific structures or mutable state |
 | `_tracing.py` | Optional TraceAct spans with every capture flag forced off and both redaction layers forced on | Capture prompts, responses, or credentials |
 
 ## Provider resolution

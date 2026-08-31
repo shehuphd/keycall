@@ -343,3 +343,144 @@ def test_unresolvable_target_is_reported_not_raised():
     assert not result.listed_ok
     assert result.list_error_code == "unsupported_provider"
     assert "base_url" in (result.list_error_message or ""), "say how to fix it"
+
+
+# --- CLI presentation: welcome, humanized errors, color discipline ----------
+
+
+def test_bare_keycall_is_a_welcome_not_a_help_dump(capsys):
+    from keycall import __version__
+
+    exit_code = main([])
+    output = capsys.readouterr()
+    assert exit_code == 0
+    assert __version__ in output.out
+    assert "keycall verify" in output.out
+    assert "keycall view" in output.out
+    assert "usage:" not in output.out
+    assert output.err == ""
+
+
+def test_version_flag(capsys):
+    import pytest as _pytest
+
+    from keycall import __version__
+
+    with _pytest.raises(SystemExit) as excinfo:
+        main(["--version"])
+    assert excinfo.value.code == 0
+    assert __version__ in capsys.readouterr().out
+
+
+def test_unknown_command_gets_one_confident_suggestion(capsys):
+    exit_code = main(["verfy"])
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert output.out == ""
+    assert "isn't a keycall command" in output.err
+    assert "keycall verify" in output.err
+    assert "usage:" not in output.err
+
+
+def test_hopeless_command_gets_no_guess(capsys):
+    exit_code = main(["zzqqxx"])
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert "Perhaps" not in output.err
+    assert "isn't a keycall command" in output.err
+
+
+def test_pasted_key_as_command_is_hidden_with_guidance(capsys):
+    pasted = "AQ.Ab8Pk29xLmNvbTradWQ4d2"
+    exit_code = main([pasted])
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert pasted not in output.err
+    assert pasted not in output.out
+    assert "hidden" in output.err
+    assert "shell history" in output.err
+    assert "env:MY_KEY" in output.err
+
+
+def test_pasted_key_as_extra_argument_is_hidden(capsys):
+    pasted = "sk-proj-Ab8Pk29xLmNvbTradWQ4d2"
+    exit_code = main(["verify", pasted])
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert pasted not in output.err
+    assert pasted not in output.out
+    assert "hidden" in output.err
+
+
+def test_mistyped_flag_suggests_the_intended_one(capsys):
+    exit_code = main(["verify", "--sourc", "keys.toml"])
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert "--source" in output.err
+    assert "usage:" not in output.err
+
+
+def test_flag_abbreviation_is_rejected_not_expanded(tmp_path, capsys):
+    # With abbreviation on, --sour would silently mean --source; the day a
+    # new flag shares the prefix, every script using it breaks. Reject now.
+    exit_code = main(["verify", "--sour", str(tmp_path / "keys.txt")])
+    assert exit_code == 2
+
+
+def test_bad_int_value_reads_as_a_sentence(capsys):
+    exit_code = main(["verify", "--attempts", "abc"])
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert "whole number" in output.err
+    assert "invalid int value" not in output.err
+
+
+def test_flag_missing_its_value_reads_as_a_sentence(capsys):
+    exit_code = main(["verify", "--source"])
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert "needs a value" in output.err
+    assert "expected one argument" not in output.err
+
+
+def test_no_escape_codes_off_tty(capsys):
+    main(["verfy"])
+    output = capsys.readouterr()
+    assert "\x1b[" not in output.err
+    assert "\x1b[" not in output.out
+
+
+def test_color_respects_no_color_even_on_a_tty(monkeypatch):
+    from keycall._cli import _paint
+
+    class FakeTTY:
+        def isatty(self):
+            return True
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert _paint("x", "31", FakeTTY()) == "x"
+    monkeypatch.delenv("NO_COLOR")
+    monkeypatch.delenv("TERM", raising=False)
+    assert _paint("x", "31", FakeTTY()) == "\x1b[31mx\x1b[0m"
+
+
+def test_interactive_prompt_names_every_provider_and_ignores_case(monkeypatch, capsys):
+    from keycall._registry import supported_providers
+    from keycall._sources import load_targets
+
+    prompts = {}
+
+    def fake_input(prompt):
+        prompts["provider"] = prompt
+        return "OpenAI"  # any casing works
+
+    import getpass
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: "sk-canary-interactive-key")
+
+    targets, warnings = load_targets("-")
+    for name in supported_providers():
+        assert name in prompts["provider"]
+    assert targets[0].provider == "openai"
+    assert warnings == []

@@ -27,6 +27,7 @@ keycall-test-keys.*
 !ARCHITECTURE.md
 !CHANGELOG.md
 !CONTRIBUTING.md
+!MANIFEST.md
 
 # Python build/runtime artifacts.
 __pycache__/

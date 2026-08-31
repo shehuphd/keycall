@@ -265,7 +265,13 @@ def load_targets(
     if source == "-":
         import getpass
 
-        prompt_provider = provider or input("Provider: ").strip().lower()
+        if provider:
+            prompt_provider = provider
+        else:
+            from ._registry import supported_providers
+
+            names = ", ".join(supported_providers())
+            prompt_provider = input(f"Provider ({names}): ").strip().lower()
         key = getpass.getpass("API key: ")
         if not key.strip():
             raise SourceError("no key entered")

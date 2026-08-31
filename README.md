@@ -16,22 +16,25 @@ pip install keycall
 
 ## See it work in 30 seconds
 
-No config file, no signup, nothing to write. Export a key you already have and point KeyCall at the variable:
+No config file, no signup, nothing to export. Type the command, name your provider, paste your key:
 
 ```bash
-export OPENAI_API_KEY=...
+keycall verify
 ```
+
+```
+Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram): openai
+API key:
+✓ openai (openai): key accepted, 79 text model(s), list digest 6d356bc3f4c24389, selection rule v4
+```
+
+The provider name is case-insensitive and the key is hidden while you type it. Add `--generate` to also make one small billable call, which reports the model that answered, its position in the provider's own list, the elapsed time, and the tokens spent.
+
+For scripts, skip the prompts by pointing at an environment variable:
 
 ```bash
 keycall verify --provider openai --source env:OPENAI_API_KEY --generate
 ```
-
-```
-✓ OPENAI_API_KEY (openai): key accepted, 79 text model(s), list digest 6d356bc3f4c24389, selection rule v4
-✓ OPENAI_API_KEY: generated with gpt-5.6-luna (filtered position 0, provider-list position 123, 830 ms, total tokens: 18)
-```
-
-That is one command telling you the key is valid, how many text models it can reach, and that a generation came back — including which model answered and its position in the provider's own list. Swap `openai` for `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, or `xai` and it works the same way. An `assemblyai` or `deepgram` key verifies too — leave `--generate` off, since a speech-to-text provider has no text models to generate with.
 
 Prefer to click around? Same key, one word different:
 

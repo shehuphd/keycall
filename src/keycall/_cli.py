@@ -13,11 +13,210 @@ Keys never appear in output.
 from __future__ import annotations
 
 import argparse
+import difflib
+import os
+import re
 import sys
 
 from ._sanitize import safe_display_name
 from ._sources import SourceError, load_targets, remind_deletion
 from ._verify_core import DEFAULT_ATTEMPTS, VerifyResult, run_verify
+
+USAGE_URL = "https://github.com/shehuphd/keycall/blob/main/USAGE.md"
+
+_COMMANDS = ("verify", "view")
+
+# Color marks a fixed category and nothing else: green for a pass, red for
+# a failure, yellow for a warning or an unverified outcome. Codes wrap the
+# finished string last, so width and alignment are computed on plain text.
+_GREEN, _RED, _YELLOW = "32", "31", "33"
+
+
+def _color_on(stream: object) -> bool:
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("TERM") == "dumb":
+        return False
+    isatty = getattr(stream, "isatty", None)
+    return bool(isatty and isatty())
+
+
+def _paint(text: str, code: str, stream: object) -> str:
+    if not _color_on(stream):
+        return text
+    return f"\x1b[{code}m{text}\x1b[0m"
+
+
+_MARKER_COLORS = {"✓": _GREEN, "✗": _RED, "!": _YELLOW}
+
+
+def _emit(line: str, stream: object) -> None:
+    """Print one report line, coloring only its leading ✓/✗/! marker."""
+    stripped = line.lstrip()
+    marker = stripped[:1]
+    code = _MARKER_COLORS.get(marker)
+    if code:
+        indent = line[: len(line) - len(stripped)]
+        line = indent + _paint(marker, code, stream) + stripped[1:]
+    print(line, file=stream)
+
+
+def _warn(message: str) -> None:
+    print(f"{_paint('warning:', _YELLOW, sys.stderr)} {message}", file=sys.stderr)
+
+
+def _fail(message: str) -> None:
+    """One failure sentence to stderr, blank-line spaced so it stands apart."""
+    print(file=sys.stderr)
+    _emit(f"✗ {message}", sys.stderr)
+    print(file=sys.stderr)
+
+
+_KEY_SHAPE = re.compile(r"[A-Za-z0-9._\-]{16,}")
+
+
+def _looks_like_key(token: str) -> bool:
+    """A long unbroken token with digits reads as a pasted credential.
+    Better to hide a harmless value than to echo a live key back into
+    the terminal a second time."""
+    if token.startswith("-"):
+        return False
+    return bool(_KEY_SHAPE.fullmatch(token)) and any(c.isdigit() for c in token)
+
+
+def _suggest(token: str, candidates: list[str]) -> str | None:
+    matches = difflib.get_close_matches(token, candidates, n=1, cutoff=0.6)
+    return matches[0] if matches else None
+
+
+_KEY_GUIDANCE = (
+    "Anything typed on the command line is saved in your shell history, so "
+    "treat that key as exposed: clear the history line, and rotate the key "
+    "if it's live.",
+    "keycall asks for keys in safer ways. Run `keycall verify` and paste the "
+    "key at the hidden prompt, point at a file with "
+    "`keycall verify --source keys.toml`, or name an environment variable "
+    "with `keycall verify --source env:MY_KEY`.",
+)
+
+
+class _UsageError(Exception):
+    def __init__(self, message: str, parser: argparse.ArgumentParser) -> None:
+        super().__init__(message)
+        self.message = message
+        self.parser = parser
+
+
+class _Parser(argparse.ArgumentParser):
+    """Raises instead of printing argparse's raw usage dump, so every
+    parse failure goes through the plain-language renderer below."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise _UsageError(message, self)
+
+
+def _option_names(parser: argparse.ArgumentParser) -> list[str]:
+    """Every --flag this parser or its subcommands accept. An unrecognized
+    flag surfaces on the top-level parser even when it was meant for a
+    subcommand, so the suggestion pool has to span all of them."""
+    names: list[str] = []
+    for action in parser._actions:  # noqa: SLF001 - argparse offers no public listing
+        names.extend(s for s in action.option_strings if s.startswith("--"))
+        if isinstance(action, argparse._SubParsersAction):  # noqa: SLF001
+            for sub in action.choices.values():
+                names.extend(_option_names(sub))
+    return sorted(set(names))
+
+
+def _describe_unrecognized(tokens: list[str], parser: argparse.ArgumentParser) -> list[str]:
+    """Plain-language pieces for tokens argparse couldn't place. The first
+    bad token gets at most one confident guess; a pasted key gets hidden
+    and answered with the safe ways in."""
+    shown = []
+    key_seen = False
+    for token in tokens:
+        if _looks_like_key(token):
+            shown.append(f'"{token[:3]}…" (hidden — it looks like an API key)')
+            key_seen = True
+        else:
+            shown.append(f'"{token}"')
+    pieces = [f"keycall doesn't recognize {', '.join(shown)}."]
+    if key_seen:
+        pieces.extend(_KEY_GUIDANCE)
+    else:
+        first = tokens[0]
+        candidates = _option_names(parser) if first.startswith("-") else list(_COMMANDS)
+        guess = _suggest(first, candidates)
+        if guess:
+            pieces.append(f"Perhaps you meant `{guess}`?")
+    return pieces
+
+
+def _usage_error(error: _UsageError) -> int:
+    """Translate argparse's message into sentences, block-spaced on stderr."""
+    message, parser = error.message, error.parser
+    pieces: list[str]
+
+    unrecognized = re.fullmatch(r"unrecognized arguments: (.+)", message)
+    bad_choice = re.search(r"invalid choice: '(.+?)'", message)
+    bad_int = re.search(r"argument (\S+): invalid int value: '(.+?)'", message)
+    needs_value = re.search(r"argument (\S+?)(?:/\S+)*: expected one argument", message)
+
+    if unrecognized:
+        pieces = _describe_unrecognized(unrecognized.group(1).split(), parser)
+    elif bad_choice:
+        token = bad_choice.group(1)
+        hidden = _looks_like_key(token)
+        display = f'"{token[:3]}…" (hidden — it looks like an API key)' if hidden else f'"{token}"'
+        pieces = [
+            f"{display} isn't a keycall command. keycall knows two: "
+            "`verify` checks keys against their live providers, and `view` "
+            "opens the local viewer in your browser."
+        ]
+        if hidden:
+            pieces.extend(_KEY_GUIDANCE)
+        else:
+            guess = _suggest(token, list(_COMMANDS))
+            if guess:
+                pieces.append(f"Perhaps you meant `keycall {guess}`?")
+    elif bad_int:
+        name, value = bad_int.groups()
+        example = {"--port": "8823"}.get(name, "4")
+        pieces = [
+            f'{name} needs a whole number, and "{value}" isn\'t one. '
+            f"For example: {name} {example}."
+        ]
+    elif needs_value:
+        name = needs_value.group(1)
+        pieces = [f"{name} needs a value right after it. For example: {name} keys.toml."]
+    else:
+        pieces = [f"keycall couldn't read that command ({message})."]
+
+    prog = parser.prog if parser.prog.startswith("keycall") else "keycall"
+    pieces.append(f"Run `keycall` alone to see what it can do, or `{prog} --help` for every option.")
+
+    print(file=sys.stderr)
+    _emit(f"✗ {pieces[0]}", sys.stderr)
+    for piece in pieces[1:]:
+        print(file=sys.stderr)
+        print(piece, file=sys.stderr)
+    print(file=sys.stderr)
+    return 2
+
+
+def _welcome() -> int:
+    from . import __version__
+
+    print(f"keycall {__version__} — checks AI-provider API keys, lists their models, and makes live calls.")
+    print()
+    print("Try one of these:")
+    print()
+    print("  keycall verify               check the keys in a file, or paste one at a hidden prompt")
+    print("  keycall verify --generate    also make one small billable call per key")
+    print("  keycall view                 open the local viewer in your browser")
+    print()
+    print(f"Every option: keycall verify --help, keycall view --help. Full manual: {USAGE_URL}")
+    return 0
 
 
 def _render(result: VerifyResult) -> list[str]:
@@ -84,21 +283,21 @@ def _run_verify(args: argparse.Namespace) -> int:
             base_url=args.base_url,
         )
     except SourceError as error:
-        print(f"error: {error}", file=sys.stderr)
+        _fail(str(error))
         return 2
 
     for warning in warnings:
         if args.strict_credentials:
-            print(f"error (strict): {warning.message}", file=sys.stderr)
+            _fail(f"{warning.message} (--strict-credentials treats this as an error)")
             return 2
-        print(f"warning: {warning.message}", file=sys.stderr)
+        _warn(warning.message)
 
     all_ok = True
     for target in targets:
         result = run_verify(target, generate=args.generate, attempts=args.attempts)
         all_ok = all_ok and (result.generate_ok if args.generate else result.listed_ok)
         for line in _render(result):
-            print(safe_display_name(line, max_length=300))
+            _emit(safe_display_name(line, max_length=300), sys.stdout)
 
     if args.source:
         reminder = remind_deletion(args.source)
@@ -118,10 +317,10 @@ def _run_view(args: argparse.Namespace) -> int:
                 base_url=args.base_url,
             )
         except SourceError as error:
-            print(f"error: {error}", file=sys.stderr)
+            _fail(str(error))
             return 2
         for warning in warnings:
-            print(f"warning: {warning.message}", file=sys.stderr)
+            _warn(warning.message)
     else:
         # No source: start empty — the viewer prompts for a key file.
         targets = []
@@ -129,7 +328,10 @@ def _run_view(args: argparse.Namespace) -> int:
     try:
         from .viewer import run as run_viewer
     except ImportError:
-        print("keycall view is under construction and not functional yet", file=sys.stderr)
+        _fail(
+            "this install is missing the viewer. Reinstall with "
+            "`python3 -m pip install --force-reinstall keycall` and try again."
+        )
         return 2
 
     return run_viewer(
@@ -153,10 +355,22 @@ def _add_source_args(parser: argparse.ArgumentParser) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="keycall")
-    subparsers = parser.add_subparsers(dest="command")
+    from . import __version__
 
-    verify = subparsers.add_parser("verify", help="verify credentials against live providers")
+    parser = _Parser(
+        prog="keycall",
+        description="Checks AI-provider API keys, lists their models, and makes live calls.",
+        allow_abbrev=False,
+    )
+    parser.add_argument("--version", action="version", version=f"keycall {__version__}")
+    subparsers = parser.add_subparsers(dest="command", parser_class=_Parser)
+
+    verify = subparsers.add_parser(
+        "verify",
+        help="check keys against their live providers",
+        description="Checks each key against its live provider and reports the outcome.",
+        allow_abbrev=False,
+    )
     _add_source_args(verify)
     verify.add_argument(
         "--generate", action="store_true", help="also make one bounded text generation per target"
@@ -171,7 +385,12 @@ def main(argv: list[str] | None = None) -> int:
         "--strict-credentials", action="store_true", help="treat credential-file warnings as errors"
     )
 
-    view = subparsers.add_parser("view", help="open the local web viewer for a target source")
+    view = subparsers.add_parser(
+        "view",
+        help="open the local viewer in your browser",
+        description="Starts the local viewer and opens it in your browser.",
+        allow_abbrev=False,
+    )
     _add_source_args(view)
     view.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
     view.add_argument("--port", type=int, default=0, help="port (default: pick a free one)")
@@ -185,13 +404,15 @@ def main(argv: list[str] | None = None) -> int:
         "token, so a hard reload in the browser picks up server-side edits",
     )
 
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except _UsageError as error:
+        return _usage_error(error)
     if args.command == "verify":
         return _run_verify(args)
     if args.command == "view":
         return _run_view(args)
-    parser.print_help()
-    return 0
+    return _welcome()
 
 
 if __name__ == "__main__":

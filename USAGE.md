@@ -14,11 +14,19 @@ Python 3.10+. Optional extras: `pip install "keycall[traceact]"` for tracing.
 
 ## Test KeyCall in under 60 seconds
 
-No config file needed: simply point KeyCall at an environment variable for a key you already own.
+No config file needed: type the command, name your provider (case-insensitive), and paste your key at the hidden prompt.
 
 ```bash
-export OPENAI_API_KEY=...
+keycall verify
 ```
+
+```
+Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram): openai
+API key:
+✓ openai (openai): key accepted, 79 text model(s), list digest 6d356bc3f4c24389, selection rule v4
+```
+
+For scripts, skip the prompts by pointing at an environment variable, and add `--generate` for one small billable call that proves generation works end to end:
 
 ```bash
 keycall verify --provider openai --source env:OPENAI_API_KEY --generate
@@ -869,13 +877,15 @@ Environment variable (single target, provider required):
 keycall verify --source env:MY_OPENAI_KEY --provider openai
 ```
 
-Interactive (no `--source`): prompts for provider and a hidden key.
+Interactive (no `--source`): prompts for the provider, naming all nine valid choices (case-insensitive), then a hidden key.
 
 Fields: `provider` and `key` required; `protocol`, `base_url`, `name` optional. Repeating a provider creates independent targets.
 
 ### Behavior and exit codes
 
 Keys never appear in output. Credential files are never modified or deleted. A broadly readable file or one inside a git repository produces a warning; `--strict-credentials` turns those warnings into errors. Exit codes: `0` all targets verified, `1` at least one failed, `2` usage or source error.
+
+Running `keycall` with no command prints the version and copy-pasteable example commands. A mistyped command or flag gets a plain-language sentence and at most one suggestion (`keycall verfy` → "Perhaps you meant \`keycall verify\`?"). A long token that reads as a pasted API key is hidden from the message, with a reminder that the command line is saved in shell history and the three safer ways to hand keycall a key (the hidden prompt, `--source <file>`, `--source env:VAR`). On a terminal, the ✓/✗/! outcome markers are colored green, red, and yellow; piped output carries no color codes, and setting `NO_COLOR` turns color off everywhere.
 
 Use dedicated low-budget test keys, and `chmod 600` the file.
 

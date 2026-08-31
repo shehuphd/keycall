@@ -21,7 +21,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
-PUBLIC_DOCS = ("README.md", "USAGE.md", "ARCHITECTURE.md", "CHANGELOG.md")
+PUBLIC_DOCS = ("README.md", "USAGE.md", "ARCHITECTURE.md", "CHANGELOG.md", "MANIFEST.md")
 
 # Each pattern names an internal artifact that must never appear on a
 # public surface. `project/` allows pypi.org/project/<name> URLs, the one

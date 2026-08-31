@@ -4,6 +4,16 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] — 2026-08-31
+
+### Added
+
+- **`MANIFEST.md` at the repo root** maps every source file: what it does and what it touches, one entry per file.
+
+### Changed
+
+- **The `keycall` command now talks like a person.** Running `keycall` alone prints the version and copy-pasteable example commands. A mistyped command or flag gets a plain-language sentence with at most one suggestion (`keycall verfy` → "Perhaps you meant \`keycall verify\`?"), and a numeric flag given a non-number explains itself with an example. A long token that reads as a pasted API key is hidden from the message, with a reminder that the command line is saved in shell history and the three safer ways to hand keycall a key. On a terminal the ✓/✗/! outcome markers render green, red, and yellow; piped output stays plain, and `NO_COLOR` turns color off everywhere. Abbreviated flags (`--sour` for `--source`) are no longer accepted — spell the flag out. The interactive provider prompt now names all nine valid providers, and stays case-insensitive.
+
 ## [1.7.0] — 2026-08-30
 
 ### Added
@@ -419,6 +429,7 @@ First release. Key validation, model discovery and filtering, and text generatio
 - Perplexity's Sonar models aren't API-discoverable and are maintained in the bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
+[1.8.0]: https://github.com/shehuphd/keycall/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/shehuphd/keycall/compare/v1.6.1...v1.7.0
 [1.6.1]: https://github.com/shehuphd/keycall/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/shehuphd/keycall/compare/v1.5.0...v1.6.0
