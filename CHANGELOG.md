@@ -4,6 +4,15 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] — 2026-09-01
+
+### Added
+
+- **ElevenLabs as the tenth provider.** `KeyCall(provider="elevenlabs", ...)` (aliases `eleven-labs`, `11labs`) validates the key against a live endpoint, lists its speech models live (with `scribe_v2_realtime` as maintained catalog data, since its models endpoint omits STT), speaks text with `generate_speech()`, and transcribes live audio with `transcribe_stream()`. The key rides the `xi-api-key` header and never enters a URL; a key missing a permission maps to `PERMISSION_DENIED` naming where to fix it; every LLM operation refuses with a typed error before the network. All behavior live-verified 2026-08-31.
+- **`list_voices()` returns normalized `Voice` records on every speaking provider.** One record — id, name, description, and a `models` tuple scoping voices that only some models take — served from the catalog for OpenAI (13 voices) and Gemini (30) with no network call, and fetched live from ElevenLabs so cloned voices on the account appear too. ElevenLabs requires a voice on every speech call, and a call without one refuses before the network, naming voices from the key and pointing at `list_voices()` for the rest.
+- **Streaming transcription handles a provider that never hangs up.** ElevenLabs sends no billing summary and keeps the socket open after the final transcript, so the session ends itself once the transcript is in, with `reason="client finished"` and `audio_duration_seconds=None`; per-word seconds-based timings convert to milliseconds and log-probability scores ride `confidence`, matching the other providers' events.
+- **The Playground gains a Speak text task.** Pick a speaking key (OpenAI, Gemini, ElevenLabs), type the words, choose a voice where one applies — the Voice select lists the key's voices filtered to the selected model — and the reply is a playable audio clip with a save link.
+
 ## [1.8.0] — 2026-08-31
 
 ### Added

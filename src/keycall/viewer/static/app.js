@@ -522,6 +522,7 @@ async function fillTargetSelects() {
 function modeCategory(mode) {
   return mode === "image" ? "image_generation"
     : mode === "video" ? "video_generation"
+    : mode === "speech" ? "speech_generation"
     : mode === "voice" ? "realtime"
     : mode === "transcribe" ? "transcription"
     : null;
@@ -741,6 +742,7 @@ async function loadPlaygroundModels() {
   const category =
     currentMode() === "image" ? "image_generation"
     : currentMode() === "video" ? "video_generation"
+    : currentMode() === "speech" ? "speech_generation"
     : currentMode() === "voice" ? "realtime"
     : currentMode() === "transcribe" ? "transcription"
     : "text_generation";
@@ -768,6 +770,7 @@ async function loadPlaygroundModels() {
     none.textContent =
       currentMode() === "image" ? "this key has no picture models"
       : currentMode() === "video" ? "this key has no video models"
+      : currentMode() === "speech" ? "this key has no speech models"
       : currentMode() === "voice" ? "this key has no voice models"
       : currentMode() === "transcribe" ? "this key has no transcription models"
       : "this key has no text models";
@@ -845,6 +848,68 @@ function noteModelOutcome(targetId, modelId, code) {
   loadPlaygroundModels();
 }
 
+// The selected key's voices, cached per target for the session. A voice
+// scoped to specific models (OpenAI's marin/cedar/ballad/verse are
+// gpt-4o-mini-tts only) is offered only while one of them is selected, so
+// the picker never lists an option the request would reject.
+const PG_VOICES = new Map();
+
+async function loadPlaygroundVoices() {
+  const targetId = el("pg-target").value;
+  if (!targetId) {
+    renderVoiceOptions([]);
+    return;
+  }
+  if (PG_VOICES.has(targetId)) {
+    renderVoiceOptions(PG_VOICES.get(targetId));
+    return;
+  }
+  const sel = el("pg-voice");
+  clear(sel);
+  const busy = document.createElement("option");
+  busy.value = "";
+  busy.textContent = "loading voices…";
+  sel.appendChild(busy);
+  const data = await api(`/api/voices?target=${targetId}`);
+  const voices = data.error ? [] : data.voices || [];
+  PG_VOICES.set(targetId, voices);
+  renderVoiceOptions(voices);
+}
+
+function renderVoiceOptions(voices) {
+  const sel = el("pg-voice");
+  const previous = sel.value;
+  const model = el("pg-model").value;
+  clear(sel);
+  const offered = voices.filter(
+    (voice) => !voice.models || !model || voice.models.includes(model)
+  );
+  if (!offered.length) {
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "no voices for this key";
+    sel.appendChild(none);
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  offered.forEach((voice) => {
+    const option = document.createElement("option");
+    option.value = voice.id;
+    option.textContent = voice.description
+      ? `${voice.name} (${voice.description})`
+      : voice.name;
+    sel.appendChild(option);
+  });
+  if (offered.some((voice) => voice.id === previous)) sel.value = previous;
+}
+
+el("pg-model").addEventListener("change", () => {
+  if (currentMode() === "speech") {
+    renderVoiceOptions(PG_VOICES.get(el("pg-target").value) || []);
+  }
+});
+
 el("pg-target").addEventListener("change", () => {
   loadPlaygroundModels();
   // What a key can do changes with the key, so re-gate before the user
@@ -853,6 +918,7 @@ el("pg-target").addEventListener("change", () => {
   // A key swap within video mode can cross the Gemini/xAI duration-range
   // boundary; clamp onto the new range without resetting to its default.
   if (currentMode() === "video") syncVideoDuration(false);
+  if (currentMode() === "speech") loadPlaygroundVoices();
 });
 
 // Bound the two Playground columns to what is actually left on screen, so
@@ -889,22 +955,25 @@ function currentMode() {
 async function applyMode() {
   const image = currentMode() === "image";
   const video = currentMode() === "video";
+  const speech = currentMode() === "speech";
   const voice = currentMode() === "voice";
   const transcribe = currentMode() === "transcribe";
-  el("pg-extras").hidden = image || video || voice || transcribe;
-  el("pg-maxtok-row").hidden = image || video || voice || transcribe;
+  el("pg-extras").hidden = image || video || speech || voice || transcribe;
+  el("pg-maxtok-row").hidden = image || video || speech || voice || transcribe;
   // Neither generate_image() nor generate_video() sends reasoning_effort
   // at all (their requests are model + prompt, nothing else), so the
   // control would silently do nothing if left up rather than refusing.
-  el("pg-reasoning-row").hidden = image || video || voice || transcribe;
+  el("pg-reasoning-row").hidden = image || video || speech || voice || transcribe;
   // Transcription has no instructions either: the session takes audio in
   // and gives words back, with no prompt anywhere in it.
-  el("pg-system-row").hidden = image || video || transcribe;
+  el("pg-system-row").hidden = image || video || speech || transcribe;
   // The cache marker only reaches generate_text/stream_text; voice runs
   // over its own realtime connection, a different protocol the marker
   // never touches, so the toggle would silently do nothing there.
-  el("pg-cache-row").hidden = image || video || voice || transcribe;
+  el("pg-cache-row").hidden = image || video || speech || voice || transcribe;
   el("pg-image-mode-note").hidden = !image;
+  el("pg-speech-mode-note").hidden = !speech;
+  el("pg-voice-row").hidden = !speech;
   el("pg-video-mode-note").hidden = !video;
   el("pg-voice-mode-note").hidden = !voice;
   el("pg-transcribe-mode-note").hidden = !transcribe;
@@ -914,7 +983,7 @@ async function applyMode() {
   // microphone in the composer would only offer something that cannot be
   // sent. Voice and transcribe sessions each have their own microphone
   // control, in their own panel.
-  el("pg-mic").hidden = image || video || voice || transcribe;
+  el("pg-mic").hidden = image || video || speech || voice || transcribe;
   el("pg-composer").hidden = voice || transcribe;
   el("pg-composer-hint").hidden = voice || transcribe;
   el("pg-voice-panel").hidden = !voice;
@@ -923,11 +992,13 @@ async function applyMode() {
   // leaving a WebSocket open behind a panel nothing points at any more.
   if (!voice) endVoiceSession();
   if (!transcribe) endTranscribeSession();
-  if ((image || video || voice || transcribe) && REC) discardRecording();
+  if ((image || video || speech || voice || transcribe) && REC) discardRecording();
   el("pg-prompt").placeholder = image
     ? `Describe the picture you want. Press Send, or ${MOD_KEY}+Enter.`
     : video
     ? `Describe the video you want. Press Send, or ${MOD_KEY}+Enter.`
+    : speech
+    ? `Type what should be spoken. Press Send, or ${MOD_KEY}+Enter.`
     : `Ask anything. Press Send, or ${MOD_KEY}+Enter.`;
   // What a key qualifies for changes with the task, so the Key list is
   // rebuilt before the Model list is fetched for whichever key that leaves
@@ -943,6 +1014,7 @@ async function applyMode() {
   // Fresh entry into video mode resets to the provider's default rather
   // than carrying over whatever the slider last held.
   if (video) syncVideoDuration(true);
+  if (speech) loadPlaygroundVoices();
 }
 
 el("pg-mode").addEventListener("change", applyMode);
@@ -1878,6 +1950,37 @@ function addImageBubble(result) {
     save.href = picture.src;
     save.download = `keycall-image.${(image.media_type || "image/png").split("/")[1]}`;
     save.textContent = "Save this picture";
+    save.className = "meta";
+    bubble.appendChild(save);
+  });
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = generationCaption(result);
+  bubble.appendChild(meta);
+  (result.warnings || []).forEach((warning) => {
+    const note = document.createElement("div");
+    note.className = "meta";
+    note.textContent = warning;
+    bubble.appendChild(note);
+  });
+  return bubble;
+}
+
+function addSpeechBubble(result) {
+  const bubble = addBubble("model");
+  (result.clips || []).forEach((clip) => {
+    const player = document.createElement("audio");
+    player.controls = true;
+    player.className = "pg-audio-clip";
+    player.src = `data:${clip.media_type};base64,${clip.base64_data}`;
+    bubble.appendChild(player);
+    // Gemini answers with raw PCM rather than a playable container; the
+    // element stays (some browsers manage), but say what arrived so a
+    // silent player reads as the format, not a failure.
+    const save = document.createElement("a");
+    save.href = player.src;
+    save.download = `keycall-speech.${(clip.media_type || "audio/mpeg").split("/")[1].split(";")[0]}`;
+    save.textContent = `Save this clip (${clip.media_type})`;
     save.className = "meta";
     bubble.appendChild(save);
   });
@@ -2897,7 +3000,7 @@ let PG_CONVERSATION_TITLE = null;
 // writing its id back over the conversation now open.
 let PG_CONVERSATION_EPOCH = 0;
 
-const PG_MODE_LABELS = { text: "Text", image: "Picture", video: "Video", voice: "Voice", transcribe: "Transcript" };
+const PG_MODE_LABELS = { text: "Text", image: "Picture", video: "Video", speech: "Speech", voice: "Voice", transcribe: "Transcript" };
 
 function deriveConversationTitle(promptText) {
   const text = (promptText || "").trim();
@@ -3246,6 +3349,35 @@ async function runGeneration({ continuation }) {
       renderGeneration(addBubble("model"), data);
     } else {
       addImageBubble(data);
+      saveCurrentConversation(prompt);
+    }
+    done(btn);
+    updateSendEnabled();
+    return;
+  }
+  if (currentMode() === "speech") {
+    const placeholder = addBubble("model");
+    const startedAt = Date.now();
+    const paint = () => {
+      placeholder.textContent = `Speaking… · ${formatElapsed(startedAt)}`;
+    };
+    paint();
+    const ticker = setInterval(paint, 1000);
+    const data = await api("/api/generate/speech", {
+      method: "POST",
+      body: {
+        target: Number(el("pg-target").value),
+        model,
+        text: prompt,
+        voice: el("pg-voice").value || undefined,
+      },
+    });
+    clearInterval(ticker);
+    placeholder.remove();
+    if (data.error) {
+      renderGeneration(addBubble("model"), data);
+    } else {
+      addSpeechBubble(data);
       saveCurrentConversation(prompt);
     }
     done(btn);
@@ -3606,6 +3738,7 @@ const TRACE_ROUTE_LABELS = {
   "/api/generate/stream": "Streamed text",
   "/api/generate": "Text",
   "/api/generate/image": "Picture",
+  "/api/generate/speech": "Speech",
   "/api/generate/video": "Video",
   "/api/verify": "Verify",
   "/api/models": "Model list",

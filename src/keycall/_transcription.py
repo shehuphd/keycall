@@ -68,8 +68,15 @@ class TranscriptionSession:
 
     def send_audio(self, pcm: bytes) -> None:
         """A chunk of caller audio: raw 16-bit mono PCM at the session's
-        sample rate, sent as a binary frame."""
-        self._require_open().send_bytes(pcm)
+        sample rate. The provider's translator owns the wire encoding —
+        binary frames for most, a JSON text message where the dialect
+        wraps audio (ElevenLabs)."""
+        wire = self._require_open()
+        frame = self._translator.encode_audio(pcm)
+        if isinstance(frame, bytes):
+            wire.send_bytes(frame)
+        else:
+            wire.send(frame)
 
     def finish(self) -> None:
         """No more audio is coming: ask the provider to finalize what it
@@ -96,6 +103,17 @@ class TranscriptionSession:
                 )
                 return
             yield from self._translator.events_for_frame(payload)
+            if getattr(self._translator, "session_over", False):
+                # The provider holds the socket open after answering
+                # finish() (ElevenLabs); the final that answers it is the
+                # honest end of the session, so end it here rather than
+                # waiting on a close that never comes.
+                self._ended = True
+                yield TranscriptionSessionEnded(
+                    reason="client finished",
+                    audio_duration_seconds=self._translator.audio_duration_seconds,
+                )
+                return
 
 
 class AsyncTranscriptionSession:
@@ -133,7 +151,12 @@ class AsyncTranscriptionSession:
         return self._wire
 
     async def send_audio(self, pcm: bytes) -> None:
-        await self._require_open().send_bytes(pcm)
+        wire = self._require_open()
+        frame = self._translator.encode_audio(pcm)
+        if isinstance(frame, bytes):
+            await wire.send_bytes(frame)
+        else:
+            await wire.send(frame)
 
     async def finish(self) -> None:
         wire = self._require_open()
@@ -155,3 +178,10 @@ class AsyncTranscriptionSession:
                 return
             for event in self._translator.events_for_frame(payload):
                 yield event
+            if getattr(self._translator, "session_over", False):
+                self._ended = True
+                yield TranscriptionSessionEnded(
+                    reason="client finished",
+                    audio_duration_seconds=self._translator.audio_duration_seconds,
+                )
+                return

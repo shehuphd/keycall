@@ -819,3 +819,10 @@ a { color: var(--accent); }
   z-index: 100;
 }
 #toast.show { opacity: 1; transform: translateY(0); }
+
+.pg-audio-clip {
+  display: block;
+  width: 18rem;
+  max-width: 100%;
+  margin-bottom: 0.35rem;
+}

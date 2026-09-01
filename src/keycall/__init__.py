@@ -68,9 +68,10 @@ from ._types import (
     VideoJob,
     VideoJobStatus,
     VideoOutput,
+    Voice,
 )
 
-__version__ = "1.8.0"
+__version__ = "1.9.0"
 
 __all__ = [
     "AliasFact",
@@ -147,6 +148,7 @@ __all__ = [
     "VideoJobStatus",
     "VideoJobTimeout",
     "VideoOutput",
+    "Voice",
     "__version__",
     "alias_fact",
 ]

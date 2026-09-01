@@ -85,7 +85,7 @@ Everything between those two points handles the opaque `Credential` wrapper. Sup
 
 ## Provider resolution
 
-Provider identity and wire protocol are separate. The catalog maps nine named providers onto five protocols; the adapter is chosen by protocol, with named overrides for providers whose behavior diverges. The `stt` protocol has no protocol-level adapter: no generic STT-compatible wire exists the way OpenAI-compatible does, so its two providers resolve by name alone and custom targets cannot claim it:
+Provider identity and wire protocol are separate. The catalog maps ten named providers onto six protocols; the adapter is chosen by protocol, with named overrides for providers whose behavior diverges. The `stt` protocol has no protocol-level adapter: no generic STT-compatible wire exists the way OpenAI-compatible does, so its two providers resolve by name alone and custom targets cannot claim it. The `elevenlabs` protocol is single-vendor — one provider speaks that wire — and custom targets cannot claim it either, since they can only claim `openai-compatible`:
 
 ```text
 provider name ──► catalog profile ──► protocol ──► adapter
@@ -98,6 +98,7 @@ provider name ──► catalog profile ──► protocol ──► adapter
   xai                 openai-compatible              XAIAdapter (override)
   assemblyai          stt                            AssemblyAIAdapter (by name)
   deepgram            stt                            DeepgramAdapter (by name)
+  elevenlabs          elevenlabs        elevenlabs   ElevenLabsAdapter
   <custom> + base_url openai-compatible              OpenAICompatibleAdapter (is_custom)
 ```
 
@@ -124,7 +125,7 @@ Some providers run a tool server-side and hand the caller a tool call to echo ba
 
 Realtime keeps the same component boundaries over a WebSocket. The transport owns the connection: it builds the `wss://` URL from the catalog host (realtime paths are host-rooted, since the WebSocket endpoints don't live under the base URL's `/v1`-style prefix), attaches the auth header (the credential never enters a URL on any provider) and wraps the socket so close reasons are scrubbed before they can surface. Adapters own the two frame dialects (the Realtime API for OpenAI and xAI, `BidiGenerateContent` for Gemini) as pure translators: provider frames in, normalized `RealtimeEvent`s out, caller turns in, provider messages out, no I/O. `_realtime.py` sequences the two, and the sync and async sessions differ only in awaits.
 
-Streaming transcription reuses this machinery with its own session and event types: the same transport wire (grown a binary `send_bytes` for raw PCM audio, and accepting a full `wss://` operation path for AssemblyAI's separate streaming host), the same header-auth rule (Deepgram adds a `token` auth scheme, `Token <key>`), and pure per-provider translators in `adapters/_stt.py` turning Turn/Results frames into normalized transcription events. `_transcription.py` sequences it the way `_realtime.py` does; the STT providers' every LLM operation refuses with a typed error, and vice versa.
+Streaming transcription reuses this machinery with its own session and event types: the same transport wire (grown a binary `send_bytes` for raw PCM audio, and accepting a full `wss://` operation path for AssemblyAI's separate streaming host), the same header-auth rule (Deepgram adds a `token` auth scheme, `Token <key>`; ElevenLabs an `api_key` scheme, the bare key in its `xi-api-key` header), and pure per-provider translators in `adapters/_stt.py` and `adapters/_elevenlabs.py` turning provider frames into normalized transcription events. Translators own audio encoding through `encode_audio()`, because the wires differ: AssemblyAI and Deepgram take binary PCM frames, ElevenLabs takes JSON messages carrying base64 audio. ElevenLabs' server also never closes the socket after the final transcript, so its translator flags the session over and `_transcription.py` synthesizes the session-ended event itself. `_transcription.py` sequences it all the way `_realtime.py` does; the speech providers' every LLM operation refuses with a typed error, and vice versa.
 
 ## Prompt caching
 

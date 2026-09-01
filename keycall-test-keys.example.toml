@@ -44,7 +44,7 @@ provider = "xai"
 key = "REPLACE-ME"
 name = "grok-test"
 
-# Speech-to-text providers: verified the same way, but with `--generate`
+# Speech providers: verified the same way, but with `--generate`
 # left off, since they have no text models to generate with.
 
 [[targets]]
@@ -56,6 +56,11 @@ name = "assemblyai-test"
 provider = "deepgram"
 key = "REPLACE-ME"
 name = "deepgram-test"
+
+[[targets]]
+provider = "elevenlabs"
+key = "REPLACE-ME"
+name = "elevenlabs-test"
 
 # [[targets]]
 # provider = "my-lab"

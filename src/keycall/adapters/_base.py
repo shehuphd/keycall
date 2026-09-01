@@ -37,6 +37,7 @@ from .._types import (
     Usage,
     VideoJob,
     VideoOutput,
+    Voice,
 )
 
 
@@ -603,6 +604,35 @@ class ProviderAdapter(ABC):
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=provider_request_id,
             warnings=warnings,
+        )
+
+    # --- voices ---
+    #
+    # A provider whose voice set is a fixed named list carries it in the
+    # catalog (resolved.catalog_voices) and the client answers list_voices
+    # without the network; a provider with a live voices endpoint
+    # implements the two hooks below instead. A voice is required before
+    # any speech request can be built when requires_voice is True — the
+    # client enforces it pre-flight so the refusal can name the choices.
+
+    requires_voice: bool = False
+
+    def build_voices_spec(self) -> RequestSpec:
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} cannot generate speech, so "
+            "it has no voices; speech generation is supported on: "
+            + ", ".join(sorted(providers_with("speech_generation"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.SPEECH_GENERATION.value,
+        )
+
+    def parse_voices_response(self, payload: Any) -> tuple[Voice, ...]:
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} has no live voices endpoint",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.SPEECH_GENERATION.value,
         )
 
     # --- video generation ---

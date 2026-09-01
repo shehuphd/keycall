@@ -120,6 +120,11 @@ class ResolvedProvider:
     # records live evidence for one. No entry means "no recorded
     # convention", never "no aliases exist".
     alias_conventions: tuple[AliasConvention, ...] = ()
+    # Providers whose voice set is a fixed named list supply it here, with
+    # the date it was checked against the provider's docs; a provider with
+    # a live voices endpoint has an empty tuple and a list_voices op.
+    catalog_voices: tuple[dict[str, Any], ...] = ()
+    catalog_voices_verified: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -368,6 +373,8 @@ def resolve_provider(
             ),
             provider_request_id_header=profile.get("provider_request_id_header"),
             catalog_models=tuple(profile.get("models", ())),
+            catalog_voices=tuple((profile.get("voices") or {}).get("list", ())),
+            catalog_voices_verified=(profile.get("voices") or {}).get("verified"),
             min_max_output_tokens=profile.get("min_max_output_tokens"),
             video_download_hosts=tuple(profile.get("video_download_hosts", ())),
             capabilities=_parse_capabilities(profile),

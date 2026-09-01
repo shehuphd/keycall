@@ -26,7 +26,7 @@ import httpx
 from . import _cache, _capabilities, _classify, _tracing
 from ._cache import CachedModels
 from ._credential import Credential
-from ._enums import ModelCategory, ProviderProtocol
+from ._enums import ModelCategory, Operation, ProviderProtocol
 from ._errors import ErrorCode, KeyCallError, VideoJobTimeout
 from ._registry import (
     ResolvedProvider,
@@ -52,11 +52,26 @@ from ._types import (
     Usage,
     VideoGenerationRequest,
     VideoJob,
+    Voice,
 )
 from .adapters import ProviderAdapter, adapter_for
 from .adapters._base import InbandStreamError, StreamAssembler
 
 __all__ = ["AsyncKeyCall", "AsyncTextStream", "KeyCall", "TextStream"]
+
+
+def _catalog_voice_records(resolved: Any) -> tuple[Voice, ...]:
+    """Catalog-recorded voice sets (fixed named lists) as Voice records."""
+    return tuple(
+        Voice(
+            provider=resolved.provider,
+            id=str(entry["id"]),
+            name=str(entry.get("name") or entry["id"]),
+            description=entry.get("description"),
+            models=tuple(entry["models"]) if entry.get("models") else None,
+        )
+        for entry in resolved.catalog_voices
+    )
 
 _MAX_LIST_PAGES = 10
 _DEFAULT_CATEGORIES = frozenset({ModelCategory.TEXT_GENERATION})
@@ -969,6 +984,42 @@ class KeyCall(_BaseClient):
             )
             return self._parse_embedding(request, result, trace)
 
+    def list_voices(self) -> tuple[Voice, ...]:
+        """The voices this provider can speak with, as normalized Voice
+        records. Providers whose voice set is a fixed named list answer
+        from the bundled catalog without a network call (OpenAI, Gemini);
+        providers with a live voices endpoint are asked (ElevenLabs, whose
+        voices are account-scoped). A provider without speech generation
+        refuses before the network."""
+        self._require_open()
+        if self._resolved.catalog_voices:
+            return _catalog_voice_records(self._resolved)
+        spec = self._adapter.build_voices_spec()
+        result = self._transport.request(
+            spec,
+            operation="list_voices",
+            retry_policy="list",
+            translate_error=self._adapter.translate_error,
+        )
+        return self._adapter.parse_voices_response(result.payload)
+
+    def _require_voice(self, request: SpeechGenerationRequest) -> None:
+        # Where the provider routes by voice there is no default to fall
+        # back on; refuse with the actual choices rather than a bare
+        # "voice required".
+        if request.voice or not getattr(self._adapter, "requires_voice", False):
+            return
+        voices = self.list_voices()
+        shown = ", ".join(f"{v.name} ({v.id})" for v in voices[:5])
+        remainder = f", and {len(voices) - 5} more via list_voices()" if len(voices) > 5 else ""
+        raise KeyCallError(
+            f"{self.provider} routes speech by voice and has no default; "
+            f"pass voice=<voice_id>. This key's voices include: {shown}{remainder}",
+            code=ErrorCode.MODEL_NOT_SUITABLE,
+            provider=self.provider,
+            operation=Operation.SPEECH_GENERATION.value,
+        )
+
     def generate_speech(
         self, *, model: str, text: str, voice: str | None = None
     ) -> InvocationResult:
@@ -978,6 +1029,7 @@ class KeyCall(_BaseClient):
         and says so in the media type."""
         self._require_open()
         request = SpeechGenerationRequest(model=model, text=text, voice=voice)
+        self._require_voice(request)
         spec = self._speech_spec(request)
         with _tracing.span(
             "keycall.speech_generation", provider=self.provider, model=model
@@ -1407,12 +1459,41 @@ class AsyncKeyCall(_BaseClient):
             )
             return self._parse_embedding(request, result, trace)
 
+    async def list_voices(self) -> tuple[Voice, ...]:
+        """Async twin of KeyCall.list_voices()."""
+        self._require_open()
+        if self._resolved.catalog_voices:
+            return _catalog_voice_records(self._resolved)
+        spec = self._adapter.build_voices_spec()
+        result = await self._transport.request(
+            spec,
+            operation="list_voices",
+            retry_policy="list",
+            translate_error=self._adapter.translate_error,
+        )
+        return self._adapter.parse_voices_response(result.payload)
+
+    async def _require_voice(self, request: SpeechGenerationRequest) -> None:
+        if request.voice or not getattr(self._adapter, "requires_voice", False):
+            return
+        voices = await self.list_voices()
+        shown = ", ".join(f"{v.name} ({v.id})" for v in voices[:5])
+        remainder = f", and {len(voices) - 5} more via list_voices()" if len(voices) > 5 else ""
+        raise KeyCallError(
+            f"{self.provider} routes speech by voice and has no default; "
+            f"pass voice=<voice_id>. This key's voices include: {shown}{remainder}",
+            code=ErrorCode.MODEL_NOT_SUITABLE,
+            provider=self.provider,
+            operation=Operation.SPEECH_GENERATION.value,
+        )
+
     async def generate_speech(
         self, *, model: str, text: str, voice: str | None = None
     ) -> InvocationResult:
         """Async twin of KeyCall.generate_speech()."""
         self._require_open()
         request = SpeechGenerationRequest(model=model, text=text, voice=voice)
+        await self._require_voice(request)
         spec = self._speech_spec(request)
         with _tracing.span(
             "keycall.speech_generation", provider=self.provider, model=model

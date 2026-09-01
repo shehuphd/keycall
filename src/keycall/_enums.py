@@ -32,6 +32,10 @@ class ProviderProtocol(str, Enum):
     # "stt-compatible" wire the way there is an OpenAI-compatible one, so
     # custom targets cannot claim this protocol.
     STT = "stt"
+    # ElevenLabs speaks its own wire on every operation (xi-api-key REST
+    # for models/voices/TTS, a JSON-message WebSocket for realtime STT);
+    # single-vendor, so custom targets cannot claim this protocol either.
+    ELEVENLABS = "elevenlabs"
 
 
 class Operation(str, Enum):

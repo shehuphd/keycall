@@ -23,7 +23,7 @@ keycall verify
 ```
 
 ```
-Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram): openai
+Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram, elevenlabs): openai
 API key:
 ✓ openai (openai): key accepted, 79 text model(s), list digest 6d356bc3f4c24389, selection rule v4
 ```
@@ -80,14 +80,14 @@ print(result.round_trip_duration_ms)
 - **Streaming.** `stream_text()` yields typed events (text increments, visible reasoning progress, citations, tool calls, finish) across all four wire protocols, and refuses to call a stream complete without the provider's own terminal signal.
 - **Tool calling.** Define tools once and KeyCall normalizes all four call/result wire shapes, streamed or not, carrying the provider echo data some models require back verbatim. It never executes a tool.
 - **Image generation.** `generate_image()` returns the picture as bytes with the media type the provider produced, on OpenAI and Gemini; the rest refuse before the network.
-- **Speech generation.** `generate_speech()` speaks text aloud on OpenAI and Gemini, the only providers with a public API for it — Anthropic's voice mode runs on a third-party subcontractor behind a consumer app, not a callable endpoint. The result carries the media type the provider sent, including Gemini's raw PCM, never a container the provider didn't produce.
+- **Speech generation.** `generate_speech()` speaks text aloud on OpenAI, Gemini, and ElevenLabs. The result carries the media type the provider sent, including Gemini's raw PCM, never a container the provider didn't produce. `list_voices()` returns the same normalized `Voice` records on all three — catalog-listed for OpenAI and Gemini, fetched live from ElevenLabs, so cloned voices on your account appear too. ElevenLabs requires a voice on every call, and a call without one refuses before the network, naming voices from your key.
 - **Video generation.** `start_video()` returns a job handle, `check_video()` polls it, `fetch_video()` downloads the finished MP4 — or `generate_video()` runs all three against a timeout you choose. Gemini (Veo) and xAI (Grok Imagine) support it; the rest refuse before the network. A timeout hands back the still-valid job, so a slow render is never lost.
 - **Embeddings.** `embed()` returns one vector per input, in input order, on OpenAI and Gemini; providers without an embeddings endpoint refuse before the network instead of 404ing.
 - **Images, audio, and documents.** Pass bytes (or a URL where the provider fetches one) beside your text; KeyCall maps each provider's shape and detects the media type from the content. Support varies by provider and by form, so a refusal happens before the network and names who does accept that kind.
 - **Web search with citations.** `web_search=True` turns on the provider's native search tool (OpenAI, Anthropic, Gemini, xAI, Moonshot; Perplexity always searches) and returns sources normalized to one `Citation` shape (Moonshot reports none).
 - **Reasoning effort control.** `reasoning_effort="low"` (or `"medium"` / `"high"`) maps to the provider's native thinking control on OpenAI, Anthropic, Gemini, Perplexity, and xAI — each verified live to move reasoning-token spend. Providers that accept the parameter without honoring it refuse instead of silently ignoring it. The spend itself is normalized into `usage.reasoning_tokens` wherever the provider reports a count (OpenAI, Gemini, DeepSeek, Moonshot, xAI).
 - **Realtime voice sessions.** `realtime()` opens a live WebSocket conversation on OpenAI, xAI, or Gemini — text or microphone audio up, normalized audio/transcript/turn events down, sync and async. The credential rides the handshake headers and never enters a URL.
-- **Streaming transcription.** `transcribe_stream()` opens a live speech-to-text session on AssemblyAI or Deepgram — raw PCM audio up, normalized interim/final transcripts with per-word millisecond timings down, and the provider's billable audio seconds on the session-ended event. Sync and async, same header-auth rule as realtime.
+- **Streaming transcription.** `transcribe_stream()` opens a live speech-to-text session on AssemblyAI, Deepgram, or ElevenLabs — raw PCM audio up, normalized interim/final transcripts with per-word millisecond timings down, and the provider's billable audio seconds on the session-ended event where the provider reports them (ElevenLabs sends no duration summary). Sync and async, same header-auth rule as realtime.
 - **Hosted code execution.** `code_interpreter=True` lets the model write and run code on the provider's own sandbox (OpenAI, Anthropic, Gemini, xAI), with each run returned as a typed part — nothing executes on your machine.
 - **Tool search.** `Tool(defer_loading=True)` keeps a large tool library out of the model's context until it searches for what it needs (OpenAI, Anthropic); discovered tools call and reply like ordinary ones.
 - **File-editing tool convention.** `apply_patch=True` enables OpenAI's built-in file-editing tool: the model proposes create/update/delete operations as V4A diffs, arriving as ordinary `ToolCall`/`ToolResult` parts named `"apply_patch"` in the same replay loop as any other tool. OpenAI-only; other providers refuse before the network.
@@ -98,7 +98,7 @@ print(result.round_trip_duration_ms)
 
 ## Provider support
 
-Live-verified 2026-08-29. Every release re-runs a model list, a bounded generation, a stream, a full tool round (streamed and not, including apply_patch, custom tools, and tool search), hosted code execution, an image, sound, and document read, embeddings, image generation, a video render, a prompt-caching round trip, an async round trip, a live streaming-transcription session, capability-drift probes against previously observed provider behavior, and a probe that each provider still reaches a working model well inside the attempt budget, against every provider that supports them, and blocks publishing if any of it fails:
+Live-verified 2026-08-31. Every release re-runs a model list, a bounded generation, a stream, a full tool round (streamed and not, including apply_patch, custom tools, and tool search), hosted code execution, an image, sound, and document read, embeddings, image generation, a speech generation with a listed voice, a video render, a prompt-caching round trip, an async round trip, a live streaming-transcription session, capability-drift probes against previously observed provider behavior, and a probe that each provider still reaches a working model well inside the attempt budget, against every provider that supports them, and blocks publishing if any of it fails:
 
 | Provider | Protocol | Listing | Generation |
 |---|---|---|---|
@@ -111,9 +111,10 @@ Live-verified 2026-08-29. Every release re-runs a model list, a bounded generati
 | xAI (Grok) | openai-compatible | verified | verified |
 | AssemblyAI | stt | verified | streaming transcription verified |
 | Deepgram | stt | verified | streaming transcription verified |
+| ElevenLabs | elevenlabs | verified | speech + streaming transcription verified |
 | Custom endpoint (explicit `base_url`) | openai-compatible | fixtures only | fixtures only |
 
-AssemblyAI and Deepgram are speech-to-text providers: their generation column is `transcribe_stream()`, since they have no text-generation API, and their model lists are maintained catalog data behind a live credential check.
+AssemblyAI and Deepgram are speech-to-text providers: their generation column is `transcribe_stream()`, since they have no text-generation API, and their model lists are maintained catalog data behind a live credential check. ElevenLabs is a speech platform with the same posture on text: its generation column is `generate_speech()` plus `transcribe_stream()`, and its model list comes live from its own models endpoint, with the streaming-transcription model as maintained catalog data since that endpoint omits it.
 
 **OpenAI** advertises `-latest` aliases its own account can't invoke, and is retiring that family wholesale. On 2026-08-10 all four were dead: `gpt-5-chat-latest` and `gpt-5.1-chat-latest` returned "Model not found", and `gpt-5.2-chat-latest` and `gpt-5.3-chat-latest` were newly deprecated hours after both had worked. The numbered models were healthy throughout. This is the same failure as Gemini's retired models, on a provider people assume is tidier, and it is why `verify` walks the candidates and reports every attempt rather than trusting the first listed model.
 

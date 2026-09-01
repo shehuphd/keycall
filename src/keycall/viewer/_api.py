@@ -45,11 +45,13 @@ __all__ = [
     "error_body",
     "generate",
     "generate_image",
+    "generate_speech",
     "generate_stream_events",
     "generate_video",
     "get_conversation",
     "list_conversations",
     "list_targets",
+    "list_voices",
     "save_conversation",
     "set_settings",
     "verify_target",
@@ -97,6 +99,7 @@ def list_targets(registry: Registry) -> dict[str, Any]:
                 "reasoning_effort": caps.reasoning_effort,
                 "prompt_caching": caps.prompt_caching,
                 "realtime": caps.realtime,
+                "speech_generation": caps.speech_generation,
                 # Keyed by the model category name rather than the
                 # capability flag's, so the page can use one string for
                 # both the provider gate and the model-list filter, the
@@ -576,6 +579,62 @@ def generate_image(registry: Registry, target_id: int, body: dict[str, Any]) -> 
         if isinstance(part, ImageOutput)
     ]
     return body_out
+
+
+def generate_speech(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """Speech generation mirrors the image route: one blocking
+    call, the clip handed back as base64 with its media type."""
+    try:
+        client = registry.client(target_id)
+    except KeyError:
+        return {"error": {"code": "not_found", "message": "unknown target id"}}
+
+    model = body.get("model")
+    text = body.get("text")
+    voice = body.get("voice")
+    if not model or not isinstance(model, str) or not text or not isinstance(text, str):
+        return {"error": {"code": "bad_request", "message": "model and text are required"}}
+    if voice is not None and not isinstance(voice, str):
+        return {"error": {"code": "bad_request", "message": "voice must be a string"}}
+
+    try:
+        result = client.generate_speech(model=model, text=text, voice=voice or None)
+    except KeyCallError as error:
+        return error_body(error)
+
+    from keycall._types import AudioOutput
+
+    body_out = _result_dict(result)
+    body_out["clips"] = [
+        {"base64_data": part.base64_data, "media_type": part.media_type}
+        for part in result.parts
+        if isinstance(part, AudioOutput)
+    ]
+    return body_out
+
+
+def list_voices(registry: Registry, target_id: int) -> dict[str, Any]:
+    """The target's voices, for the Playground's voice picker. Catalog
+    sets answer instantly; ElevenLabs asks its live endpoint."""
+    try:
+        client = registry.client(target_id)
+    except KeyError:
+        return {"error": {"code": "not_found", "message": "unknown target id"}}
+    try:
+        voices = client.list_voices()
+    except KeyCallError as error:
+        return error_body(error)
+    return {
+        "voices": [
+            {
+                "id": voice.id,
+                "name": voice.name,
+                "description": voice.description,
+                "models": list(voice.models) if voice.models else None,
+            }
+            for voice in voices
+        ]
+    }
 
 
 def generate_video(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[str, Any]:

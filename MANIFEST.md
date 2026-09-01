@@ -1,6 +1,6 @@
 # Manifest
 
-Last updated: 2026-08-31 18:19:21 UTC
+Last updated: 2026-09-01 10:05:00 UTC
 
 Every current source file, with what it does and what it touches. A map for orienting in the codebase, not a second copy of the docstrings.
 
@@ -25,7 +25,7 @@ Every current source file, with what it does and what it touches. A map for orie
 | `_realtime.py` | Sync/async realtime voice session sequencing over the transport's WebSocket wire. |
 | `_transcription.py` | Sync/async streaming speech-to-text session sequencing over the same wire. |
 | `_tracing.py` | Optional TraceAct spans with capture off and both redaction layers pinned on. |
-| `_types.py` | Public frozen records: content parts, messages, requests, results, `Usage`, `AliasFact`, `Model`. |
+| `_types.py` | Public frozen records: content parts, messages, requests, results, `Usage`, `AliasFact`, `Model`, `Voice`. |
 | `_enums.py` | Public closed enums: model categories, wire protocols, operations. |
 | `_errors.py` | `KeyCallError` with the typed `ErrorCode` discriminator, plus `VideoJobTimeout` carrying the still-valid job handle. |
 
@@ -44,6 +44,7 @@ Every current source file, with what it does and what it touches. A map for orie
 | `_xai.py` | xAI override: `/v1/responses` routing for web search and reasoning effort, video generation. |
 | `_realtime.py` | Realtime wire adapters (OpenAI, xAI, Gemini) mapping session events to normalized types. |
 | `_stt.py` | AssemblyAI and Deepgram: credential-validating discovery, streaming transcription frames to normalized events. |
+| `_elevenlabs.py` | ElevenLabs: live speech-model discovery plus catalog STT entries, voice listing, speech generation, and a streaming-transcription translator over its JSON-message wire. |
 
 ## Viewer (`src/keycall/viewer/`)
 
@@ -65,7 +66,7 @@ Every current source file, with what it does and what it touches. A map for orie
 
 ## Tests (`tests/`)
 
-One file per surface, adversarial-first. `test_live.py` (deselected by default, `-m live`) holds the live smokes and capability-drift probes; `test_docs.py` is the docs-hygiene guard; `tests/js/markdown.test.mjs` covers the frontend renderer via `node --test`. The rest mock the wire per feature: adapters, client, CLI, streaming, tools, caching, realtime, transcription, viewer, sources, transport, types, tracing, hardening, alias facts, classification, credential, registry, embeddings, image/speech/video generation, structured output, web search, reasoning effort, async parity.
+One file per surface, adversarial-first. `test_live.py` (deselected by default, `-m live`) holds the live smokes and capability-drift probes; `test_docs.py` is the docs-hygiene guard; `tests/js/markdown.test.mjs` covers the frontend renderer via `node --test`. The rest mock the wire per feature: adapters, client, CLI, streaming, tools, caching, realtime, transcription, viewer, sources, transport, types, tracing, hardening, alias facts, classification, credential, registry, embeddings, image/speech/video generation, structured output, web search, reasoning effort, async parity, and the ElevenLabs adapter with voice listing (`test_elevenlabs.py`).
 
 ## Everything else
 

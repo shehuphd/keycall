@@ -106,6 +106,9 @@ class AssemblyAITranslator:
     def __init__(self) -> None:
         self.audio_duration_seconds: float | None = None
 
+    def encode_audio(self, pcm: bytes) -> bytes:
+        return pcm
+
     def finish_messages(self) -> tuple[str, ...]:
         return (json.dumps({"type": "Terminate"}),)
 
@@ -163,6 +166,9 @@ class DeepgramTranslator:
 
     def __init__(self) -> None:
         self.audio_duration_seconds: float | None = None
+
+    def encode_audio(self, pcm: bytes) -> bytes:
+        return pcm
 
     def finish_messages(self) -> tuple[str, ...]:
         return (json.dumps({"type": "CloseStream"}),)

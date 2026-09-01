@@ -992,9 +992,18 @@ def test_live_streaming_transcription_every_supporting_target():
             assert finals and finals[0].words, (
                 f"{target.display_name}: final transcript carries no word timings"
             )
-            assert ended is not None and ended.audio_duration_seconds, (
-                f"{target.display_name}: session summary reported no billable duration"
-            )
+            assert ended is not None, f"{target.display_name}: session never ended"
+            if target.provider == "elevenlabs":
+                # ElevenLabs sends no billed-duration frame (raw-verified
+                # 2026-08-31); a reported duration here would be invented.
+                assert ended.audio_duration_seconds is None, (
+                    f"{target.display_name}: started reporting a duration — "
+                    "update the catalog note and this test"
+                )
+            else:
+                assert ended.audio_duration_seconds, (
+                    f"{target.display_name}: session summary reported no billable duration"
+                )
             print(
                 f"{target.display_name}: transcribed {text!r} "
                 f"({len(finals)} final(s), {ended.audio_duration_seconds}s billed)"
@@ -2041,3 +2050,63 @@ def test_live_compat_reasoning_token_reporting_still_holds():
 
     if not probed:
         pytest.skip("no compat-provider target in the live source")
+
+
+def test_live_speech_generation_every_supporting_target():
+    """One tiny billable clip per TTS-capable target: voices list, then a
+    generation with the first voice. Model choice comes from the live
+    model list, not a hardcoded id."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+
+    import base64 as b64
+
+    from keycall import KeyCall, ModelCategory
+    from keycall._capabilities import providers_with
+
+    supporting = providers_with("speech_generation")
+    preferred = {
+        "openai": "gpt-4o-mini-tts",
+        "elevenlabs": "eleven_flash_v2_5",
+    }
+    targets, _ = load_targets(source)
+    probed = []
+    failures = []
+    for target in targets:
+        if target.provider not in supporting:
+            continue
+        client = KeyCall(provider=target.provider, api_key=target.key, read_timeout=120)
+        try:
+            voices = client.list_voices()
+            assert voices, f"{target.provider}: list_voices returned nothing"
+            listed = client.list_models(
+                categories={ModelCategory.SPEECH_GENERATION}, refresh=True
+            ).models
+            if not listed:
+                print(f"{target.provider}: no speech models listed — skipping generation")
+                continue
+            model = preferred.get(target.provider)
+            if model not in {m.id for m in listed}:
+                model = listed[0].id
+            try:
+                result = client.generate_speech(
+                    model=model, text="One red circle.", voice=voices[0].id
+                )
+            except KeyCallError as error:
+                if error.retryable:
+                    print(f"{target.provider} inconclusive (transient: {error.code.value})")
+                    continue
+                failures.append(f"{target.provider} ({model}): {error.code.value} — {error}")
+                continue
+            clip = result.parts[0]
+            audio = b64.b64decode(clip.base64_data)
+            assert audio, f"{target.provider}: empty audio"
+            print(f"{target.provider}: {model} spoke {len(audio)} bytes ({clip.media_type})")
+            probed.append(target.provider)
+        finally:
+            client.close()
+
+    assert not failures, "; ".join(failures)
+    if not probed:
+        pytest.skip("no speech-capable target in the live source")

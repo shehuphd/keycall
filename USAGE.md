@@ -21,7 +21,7 @@ keycall verify
 ```
 
 ```
-Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram): openai
+Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram, elevenlabs): openai
 API key:
 ✓ openai (openai): key accepted, 79 text model(s), list digest 6d356bc3f4c24389, selection rule v4
 ```
@@ -43,7 +43,7 @@ Then open the same key in the local viewer and click around: a live dashboard, a
 keycall view --provider openai --source env:OPENAI_API_KEY
 ```
 
-Swap `openai` for `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, or `xai`; an `assemblyai` or `deepgram` key verifies too, with `--generate` left off, since a speech-to-text provider has no text models to generate with. To load several keys at once, put them in a file and use `--source ./keys.toml` instead; see [`keycall-test-keys.example.toml`](keycall-test-keys.example.toml) for the format. The rest of this document is the full reference.
+Swap `openai` for `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, or `xai`; an `assemblyai`, `deepgram`, or `elevenlabs` key verifies too, with `--generate` left off, since a speech provider has no text models to generate with. To load several keys at once, put them in a file and use `--source ./keys.toml` instead; see [`keycall-test-keys.example.toml`](keycall-test-keys.example.toml) for the format. The rest of this document is the full reference.
 
 ## Clients
 
@@ -65,7 +65,7 @@ async with AsyncKeyCall(provider="anthropic", api_key=secret) as client:
     discovery = await client.list_models()
 ```
 
-Supported provider names: `openai`, `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, `xai`, and the speech-to-text providers `assemblyai` and `deepgram`. Aliases: `claude`, `google`, `google-gemini`, `pplx`, `kimi`, `grok`, `x-ai`.
+Supported provider names: `openai`, `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, `xai`, the speech-to-text providers `assemblyai` and `deepgram`, and the speech platform `elevenlabs`. Aliases: `claude`, `google`, `google-gemini`, `pplx`, `kimi`, `grok`, `x-ai`, `eleven-labs`, `11labs`.
 
 ### Custom OpenAI-compatible endpoints
 
@@ -544,10 +544,10 @@ Everything KeyCall doesn't model can be passed as `provider_config={...}`, merge
 
 ## Streaming transcription
 
-`transcribe_stream()` opens a live speech-to-text session with an STT provider — AssemblyAI or Deepgram, KeyCall's first non-LLM providers. Push raw 16-bit mono PCM in, read normalized transcript events out:
+`transcribe_stream()` opens a live speech-to-text session with a provider that streams it — AssemblyAI, Deepgram, or ElevenLabs. Push raw 16-bit mono PCM in, read normalized transcript events out:
 
 ```python
-client = KeyCall(provider="deepgram", api_key="...")   # or "assemblyai"
+client = KeyCall(provider="deepgram", api_key="...")   # or "assemblyai", "elevenlabs"
 
 with client.transcribe_stream(model="nova-3", sample_rate=16000) as session:
     # feed audio from another thread (or interleave sends with reads)
@@ -565,7 +565,7 @@ with client.transcribe_stream(model="nova-3", sample_rate=16000) as session:
 
 | Event kind | Meaning |
 |---|---|
-| `session_started` | the provider accepted the session (AssemblyAI; Deepgram sends no such frame — a successful connect is its accept signal) |
+| `session_started` | the provider accepted the session (AssemblyAI and ElevenLabs; Deepgram sends no such frame — a successful connect is its accept signal) |
 | `interim_transcript` | provisional text, superseded by later events; for live display only |
 | `final_transcript` | finalized text with per-word timings; this text will not change |
 | `session_ended` | the connection closed; always the final event, carrying the provider's billable-audio-seconds where its session summary arrived |
@@ -573,18 +573,18 @@ with client.transcribe_stream(model="nova-3", sample_rate=16000) as session:
 
 What a `final_transcript` carries, per the partial-support rule — a field only one provider reports is still normalized, and `None` means "this provider doesn't say":
 
-- **`words`**: per-word `TranscriptWord(text, start_ms, end_ms, confidence)` on both providers. Timings are milliseconds from the session's start regardless of the provider's own unit (AssemblyAI counts ms, Deepgram counts seconds; KeyCall converts). Deepgram's words carry punctuation and casing (`punctuate=true` is always requested); AssemblyAI formats the transcript itself the same way.
-- **`utterance_end`**: whether the speaker also finished the thought. Deepgram can finalize a stretch of text mid-utterance (`is_final` without `speech_final`) — more finals of the same utterance follow; AssemblyAI only finalizes whole turns, so it's always `True` there.
-- **`confidence`**: overall on Deepgram; `None` on AssemblyAI, which scores per-word only (read `words` instead).
-- **`channel`**: Deepgram's audio-channel index; `None` on AssemblyAI, which is single-channel. For dual-channel capture (a mic and system audio recorded separately), run one session per channel.
+- **`words`**: per-word `TranscriptWord(text, start_ms, end_ms, confidence)` on every provider. Timings are milliseconds from the session's start regardless of the provider's own unit (AssemblyAI counts ms, Deepgram and ElevenLabs count seconds; KeyCall converts). Deepgram's words carry punctuation and casing (`punctuate=true` is always requested); AssemblyAI and ElevenLabs format the transcript themselves the same way. ElevenLabs scores each word with a log-probability rather than a 0-1 figure, so its per-word `confidence` is 0.0 at most and more negative when less sure.
+- **`utterance_end`**: whether the speaker also finished the thought. Deepgram can finalize a stretch of text mid-utterance (`is_final` without `speech_final`) — more finals of the same utterance follow; AssemblyAI and ElevenLabs only finalize whole committed stretches, so it's always `True` there.
+- **`confidence`**: overall on Deepgram; `None` on AssemblyAI and ElevenLabs, which score per-word only (read `words` instead).
+- **`channel`**: Deepgram's audio-channel index; `None` elsewhere. For dual-channel capture (a mic and system audio recorded separately), run one session per channel.
 
-Both providers bill per second of audio, not per token — `session_ended.audio_duration_seconds` is the billable figure, from AssemblyAI's `Termination` frame or Deepgram's terminal `Metadata` frame. A session that drops before the summary arrives reports `None` there, with the close reason in `reason`.
+These providers bill per second of audio, not per token — `session_ended.audio_duration_seconds` is the billable figure, from AssemblyAI's `Termination` frame or Deepgram's terminal `Metadata` frame. ElevenLabs sends no duration summary at all, so the field is `None` there by design, and after `finish()` its server keeps the connection open rather than closing it — KeyCall ends the session itself once the final transcript is in, with `reason` reading `"client finished"`. On the other two, a session that drops before the summary arrives reports `None` with the close reason in `reason`.
 
-- `model=None` takes the provider's default streaming model. On AssemblyAI that's its current flagship (`universal-3-5-pro`); on Deepgram it's a dated base model, so pass `model="nova-3"` explicitly there.
-- `sample_rate` (default 16000) must match the PCM you send; both providers accept other rates.
+- `model=None` takes the provider's default streaming model. On AssemblyAI that's its current flagship (`universal-3-5-pro`); on Deepgram it's a dated base model, so pass `model="nova-3"` explicitly there. ElevenLabs has one streaming model, `scribe_v2_realtime`, which is also its default.
+- `sample_rate` (default 16000) must match the PCM you send; AssemblyAI and Deepgram accept other rates freely, while ElevenLabs takes a fixed set (8000, 16000, 22050, 24000, 44100, 48000) and any other rate is refused before connecting.
 - Sessions run long: AssemblyAI auto-closes after 3 hours. A dropped connection surfaces as `session_ended` with the close reason and no billing summary. Reconnection is yours: open a new session and resend audio from the point of the last `final_transcript` — everything after it was interim-only and is re-recognized from the resent audio. KeyCall doesn't buffer or replay audio itself.
-- `list_models(categories={ModelCategory.TRANSCRIPTION})` lists each provider's streaming models (maintained by KeyCall — neither provider has a model-list API; the call still validates the credential against a live endpoint). `keycall verify`-style key checking works the same way as for LLM providers.
-- `AsyncKeyCall.transcribe_stream()` is the same surface with `async with` / `async for`. LLM providers refuse `transcribe_stream` with `UNSUPPORTED_OPERATION` before any connection, and the STT providers refuse `generate_text` and every other LLM operation the same way.
+- `list_models(categories={ModelCategory.TRANSCRIPTION})` lists each provider's streaming models. AssemblyAI's and Deepgram's are maintained by KeyCall (neither has a model-list API; the call still validates the credential against a live endpoint); ElevenLabs lists its speech models live, with the streaming-transcription model as maintained catalog data since its models endpoint omits it. `keycall verify`-style key checking works the same way as for LLM providers.
+- `AsyncKeyCall.transcribe_stream()` is the same surface with `async with` / `async for`. LLM providers refuse `transcribe_stream` with `UNSUPPORTED_OPERATION` before any connection, and the speech providers refuse `generate_text` and every other LLM operation the same way (ElevenLabs keeps `generate_speech` and `list_voices`).
 
 ## Prompt caching
 
@@ -718,12 +718,31 @@ Path("out.mp3").write_bytes(base64.b64decode(clip.base64_data))
 |---|---|---|---|
 | OpenAI | yes | `gpt-4o-mini-tts`, `tts-1`, `tts-1-hd` | raw audio file (`audio/mpeg` by default), read from `/audio/speech` |
 | Gemini | yes | `gemini-2.5-flash-preview-tts` | raw PCM (`audio/L16;codec=pcm;rate=24000`), on the ordinary content endpoint |
+| ElevenLabs | yes | `eleven_flash_v2_5`, `eleven_multilingual_v2` | raw audio file (`audio/mpeg`), from its text-to-speech endpoint |
 | Anthropic, DeepSeek, Perplexity, Moonshot | no | | |
 
-- **`voice` is optional, but not uniformly.** Gemini defaults one, and so does OpenAI's `gpt-4o-mini-tts`; OpenAI's `tts-1` and `tts-1-hd` require it and answer 400 without it (live-verified 2026-08-12 across all three). KeyCall never picks a voice for you — that would be a choice you never made — so a call to one of the older models needs `voice` passed explicitly, or the provider's own error names what's missing.
+- **`voice` is optional, but not uniformly.** Gemini defaults one, and so does OpenAI's `gpt-4o-mini-tts`; OpenAI's `tts-1` and `tts-1-hd` require it and answer 400 without it (live-verified 2026-08-12 across all three). ElevenLabs requires it on every model: a call without one refuses before the network, naming the first few voices on your key by name and id and pointing at `list_voices()` for the rest. KeyCall never picks a voice for you — that would be a choice you never made.
+- **ElevenLabs takes the voice id, not the display name** — `list_voices()` returns both. A voice id or model id the provider doesn't recognize maps to `MODEL_NOT_SUITABLE` with the provider's message.
 - **`media_type` is the provider's, not a guess, and it is not always a playable container.** OpenAI's response is a normal audio file. Gemini's is raw 16-bit PCM: to play or save it as a `.wav`, wrap it in a WAV header yourself (44 bytes, standard format — any audio library, or a dozen lines of `struct.pack`, does this) rather than treating the bytes as an MP3 or handing them to something that expects a container.
 - **The response itself is not JSON on OpenAI** — the only operation in the package where that's true. Nothing about calling `generate_speech()` changes for this; it's mentioned here because if you ever inspect KeyCall's transport layer, this is the one route whose successful response is raw bytes rather than a parsed body.
 - A text-only reply (Gemini asking a clarifying question, or refusing) raises rather than returning silence, and repeats what the model said — same posture as image generation's equivalent case.
+
+### Voices
+
+`list_voices()` returns the voices a key can speak with, as the same normalized record on every speaking provider:
+
+```python
+for voice in client.list_voices():
+    voice.id           # what generate_speech(voice=...) takes
+    voice.name         # display name
+    voice.description  # the provider's blurb, where it publishes one
+    voice.models       # None = every speech model; a tuple = only those models
+```
+
+- **OpenAI and Gemini** publish fixed voice sets with no list endpoint, so KeyCall serves them from the catalog without a network call: 13 for OpenAI (`ballad`, `verse`, `marin`, and `cedar` scoped to `gpt-4o-mini-tts` via `models`), 30 prebuilt for Gemini.
+- **ElevenLabs** has a live endpoint, so the list is fetched fresh and reflects your account — cloned and library voices appear alongside the premade set.
+- Providers without speech generation refuse with `UNSUPPORTED_OPERATION`, naming the providers that have it.
+- `AsyncKeyCall.list_voices()` is the same surface, awaited.
 
 ## Video generation
 
@@ -877,7 +896,7 @@ Environment variable (single target, provider required):
 keycall verify --source env:MY_OPENAI_KEY --provider openai
 ```
 
-Interactive (no `--source`): prompts for the provider, naming all nine valid choices (case-insensitive), then a hidden key.
+Interactive (no `--source`): prompts for the provider, naming all ten valid choices (case-insensitive), then a hidden key.
 
 Fields: `provider` and `key` required; `protocol`, `base_url`, `name` optional. Repeating a provider creates independent targets.
 
@@ -903,7 +922,7 @@ Each tab has its own URL (`/models`, `/playground`, `/verify`, `/traces`; `/` is
 
 - **Dashboard** — every loaded target; click one for a live key check and its model count, or press **Test all keys** to run the same check on every row at once.
 - **Models** — browse a target's full model list, filtered by category (text, image, embedding, and so on), with the classification source. `Refresh` bypasses the cache.
-- **Playground** — pick a target and model, write a prompt (optional system prompt), toggle web search or tool calling, attach a picture, a recording (from a file, or the microphone button in the message box, which encodes to 16 kHz mono WAV in the browser), or a document, and send it to the provider. Results show text, timing, token usage, finish reason, and rendered citation links. The conversation carries across turns: each settled exchange is replayed with the next request, so follow-up questions keep their context, and switching the key or model mid-conversation hands the whole exchange to the new model. New chat clears the transcript and starts over. Attachments belong to the turn that sent them and are not replayed on later turns (each replay would be billed again); a short label stands in for the media. An attachment kind the selected key can't send is disabled with a line naming which of your keys to use instead, read from the same catalog the adapters gate on. Switch the task to **Make a picture** to call an image model instead, or **Make a video** for a video model (Gemini Veo, xAI Grok Imagine): a render runs far longer than a picture, from under a minute to over ten, and the reply bubble shows a running elapsed-time clock while it waits. A Reasoning effort select sends `reasoning_effort`, gated per key the same way as the other Extras. A Cache standing instructions toggle sends them with `cacheable=True`, gated per key the same way (on for Anthropic and OpenAI, disabled with an inline note everywhere else). The reply budget field starts at a suggestion computed from what's selected: reasoning effort, web search, tool offering, and attachments all tend to spend more tokens than a bare reply, so the suggestion rises with them and drops back to a low floor when nothing token-intensive is on. Typing a value in by hand replaces the suggestion for the rest of the conversation; New chat resumes suggesting. A Timeout slider sets how many seconds the viewer waits on a provider before giving up (60 to 300, default 180); pictures routinely need more than a text reply. The task drives the Key select: picking a task narrows the list to keys whose own model list has at least one model for it, so a key that can't serve the task is never offered. Switch the task to **Have a voice conversation** for a live session on a realtime-capable key (OpenAI, xAI, Gemini): the viewer's server bridges a WebSocket in the browser to a `realtime()` session, so tapping the microphone once starts streaming caller audio and a second tap ends the session; the model's reply plays back as it arrives either way. Standing instructions above become the session's system prompt, set once when the session starts; ending the session or leaving voice mode closes the connection. Switch the task to **Transcribe speech** for live speech-to-text on an STT key (AssemblyAI, Deepgram): tap the microphone and talk, interim words appear as they are recognized and firm up into final bubbles (with the provider's confidence when it reports one), and tapping again finishes the session and shows the seconds of audio billed. A conversation is saved to the History pane as it grows — text tasks save each settled exchange, a transcription saves each finalized utterance — titled from the first prompt or the first recognized words, and clicking a saved conversation restores its transcript, key, and model.
+- **Playground** — pick a target and model, write a prompt (optional system prompt), toggle web search or tool calling, attach a picture, a recording (from a file, or the microphone button in the message box, which encodes to 16 kHz mono WAV in the browser), or a document, and send it to the provider. Results show text, timing, token usage, finish reason, and rendered citation links. The conversation carries across turns: each settled exchange is replayed with the next request, so follow-up questions keep their context, and switching the key or model mid-conversation hands the whole exchange to the new model. New chat clears the transcript and starts over. Attachments belong to the turn that sent them and are not replayed on later turns (each replay would be billed again); a short label stands in for the media. An attachment kind the selected key can't send is disabled with a line naming which of your keys to use instead, read from the same catalog the adapters gate on. Switch the task to **Make a picture** to call an image model instead, or **Make a video** for a video model (Gemini Veo, xAI Grok Imagine): a render runs far longer than a picture, from under a minute to over ten, and the reply bubble shows a running elapsed-time clock while it waits. A Reasoning effort select sends `reasoning_effort`, gated per key the same way as the other Extras. A Cache standing instructions toggle sends them with `cacheable=True`, gated per key the same way (on for Anthropic and OpenAI, disabled with an inline note everywhere else). The reply budget field starts at a suggestion computed from what's selected: reasoning effort, web search, tool offering, and attachments all tend to spend more tokens than a bare reply, so the suggestion rises with them and drops back to a low floor when nothing token-intensive is on. Typing a value in by hand replaces the suggestion for the rest of the conversation; New chat resumes suggesting. A Timeout slider sets how many seconds the viewer waits on a provider before giving up (60 to 300, default 180); pictures routinely need more than a text reply. The task drives the Key select: picking a task narrows the list to keys whose own model list has at least one model for it, so a key that can't serve the task is never offered. Switch the task to **Have a voice conversation** for a live session on a realtime-capable key (OpenAI, xAI, Gemini): the viewer's server bridges a WebSocket in the browser to a `realtime()` session, so tapping the microphone once starts streaming caller audio and a second tap ends the session; the model's reply plays back as it arrives either way. Standing instructions above become the session's system prompt, set once when the session starts; ending the session or leaving voice mode closes the connection. Switch the task to **Transcribe speech** for live speech-to-text on a streaming-transcription key (AssemblyAI, Deepgram, ElevenLabs): tap the microphone and talk, interim words appear as they are recognized and firm up into final bubbles (with the provider's confidence when it reports one), and tapping again finishes the session and shows the seconds of audio billed, when the provider reports them. Switch the task to **Speak text** for speech generation on a speaking key (OpenAI, Gemini, ElevenLabs): type the words, pick a voice where one applies (the Voice select lists the key's voices, filtered to the ones the selected model takes), and the reply bubble is a playable audio clip with a save link. A conversation is saved to the History pane as it grows — text tasks save each settled exchange, a transcription saves each finalized utterance — titled from the first prompt or the first recognized words, and clicking a saved conversation restores its transcript, key, and model.
 - **Verify** — run the same walk as `keycall verify` (optionally with generation) across every target and read the per-model attempt report.
 - **Traces** — every request this viewer run has made, newest first: which key and model, how long it took, and how it ended. When a button seems slow or silent, the answer is here — a reasoning model can think for most of a minute before its first visible token, and the trace shows that time. A search box filters rows as you type, and clicking a column header sorts by it, in either direction. Prompts and replies are never recorded, only timing and outcomes, and the log lives in the server process's memory for the run; Clear traces wipes it without a restart.
 

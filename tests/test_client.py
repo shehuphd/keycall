@@ -217,6 +217,17 @@ BAD_KEY_RESPONSES = {
     ),
     "xai": (401, {"error": f"Incorrect API key provided: {CANARY}", "code": "..."}),
     "assemblyai": (401, {"error": "Authentication error, API token missing/invalid"}),
+    "elevenlabs": (
+        401,
+        {
+            "detail": {
+                "type": "authentication_error",
+                "code": "unauthorized",
+                "message": "Invalid API key",
+                "status": "invalid_api_key",
+            }
+        },
+    ),
     "deepgram": (401, {"err_code": "INVALID_AUTH", "err_msg": "Invalid credentials."}),
 }
 

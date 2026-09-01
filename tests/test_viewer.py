@@ -1841,3 +1841,66 @@ def test_traces_clear_requires_the_token(server):
     base, _ = server
     status, _ = _post(f"{base}/api/traces/clear", {})
     assert status == 403
+
+
+def test_generate_speech_returns_the_clip_and_media_type():
+    import base64 as _b64
+
+    from keycall.viewer._api import generate_speech, list_voices
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200, json=[{"model_id": "eleven_flash_v2_5", "can_do_text_to_speech": True}]
+            )
+        if request.url.path == "/v1/voices":
+            return httpx.Response(200, json={"voices": [
+                {"voice_id": "v-abc123456789", "name": "Roger", "category": "premade"},
+            ]})
+        return httpx.Response(200, content=b"ID3x", headers={"content-type": "audio/mpeg"})
+
+    reg = Registry(
+        [Target(provider="elevenlabs", key=CANARY, name="my-11l")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        voices = list_voices(reg, 0)
+        body = generate_speech(
+            reg, 0,
+            {"target": 0, "model": "eleven_flash_v2_5", "text": "Hi.", "voice": "v-abc123456789"},
+        )
+        # No voice: the refusal names the account's voices instead of a bare error.
+        refused = generate_speech(
+            reg, 0, {"target": 0, "model": "eleven_flash_v2_5", "text": "Hi."}
+        )
+    finally:
+        reg.close()
+
+    assert voices["voices"][0] == {
+        "id": "v-abc123456789", "name": "Roger", "description": "premade", "models": None,
+    }
+    assert body["clips"] == [
+        {"base64_data": _b64.b64encode(b"ID3x").decode(), "media_type": "audio/mpeg"}
+    ]
+    assert refused["error"]["code"] == "model_not_suitable"
+    assert "Roger" in refused["error"]["message"]
+
+
+def test_catalog_voices_serve_without_network():
+    from keycall.viewer._api import list_voices
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("catalog voices must not touch the network")
+
+    reg = Registry(
+        [Target(provider="openai", key=CANARY, name="my-openai")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        body = list_voices(reg, 0)
+    finally:
+        reg.close()
+    ids = [voice["id"] for voice in body["voices"]]
+    assert "alloy" in ids and "marin" in ids
+    marin = next(v for v in body["voices"] if v["id"] == "marin")
+    assert marin["models"] == ["gpt-4o-mini-tts"]

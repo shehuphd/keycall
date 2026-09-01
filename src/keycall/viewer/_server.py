@@ -16,6 +16,8 @@ Routes (all under the base "/"):
   POST /api/generate/stream      same body -> SSE events ending in a result or error
   POST /api/generate/image       {target, model, prompt} -> InvocationResult
   POST /api/generate/video       {target, model, prompt} -> InvocationResult
+  POST /api/generate/speech      {target, model, text, voice?} -> InvocationResult
+  GET  /api/voices?target=       the target's voices for the speech task's picker
   GET  /api/realtime?target=&model=&voice=&instructions=   WebSocket upgrade;
                                   bridges the browser to a realtime session
   GET  /api/transcribe?target=&model=&sample_rate=   WebSocket upgrade;
@@ -574,6 +576,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_realtime(parsed)
         elif route == "/api/transcribe":
             self._handle_transcribe(parsed)
+        elif route == "/api/voices":
+            params = parse_qs(parsed.query)
+            target_id = self._target_id(params)
+            if target_id is None:
+                self._send_json({"error": {"code": "bad_request", "message": "target required"}}, 400)
+                return
+            started = time.monotonic()
+            result = _api.list_voices(self._registry, target_id)
+            self._record(route=route, method="GET", started=started, body=None, result=result)
+            self._send_json(result)
         elif route == "/api/models":
             params = parse_qs(parsed.query)
             target_id = self._target_id(params)
@@ -696,6 +708,17 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             started = time.monotonic()
             result = _api.generate_image(self._registry, target_id, body)
+            self._record(route=route, method="POST", started=started, body=body, result=result)
+            self._send_json(result)
+        elif route == "/api/generate/speech":
+            target_id = body.get("target")
+            if not isinstance(target_id, int):
+                self._send_json(
+                    {"error": {"code": "bad_request", "message": "target required"}}, 400
+                )
+                return
+            started = time.monotonic()
+            result = _api.generate_speech(self._registry, target_id, body)
             self._record(route=route, method="POST", started=started, body=body, result=result)
             self._send_json(result)
         elif route == "/api/generate/video":

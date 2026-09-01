@@ -67,6 +67,7 @@ __all__ = [
     "VideoJob",
     "VideoJobStatus",
     "VideoOutput",
+    "Voice",
 ]
 
 MessageRole = Literal["system", "user", "assistant"]
@@ -889,6 +890,24 @@ class Usage:
     reasoning_tokens: int | None = None
     total_tokens: int | None = None
     provider_units: tuple[tuple[str, float], ...] | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Voice:
+    """One voice a provider can speak with. ``id`` is the exact value
+    ``generate_speech(voice=...)`` sends; ``name`` is the human label
+    (the same string where the provider makes no distinction).
+    ``models`` scopes a voice to specific models where the provider's
+    support varies that way (OpenAI's newest four voices are
+    gpt-4o-mini-tts only); None means every speech model takes it.
+    ``description`` carries whatever category or characteristic the
+    provider reports, when it reports one."""
+
+    provider: str
+    id: str
+    name: str
+    description: str | None = None
+    models: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

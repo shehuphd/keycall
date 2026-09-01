@@ -146,6 +146,7 @@
                 <option value="text">Write text</option>
                 <option value="image">Make a picture</option>
                 <option value="video">Make a video</option>
+                <option value="speech">Speak text</option>
                 <option value="voice">Have a voice conversation</option>
                 <option value="transcribe">Transcribe speech</option>
               </select>
@@ -177,6 +178,10 @@
               <label for="pg-timeout" title="How many seconds to wait for a provider before giving up on a request. Pictures can run past a minute, so this defaults well above the usual text wait.">Timeout</label>
               <input id="pg-timeout" type="range" value="180" min="60" max="300" step="5">
               <span id="pg-timeout-value">180s</span>
+            </div>
+            <div class="pg-row" id="pg-voice-row" hidden>
+              <label for="pg-voice" title="The voice the model speaks with. The list comes from the selected key's provider; a voice limited to certain models only shows when one of them is selected.">Voice</label>
+              <select id="pg-voice"></select>
             </div>
             <div class="pg-row" id="pg-video-duration-row" hidden>
               <label for="pg-video-duration" title="How many seconds of video to render. Longer clips cost more; the range and step depend on the selected key's provider.">Duration</label>
@@ -211,6 +216,10 @@
             <p class="hint" id="pg-video-mode-note" hidden>
               Video models take a description and nothing else. Rendering one
               runs far longer than a picture, from under a minute to over ten.
+            </p>
+            <p class="hint" id="pg-speech-mode-note" hidden>
+              Speech models read your text aloud in the voice picked above.
+              The reply arrives as a playable clip.
             </p>
             <p class="hint" id="pg-voice-mode-note" hidden>
               A live session over its own connection, held open until you end
