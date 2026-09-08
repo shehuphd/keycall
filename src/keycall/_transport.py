@@ -742,7 +742,7 @@ class Transport(_TransportCore):
         """Open a streaming request. Yields (headers, event_iterator) where
         the iterator produces (event_name, data) SSE pairs. Never retries:
         streaming is generation, and generation is never retried. Pre-stream
-        HTTP errors classify exactly as non-streaming ones."""
+        HTTP errors classify the same as non-streaming ones."""
         try:
             http_request = self._client.build_request(
                 spec.method,

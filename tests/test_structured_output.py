@@ -2,7 +2,7 @@
 
 Fixtures mirror live responses captured 2026-08-06: OpenAI Responses
 text.format, Anthropic forced tool_choice, Gemini responseSchema, and the
-compat family split (Moonshot/Perplexity enforce json_schema; DeepSeek and
+compat family split (Moonshot/Perplexity/xAI enforce json_schema; DeepSeek and
 unverified custom targets fall back to json_object with a warning).
 """
 
@@ -258,7 +258,7 @@ def test_openai_strict_mode_still_accepts_additional_properties():
 # --- Compat family: capability split -------------------------------------------
 
 
-@pytest.mark.parametrize("provider", ["moonshot", "perplexity"])
+@pytest.mark.parametrize("provider", ["moonshot", "perplexity", "xai"])
 def test_compat_providers_with_schema_support_get_json_schema(provider):
     captured = {}
 
@@ -428,7 +428,8 @@ def test_anthropic_malformed_tool_input_does_not_crash():
         result = client.generate_text(
             model="claude-opus-5", messages=simple_messages(), response_schema=SCHEMA
         )
-        # Must produce *some* JSON-serialized text, never raise.
+        # Must produce some non-empty, valid JSON text, never raise.
+        assert result.text
         json.loads(result.text)
 
 

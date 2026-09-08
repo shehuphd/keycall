@@ -104,7 +104,7 @@ def _bash_code_execution_output(
 
 
 class _AnthropicStreamAssembler(StreamAssembler):
-    """Event names and shapes live-verified 2026-08-08: message_start,
+    """Event names and formats live-verified 2026-08-08: message_start,
     content_block_start/delta/stop, message_delta (usage + stop_reason),
     message_stop terminal, ping keep-alives, in-band error events."""
 

@@ -44,7 +44,7 @@ def test_retired_model_fact_matches_id_and_alias():
 # --- the refusal, per operation ---------------------------------------------
 
 
-def _expect_retired(callable_, *, fragment: str):
+def assert_retired(callable_, *, fragment: str):
     with pytest.raises(KeyCallError) as caught:
         callable_()
     error = caught.value
@@ -56,7 +56,7 @@ def _expect_retired(callable_, *, fragment: str):
 
 def test_generate_text_refuses_a_retired_model_before_the_network():
     client = make_client("anthropic")
-    error = _expect_retired(
+    error = assert_retired(
         lambda: client.generate_text(model="claude-3-5-haiku-20241022", messages=MESSAGE),
         fragment="retired by anthropic on 2026-02-19",
     )
@@ -66,7 +66,7 @@ def test_generate_text_refuses_a_retired_model_before_the_network():
 
 def test_generate_text_refuses_the_alias_spelling_too():
     client = make_client("anthropic")
-    _expect_retired(
+    assert_retired(
         lambda: client.generate_text(model="claude-3-5-haiku-latest", messages=MESSAGE),
         fragment="claude-3-5-haiku-latest was retired",
     )
@@ -79,13 +79,13 @@ def test_streaming_shares_the_gate():
         with client.stream_text(model="claude-3-opus-latest", messages=MESSAGE) as stream:
             for _ in stream:
                 pass
-    _expect_retired(run, fragment="claude-3-opus-latest was retired")
+    assert_retired(run, fragment="claude-3-opus-latest was retired")
     client.close()
 
 
 def test_image_generation_refuses():
     client = make_client("openai")
-    error = _expect_retired(
+    error = assert_retired(
         lambda: client.generate_image(model="dall-e-3", prompt="a fox"),
         fragment="dall-e-3 was retired by openai on 2026-05-12",
     )
@@ -95,7 +95,7 @@ def test_image_generation_refuses():
 
 def test_embedding_refuses():
     client = make_client("openai")
-    _expect_retired(
+    assert_retired(
         lambda: client.embed(model="ada", inputs=["x"]),
         fragment="ada was retired",
     )
@@ -104,7 +104,7 @@ def test_embedding_refuses():
 
 def test_video_generation_refuses():
     client = make_client("gemini", key="AIza-test")
-    _expect_retired(
+    assert_retired(
         lambda: client.start_video(model="veo-2.0-generate-001", prompt="a fox"),
         fragment="veo-2.0-generate-001 was retired by gemini on 2026-06-30",
     )
@@ -117,7 +117,7 @@ def test_batch_refuses_a_retired_model_anywhere_in_the_submission():
         BatchRequest(model="gpt-4o-mini", messages=MESSAGE),
         BatchRequest(model="gpt-5-chat-latest", messages=MESSAGE),
     ]
-    _expect_retired(
+    assert_retired(
         lambda: client.start_batch(requests),
         fragment="gpt-5-chat-latest was retired",
     )
@@ -126,7 +126,7 @@ def test_batch_refuses_a_retired_model_anywhere_in_the_submission():
 
 def test_transcription_refuses():
     client = make_client("elevenlabs")
-    error = _expect_retired(
+    error = assert_retired(
         lambda: client.generate_speech(model="eleven_monolingual_v1", text="hi", voice="v"),
         fragment="eleven_monolingual_v1 was retired by elevenlabs on 2026-07-09",
     )
@@ -136,7 +136,7 @@ def test_transcription_refuses():
 
 def test_an_undated_entry_reads_without_inventing_a_date():
     client = make_client("xai", key="xai-test")
-    error = _expect_retired(
+    error = assert_retired(
         lambda: client.generate_text(model="grok-2-1212", messages=MESSAGE),
         fragment="grok-2-1212 was retired by xai",
     )

@@ -58,7 +58,7 @@ traceact = ["traceact>=0.13,<2.0"]
 # the gated type check fails on an import it cannot read. Runtime is
 # unaffected, so the optional extra above stays where it is. Same upper
 # bound as the traceact extra, for the same reason.
-dev = ["pytest>=8", "mypy>=1.10", "ruff>=0.5", "traceact>=0.14.2,<2.0", "tomli>=2.0"]
+dev = ["pytest>=8", "mypy>=1.10", "ruff>=0.5", "traceact>=0.14.2,<2.0", "tomli>=2.0", "shiplock>=0.3.1"]
 
 [project.urls]
 Homepage = "https://github.com/shehuphd/keycall"

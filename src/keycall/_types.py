@@ -126,7 +126,7 @@ class ImageInput:
 
     def __post_init__(self) -> None:
         if (self.url is None) == (self.data is None):
-            raise ValueError("ImageInput requires exactly one of url or data")
+            raise ValueError("ImageInput requires one of url or data, not both")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -145,7 +145,7 @@ class AudioInput:
 
     def __post_init__(self) -> None:
         if (self.url is None) == (self.data is None):
-            raise ValueError("AudioInput requires exactly one of url or data")
+            raise ValueError("AudioInput requires one of url or data, not both")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -166,7 +166,7 @@ class FileInput:
 
     def __post_init__(self) -> None:
         if (self.url is None) == (self.data is None):
-            raise ValueError("FileInput requires exactly one of url or data")
+            raise ValueError("FileInput requires one of url or data, not both")
 
 
 # --- tool calling ----------------------------------------------------------
@@ -175,7 +175,7 @@ class FileInput:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Tool:
     """A caller-defined tool the model may request. KeyCall never executes
-    tools; it normalizes the request/response wire shapes.
+    tools; it normalizes the request/response wire formats.
 
     ``input_schema=None`` declares a custom (freeform) tool instead of an
     ordinary JSON-Schema one: the model's call arrives as a plain string
@@ -1215,7 +1215,7 @@ def _without_tracking(url: str) -> str:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Citation:
     """One normalized web-search source, across whichever shape the
-    provider actually returned it in (OpenAI's text annotations, Anthropic's
+    provider returned it in (OpenAI's text annotations, Anthropic's
     per-block citations, Gemini's grounding chunks, Perplexity's
     search_results).
 
@@ -1231,7 +1231,7 @@ class Citation:
     eight settings and none concerns tracking.
 
     Only the ``utm_*`` family is removed, because it never changes what a
-    URL resolves to. Every other parameter is left exactly as it arrived,
+    URL resolves to. Every other parameter is left as it arrived,
     including Gemini's vertexaisearch.cloud.google.com redirect, which is
     the direct source by Google's own design and which KeyCall doesn't
     pre-resolve.

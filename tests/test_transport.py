@@ -241,6 +241,7 @@ def test_proxy_env_with_trust_env_false_constructs(monkeypatch):
         base_url="https://llm.example.edu/v1",
         trust_env=False,
     )
+    assert client.provider == "my-lab"
     client.close()
 
 
@@ -255,6 +256,7 @@ def test_proxy_env_with_allow_private_network_constructs(monkeypatch):
         base_url="https://llm.example.edu/v1",
         allow_private_network=True,
     )
+    assert client.provider == "my-lab"
     client.close()
 
 
@@ -268,6 +270,7 @@ def test_no_proxy_env_constructs(monkeypatch):
         protocol="openai-compatible",
         base_url="https://llm.example.edu/v1",
     )
+    assert client.provider == "my-lab"
     client.close()
 
 
@@ -297,6 +300,7 @@ def test_proxy_env_does_not_refuse_named_providers(monkeypatch):
     proxy must not break them — widening the check would."""
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
     client = KeyCall(provider="openai", api_key=CANARY)
+    assert client.provider == "openai"
     client.close()
 
 

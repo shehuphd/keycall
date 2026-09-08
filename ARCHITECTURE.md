@@ -93,7 +93,7 @@ provider name ──► catalog profile ──► protocol ──► adapter
   anthropic           anthropic         anthropic    AnthropicAdapter
   gemini              gemini            gemini       GeminiAdapter
   deepseek            openai-compatible              OpenAICompatibleAdapter
-  moonshot            openai-compatible              OpenAICompatibleAdapter
+  moonshot            openai-compatible              MoonshotAdapter (override)
   perplexity          openai-compatible              PerplexityAdapter (override)
   xai                 openai-compatible              XAIAdapter (override)
   assemblyai          stt                            AssemblyAIAdapter (by name)

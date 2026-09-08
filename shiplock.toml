@@ -1,0 +1,26 @@
+# Shiplock config: docs-vs-code release checks, deterministic and
+# agent-audited (semantic and ablation prompts included).
+# Install: pip install shiplock. Docs: https://github.com/shehuphd/shiplock
+
+[docs]
+public = ["README.md", "USAGE.md", "ARCHITECTURE.md", "CHANGELOG.md"]
+changelog = "CHANGELOG.md"
+readme = "README.md"
+
+[style]
+source_globs = ["src/**/*.py"]
+
+[version]
+package = "keycall"
+
+[architecture]
+doc = "ARCHITECTURE.md"
+source_dir = "src/keycall"
+exempt = ["__init__"]
+
+[manifest]
+doc = "MANIFEST.md"
+sources = ["src/**/*.py"]
+
+[tests]
+globs = ["tests/**/*.py"]

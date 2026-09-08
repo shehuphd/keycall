@@ -261,7 +261,7 @@ class ElevenLabsAdapter(ProviderAdapter):
     # One multipart round trip on /v1/speech-to-text with model_id and
     # one of file/source_url (never both). Live-verified 2026-09-02 on
     # scribe_v2 (bytes path): words[] mixes types word/spacing (spacing
-    # entries carry the gaps and are dropped), timings are seconds,
+    # entries mark the pauses and are dropped), timings are seconds,
     # speaker_id appears under diarize, per-word logprob is not a 0-1
     # confidence and is not passed off as one, language_code is
     # ISO-639-3, and audio_duration_secs rides the response.

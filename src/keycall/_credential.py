@@ -1,6 +1,6 @@
 """Internal redacting credential wrapper.
 
-Not exported. The raw key enters KeyCall at exactly one boundary (client
+Not exported. The raw key enters KeyCall at a single boundary (client
 construction) and is wrapped here immediately, before any traced internal
 workflow begins.
 """

@@ -128,7 +128,7 @@ def _parse_json(text: str) -> list[Target]:
 def _parse_toml(text: str) -> list[Target]:
     # Version-gated rather than try/except, because a type checker can
     # evaluate sys.version_info against its configured target and check the
-    # branch that actually applies. The try/except form left both imports
+    # branch that applies. The try/except form left both imports
     # unresolvable and needed an ignore comment to stay quiet.
     if sys.version_info >= (3, 11):
         import tomllib

@@ -42,7 +42,7 @@ to disk, and accepted three ways:
 Opening the printed link is a handshake: the server sets an httpOnly,
 SameSite=Strict cookie and redirects to the bare path. The token therefore
 never reaches page script (which renders untrusted model output) and never
-lands in browser history.
+appears in browser history.
 
 That cookie is why POSTs are CSRF-checked. A custom header cannot be set
 cross-origin without a CORS preflight this server never answers, so header
@@ -94,7 +94,7 @@ _CONTENT_TYPES = {".html": "text/html", ".css": "text/css", ".js": "text/javascr
 #   form-action    a form can post somewhere else entirely
 #   frame-ancestors  nothing may embed this page, so it can't be clickjacked
 # None of them are used by the viewer, so 'none' costs nothing and closes
-# the gap. Relax frame-ancestors only if the viewer ever needs embedding.
+# the hole. Relax frame-ancestors only if the viewer ever needs embedding.
 #
 # media-src also allows data:, the same way img-src does: a generated
 # video arrives as a data: URI built from bytes the page already holds,
@@ -212,7 +212,7 @@ class _Handler(BaseHTTPRequestHandler):
         address = self.server.server_address
         # socketserver types the bound address loosely enough to be bytes,
         # and formatting bytes straight into a string yields "b'127.0.0.1'",
-        # which would never match a browser's Origin and would quietly fail
+        # which would never match a browser's Origin and would fail silently
         # the check open or shut depending on the branch. Decode it.
         raw_host = address[0]
         host = raw_host.decode() if isinstance(raw_host, (bytes, bytearray)) else str(raw_host)

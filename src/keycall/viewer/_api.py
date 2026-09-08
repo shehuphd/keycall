@@ -1,7 +1,7 @@
 """Pure request handlers: Registry + JSON-serializable input -> JSON-
 serializable output. No HTTP here, so these are testable without a socket.
 
-Every function's return value is what actually reaches the browser. This is
+Every function's return value is what reaches the browser. This is
 the second-to-last place credentials could leak (the last is `_server.py`'s
 response encoder); nothing here ever touches `Target.key` or
 `Credential.reveal()`.
@@ -407,7 +407,7 @@ def _parse_tools(raw: Any) -> list[Tool]:
 
 
 # The three attachment kinds the Playground can send, keyed by the field
-# name the browser posts. Audio and documents follow exactly the path
+# name the browser posts. Audio and documents follow the same path
 # images already took: the browser holds the bytes and sends base64,
 # KeyCall decodes here, and the adapters see the same input any library
 # caller would construct. Nothing about the refusal rules is re-implemented
@@ -436,7 +436,7 @@ def _parse_media(
         url = entry.get("url")
         encoded = entry.get("data_base64")
         if bool(url) == bool(encoded):
-            raise _BadRequest(f"{noun} {index} needs exactly one of url or data_base64")
+            raise _BadRequest(f"{noun} {index} needs one of url or data_base64, not both")
         try:
             if url:
                 parts.append(part_type(url=str(url)))

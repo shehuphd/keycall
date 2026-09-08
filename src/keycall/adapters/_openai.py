@@ -958,7 +958,7 @@ class OpenAIAdapter(FileBatchDialect, ProviderAdapter):
         parts: list[OutputPart] = []
         warnings: list[str] = []
         citations: list[Citation] = []
-        # The reasoning item that precedes a function_call has to travel
+        # The reasoning item that precedes a function_call has to go
         # back with it: replaying the call without it is an HTTP 400 on
         # reasoning models (verified 2026-08-09, three runs out of three).
         reasoning: dict[str, Any] | None = None

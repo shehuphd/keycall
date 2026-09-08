@@ -156,7 +156,7 @@ def _with_truncation_warning(invocation: InvocationResult) -> InvocationResult:
     """Say plainly that the answer is incomplete and what to change.
 
     The finish reason already carries this, but only to a reader who knows
-    that provider's vocabulary, and it sits beside timing and token counts
+    that provider's vocabulary, and it appears beside timing and token counts
     where it reads as one more statistic. Reasoning models make it easy to
     hit: their hidden reasoning is billed against the same output budget,
     so a small max_output_tokens can be spent before any answer is emitted.

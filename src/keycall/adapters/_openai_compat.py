@@ -420,7 +420,7 @@ class OpenAICompatibleAdapter(ProviderAdapter):
                     # any content is emitted at all, leaving reasoning_content
                     # populated but content empty (live-verified 2026-08-06:
                     # reproduced at max_output_tokens=100, resolved at 200).
-                    # Silent empty output here would be exactly the kind of
+                    # Silent empty output here would be the kind of
                     # unexplained failure this whole codebase avoids.
                     warnings.append(
                         "provider produced a reasoning trace but no final answer — "

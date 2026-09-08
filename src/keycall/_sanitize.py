@@ -14,7 +14,7 @@ from urllib.parse import quote
 _MAX_MESSAGE_LENGTH = 400
 _MAX_REQUEST_ID_LENGTH = 128
 
-# Distinctive credential shapes that may appear inside provider-echoed text
+# Distinctive credential formats that may appear inside provider-echoed text
 # even when the exact current credential is already replaced.
 _VALUE_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),

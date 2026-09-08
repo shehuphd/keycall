@@ -35,7 +35,7 @@ DEFAULT_ATTEMPTS = 8
 
 # Bumped whenever the candidate-selection procedure changes, so an old
 # report can be read against the rule that produced it. "1" selected the
-# first filtered candidate and made exactly one attempt; "2" is the
+# first filtered candidate and made a single attempt; "2" is the
 # bounded, fully-reported walk; "3" adds maintained-alias-first ordering
 # within that walk; "4" prefers the provider's own recency where it
 # reports one and keeps "3" only where it doesn't.
@@ -100,7 +100,7 @@ def _model_list_digest(model_ids: list[str]) -> str:
 # The credential itself is the problem: stop immediately, no other model
 # will fare better with a key the provider has rejected.
 _CREDENTIAL_FAILURES = frozenset({ErrorCode.INVALID_API_KEY, ErrorCode.PERMISSION_DENIED})
-# Everything else is model-scoped and worth trying the next candidate for.
+# Everything else is model-scoped and reason to try the next candidate.
 # Rate limits included, deliberately: providers meter per model and tier, so
 # a 429 on one model says nothing about the next.
 

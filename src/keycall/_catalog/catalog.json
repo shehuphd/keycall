@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.09.08.1",
+  "catalog_version": "2026.09.08.2",
   "verified_at": "2026-08-10T00:00:00Z",
   "providers": {
     "openai": {
@@ -1593,7 +1593,8 @@
         "code_interpreter_note": "Rides POST /v1/responses like web_search and reasoning_effort, reusing OpenAI's adapter and parser. Live-verified 2026-08-22 on grok-4.3, non-streaming and streaming: same code_interpreter_call item type as OpenAI but no container_id field, and outputs is a non-null logs list that is often empty even when the code printed something. No confirmed mechanism to retrieve a generated file at all (unlike OpenAI's opaque reference or Gemini's inline bytes).",
         "reasoning_effort": true,
         "reasoning_effort_note": "Rides POST /v1/responses as reasoning.effort, which binds (reasoning token counts follow the level, measured 2026-08-14); the chat-completions reasoning_effort field answers 200 without binding, so requests naming an effort are routed to the responses surface.",
-        "schema_enforcement": "native",
+        "schema_enforcement": "json_schema",
+        "schema_enforcement_note": "chat completions accepts response_format={type:json_schema, strict:true} and enforces it: a valid schema returns conforming JSON, a malformed schema type 400s with 'Schema validation failed', and the json_object floor returns free-form JSON that ignores the field names (live-verified 2026-09-08 on grok-4.6). Enforcement rides the openai-compatible json_schema wire, so xai belongs with moonshot and perplexity, not with the native-adapter providers.",
         "sampling_constraints": [],
         "verified": "2026-08-14",
         "image_input": {

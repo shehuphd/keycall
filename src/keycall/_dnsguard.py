@@ -2,7 +2,7 @@
 
 Validating a hostname's address at config time is not enough: the attacker
 answers the first lookup with a public address and the second (the one httpx
-actually connects with) with an internal one. Closing that race means
+connects with) with an internal one. Closing that race means
 connecting to the *same* address that was validated.
 
 This transport wrapper resolves the hostname once per request, rejects the
@@ -82,7 +82,7 @@ def validate_and_pin(url: httpx.URL, *, provider: str) -> tuple[httpx.URL, str] 
             retryable=True,
         )
     # Every resolved address must be public: one internal answer in the set
-    # is enough for a rebinding attack to land.
+    # is enough for a rebinding attack to succeed.
     for address in addresses:
         if _blocked(address):
             raise KeyCallError(

@@ -1175,7 +1175,7 @@ def test_malformed_playground_images_are_named_bad_requests():
             },
         )
         assert both["error"]["code"] == "bad_request"
-        assert "exactly one" in both["error"]["message"]
+        assert "not both" in both["error"]["message"]
 
         not_base64 = generate(
             reg,

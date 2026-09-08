@@ -213,7 +213,7 @@ class _GeminiStreamAssembler(StreamAssembler):
                     if isinstance(web, dict) and web.get("uri"):
                         # Chunks repeat across stream events. Guard on the
                         # same identity dedupe_citations uses, so the events
-                        # a caller sees match the final result exactly.
+                        # a caller sees match the final result.
                         citation = Citation(url=str(web["uri"]), title=web.get("title"))
                         identity = (citation.url, citation.title, citation.cited_text)
                         if identity not in self._seen_citations:
@@ -1103,7 +1103,7 @@ class GeminiAdapter(ProviderAdapter):
                 # documented shutdown is still months out, and the whole
                 # 2.0-flash family (shut down 2026-06-01) is still listed.
                 # The list alone can't tell a caller which models they can
-                # actually invoke, so say what does.
+                # invoke, so say what does.
                 guidance = (
                     f"{message} (gemini lists models an account cannot invoke and "
                     "gives no lifecycle field to filter on, so this one came back "

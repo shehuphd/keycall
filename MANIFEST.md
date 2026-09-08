@@ -73,7 +73,7 @@ One file per surface, adversarial-first. `test_live.py` (deselected by default, 
 | File | What it does |
 |---|---|
 | `pyproject.toml` | Package metadata, dependencies, the `keycall` entry point, pytest config. |
-| `keycall-test-keys.example.toml` | Placeholder-only example of the verify/viewer key-file format. |
+| `keycall-test-keys.example.toml`, `keycall-test-keys.example.txt` | Placeholder-only examples of the verify/viewer key-file format, one per accepted syntax. |
 | `.github/workflows/ci.yml` | Push/PR gate: tests, lint, JS tests; live smoke on manual dispatch only. |
 | `.github/workflows/release.yml` | Tag-driven release: build, tests, live-strict verification, PyPI publish, GitHub release. |
 | `README.md`, `USAGE.md`, `ARCHITECTURE.md`, `CHANGELOG.md` | The public doc set. |

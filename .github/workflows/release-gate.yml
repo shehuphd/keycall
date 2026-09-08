@@ -1,0 +1,58 @@
+name: release gate
+
+# Dormant-first rollout: manual dispatch only for now. Once a hand-run passes,
+# add the push and pull_request triggers below so the gate runs on every change:
+#
+#   push:
+#     branches: [main]
+#   pull_request:
+#     branches: [main]
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  # The reusable gate reads the provider from each key's "provider/key" prefix
+  # to pick the agent CLI, but audit-model has no default and must be named in
+  # that provider's own vocabulary. A caller can't branch its `with:` inputs on
+  # a secret (GitHub disallows the secrets context there), so this job reads the
+  # prefix in a step and maps it to a model, handing both down as outputs. Only
+  # the prefix is touched; the key itself is never printed.
+  pick-audit-models:
+    runs-on: ubuntu-latest
+    outputs:
+      audit-model: ${{ steps.pick.outputs.audit-model }}
+      fallback-model: ${{ steps.pick.outputs.fallback-model }}
+    steps:
+      - id: pick
+        env:
+          PRIMARY_KEY: ${{ secrets.AUDIT_API_KEY }}
+          FALLBACK_KEY: ${{ secrets.AUDIT_FALLBACK_API_KEY }}
+        run: |
+          model_for() {
+            # Provider prefix only (text before the first slash); never the key.
+            case "${1%%/*}" in
+              anthropic|ANTHROPIC|Anthropic) echo "sonnet" ;;
+              openai|OPENAI|OpenAI)          echo "gpt-5" ;;
+              *)                             echo "" ;;
+            esac
+          }
+          {
+            echo "audit-model=$(model_for "$PRIMARY_KEY")"
+            echo "fallback-model=$(model_for "$FALLBACK_KEY")"
+          } >> "$GITHUB_OUTPUT"
+
+  gate:
+    needs: pick-audit-models
+    uses: shehuphd/shiplock/.github/workflows/gate.yml@main
+    with:
+      shiplock-spec: "shiplock>=0.3.1"
+      run-audit: true
+      audit-model: ${{ needs.pick-audit-models.outputs.audit-model }}
+      audit-fallback-model: ${{ needs.pick-audit-models.outputs.fallback-model }}
+    secrets:
+      AUDIT_API_KEY: ${{ secrets.AUDIT_API_KEY }}
+      AUDIT_FALLBACK_API_KEY: ${{ secrets.AUDIT_FALLBACK_API_KEY }}

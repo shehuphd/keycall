@@ -335,7 +335,7 @@ class StreamAssembler(ABC):
     def flush_tool_calls(self) -> list[StreamEvent]:
         """Close every still-open call, in the order they were announced.
         Providers that never mark a call finished (the compat family closes
-        the whole message instead) land here."""
+        the whole message instead) arrive here."""
         events: list[StreamEvent] = []
         for key in list(self._pending_calls):
             events.extend(self.complete_tool_call(key))
@@ -1035,7 +1035,7 @@ class ProviderAdapter(ABC):
         if status_code == 402:
             # The credential is valid and the account is not entitled to
             # use it: unpaid balance, exhausted credit, billing hold. Not a
-            # malformed response, which is where an unmapped status lands
+            # malformed response, which is where an unmapped status arrives
             # and which sends a caller looking for a bug in their request.
             # The provider's own message carries the actionable detail.
             return (
@@ -1279,7 +1279,7 @@ class ProviderAdapter(ABC):
         ):
             # Not a guess: Anthropic's tool_choice={"type":"tool",...}, the
             # only mechanism KeyCall has for schema enforcement here, forces
-            # the model to call exactly that tool and nothing else in the
+            # the model to call only that tool and nothing else in the
             # same turn — mechanically incompatible with also invoking the
             # server-side web_search tool. This is an API constraint,
             # not a live-probed guess.
