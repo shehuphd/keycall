@@ -27,12 +27,22 @@ from .._types import (
     ToolCall,
     ToolResult,
 )
+from ._openai import FileBatchDialect
 from ._openai_compat import OpenAICompatibleAdapter
 
 _BUILTIN_WEB_SEARCH = "$web_search"
 
 
-class MoonshotAdapter(OpenAICompatibleAdapter):
+class MoonshotAdapter(FileBatchDialect, OpenAICompatibleAdapter):
+    # Batch rides the shared Files-API dialect with chat-completions
+    # lines. Moonshot enforces one model per file and validates request
+    # bodies line by line at upload; batch results wrap the completion in
+    # {response: {request_id, status_code, body}} with status_code 0 on
+    # success — both handled by the dialect (live-verified 2026-09-02).
+
+    def _batch_target(self, operation: str) -> str:
+        return "/v1/chat/completions"
+
     def build_generation_spec(self, request: TextGenerationRequest) -> RequestSpec:
         spec = super().build_generation_spec(request)
         if not request.web_search:

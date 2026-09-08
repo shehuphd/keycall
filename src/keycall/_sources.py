@@ -14,7 +14,7 @@ import re
 import stat
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ._sanitize import safe_display_name
@@ -34,7 +34,11 @@ _TXT_TOKEN = re.compile(
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Target:
     provider: str
-    key: str
+    # repr=False keeps the raw key out of reprs — including pytest's
+    # assertion introspection, which renders any object that appears in a
+    # failing assert's operands (observed leaking a key into a local test
+    # log 2026-09-02).
+    key: str = field(repr=False)
     protocol: str | None = None
     name: str | None = None
     base_url: str | None = None

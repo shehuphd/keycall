@@ -1015,3 +1015,49 @@ def test_stripping_lets_dedupe_collapse_the_same_source():
         Citation(url="https://e.com/a", title="A"),
     ]
     assert len(dedupe_citations(same)) == 1
+
+
+def test_anthropic_credit_refusal_reads_as_permission_denied():
+    """Anthropic's unfunded-account refusal rides a 400 invalid_request_error
+    — the same status and type as a malformed request (message observed live
+    2026-09-01) — so the message content routes it to PERMISSION_DENIED,
+    where a caller finds billing rather than a bug in their own request."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        "Your credit balance is too low to access the Anthropic API. "
+                        "Please go to Plans & Billing to upgrade or purchase credits."
+                    ),
+                },
+            },
+        )
+
+    with pytest.raises(KeyCallError) as excinfo:
+        run_generation("anthropic", handler)
+    assert excinfo.value.code is ErrorCode.PERMISSION_DENIED
+    assert not excinfo.value.retryable
+    assert "credit balance" in str(excinfo.value)
+
+
+def test_anthropic_ordinary_400_keeps_its_mapping():
+    """The credit branch matches on message content, so an ordinary
+    malformed-request 400 must not ride along with it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "type": "error",
+                "error": {"type": "invalid_request_error", "message": "messages: field required"},
+            },
+        )
+
+    with pytest.raises(KeyCallError) as excinfo:
+        run_generation("anthropic", handler)
+    assert excinfo.value.code is ErrorCode.INVALID_PROVIDER_RESPONSE

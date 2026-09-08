@@ -4,13 +4,24 @@ listing and filtering their models, and making normalized calls."""
 from ._classify import alias_fact
 from ._client import AsyncKeyCall, AsyncTextStream, KeyCall, TextStream
 from ._enums import ModelCategory, Operation, ProviderProtocol
-from ._errors import ErrorCode, KeyCallError, VideoJobTimeout
+from ._errors import (
+    BatchJobTimeout,
+    ErrorCode,
+    KeyCallError,
+    TranscriptionJobTimeout,
+    VideoJobTimeout,
+)
 from ._realtime import AsyncRealtimeSession, RealtimeSession
 from ._transcription import AsyncTranscriptionSession, TranscriptionSession
 from ._types import (
     AliasFact,
     AudioInput,
     AudioOutput,
+    BatchCounts,
+    BatchJob,
+    BatchRequest,
+    BatchResult,
+    BatchStatus,
     Citation,
     CitationFound,
     CodeExecutionOutput,
@@ -55,6 +66,10 @@ from ._types import (
     ToolResult,
     TranscriptionConfig,
     TranscriptionEvent,
+    TranscriptionJob,
+    TranscriptionJobStatus,
+    TranscriptionRequest,
+    TranscriptionResult,
     TranscriptionSessionEnded,
     TranscriptionSessionStarted,
     TranscriptOutput,
@@ -71,7 +86,7 @@ from ._types import (
     Voice,
 )
 
-__version__ = "1.9.0"
+__version__ = "1.10.0"
 
 __all__ = [
     "AliasFact",
@@ -81,6 +96,12 @@ __all__ = [
     "AsyncTranscriptionSession",
     "AudioInput",
     "AudioOutput",
+    "BatchCounts",
+    "BatchJob",
+    "BatchJobTimeout",
+    "BatchRequest",
+    "BatchResult",
+    "BatchStatus",
     "Citation",
     "CitationFound",
     "CodeExecutionOutput",
@@ -135,6 +156,11 @@ __all__ = [
     "TranscriptWord",
     "TranscriptionConfig",
     "TranscriptionEvent",
+    "TranscriptionJob",
+    "TranscriptionJobStatus",
+    "TranscriptionJobTimeout",
+    "TranscriptionRequest",
+    "TranscriptionResult",
     "TranscriptionSession",
     "TranscriptionSessionEnded",
     "TranscriptionSessionStarted",

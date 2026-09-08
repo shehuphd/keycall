@@ -101,6 +101,238 @@ def test_invalid_sampling_values_rejected_at_request_construction():
         TextGenerationRequest(model="m", messages=simple_messages(), top_p=0.0)
 
 
+# --- seed ------------------------------------------------------------------
+
+_COMPAT_OK = {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}], "usage": {}}
+_GEMINI_OK = {
+    "candidates": [{"content": {"parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
+    "usageMetadata": {},
+}
+
+# provider -> (model, minimal 200 body) for the seed-supporting compat providers
+_SEED_SUPPORTED = {
+    "deepseek": ("deepseek-v4-flash", _COMPAT_OK),
+    "moonshot": ("kimi-k3", _COMPAT_OK),
+    "xai": ("grok-4.3", _COMPAT_OK),
+}
+
+
+@pytest.mark.parametrize("provider", sorted(_SEED_SUPPORTED))
+def test_seed_forwarded_on_supporting_compat_providers(provider):
+    model, ok = _SEED_SUPPORTED[provider]
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=ok)
+
+    make_client(provider=provider, handler=handler).generate_text(
+        model=model, messages=simple_messages(), seed=12345
+    )
+    assert captured["body"]["seed"] == 12345
+
+
+def test_seed_forwarded_into_gemini_generation_config():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_GEMINI_OK)
+
+    make_client(provider="gemini", handler=handler).generate_text(
+        model="gemini-2.5-flash", messages=simple_messages(), seed=7
+    )
+    assert captured["body"]["generationConfig"]["seed"] == 7
+
+
+def test_seed_zero_is_forwarded_not_dropped_as_falsy():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_COMPAT_OK)
+
+    make_client(provider="deepseek", handler=handler).generate_text(
+        model="deepseek-v4-flash", messages=simple_messages(), seed=0
+    )
+    assert captured["body"]["seed"] == 0
+
+
+def test_seed_omitted_when_unset_on_a_supporting_provider():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_COMPAT_OK)
+
+    make_client(provider="deepseek", handler=handler).generate_text(
+        model="deepseek-v4-flash", messages=simple_messages()
+    )
+    assert "seed" not in captured["body"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [("openai", "gpt-4o-mini"), ("anthropic", "claude-sonnet-4-5"), ("perplexity", "sonar")],
+)
+def test_seed_refused_before_network_where_the_provider_has_no_seed(provider, model):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a seed on a provider without one must not reach the network")
+
+    client = make_client(provider=provider, handler=handler)
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(model=model, messages=simple_messages(), seed=1)
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+    # The refusal names the providers that do take a seed, from the catalog.
+    for supported in ("deepseek", "gemini", "moonshot", "xai"):
+        assert supported in excinfo.value.message
+
+
+def test_xai_seed_refused_on_the_responses_route():
+    """A seed rides xAI chat completions, but web search / reasoning effort
+    route through the Agent Tools API, which has no seed field: the
+    combination is refused rather than dropping the seed silently."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must fail before any network call")
+
+    client = make_client(provider="xai", handler=handler)
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(
+            model="grok-4.3", messages=simple_messages(), seed=1, web_search=True
+        )
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+    assert "seed" in excinfo.value.message
+
+
+def test_xai_seed_alone_rides_chat_completions():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json=_COMPAT_OK)
+
+    make_client(provider="xai", handler=handler).generate_text(
+        model="grok-4.3", messages=simple_messages(), seed=99
+    )
+    assert captured["body"]["seed"] == 99
+    assert captured["url"].endswith("/chat/completions")
+
+
+@pytest.mark.parametrize("bad", [-1, 1.5, "5", True])
+def test_seed_validated_at_request_construction(bad):
+    from keycall import TextGenerationRequest
+
+    with pytest.raises((ValueError, TypeError)):
+        TextGenerationRequest(model="m", messages=simple_messages(), seed=bad)
+
+
+@pytest.mark.anyio
+async def test_async_client_shares_the_seed_gate():
+    from keycall._client import AsyncKeyCall
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must fail before any network call")
+
+    client = AsyncKeyCall(
+        provider="anthropic", api_key=CANARY, httpx_transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(KeyCallError) as excinfo:
+        await client.generate_text(
+            model="claude-sonnet-4-5", messages=simple_messages(), seed=1
+        )
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+    await client.close()
+
+
+def test_seed_in_a_batch_item_reaches_the_wire_body():
+    from keycall import BatchRequest
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.content:
+            seen.append(request.content.decode())
+        return httpx.Response(200, json={"name": "operations/b1", "metadata": {}})
+
+    client = make_client(provider="gemini", handler=handler)
+    # Gemini's batch dialect inlines each request; the seed must ride with it.
+    client.start_batch([
+        BatchRequest(model="gemini-2.5-flash", messages=simple_messages(), seed=42)
+    ])
+    payload = "".join(seen)
+    assert '"seed": 42' in payload or '"seed":42' in payload
+
+
+def test_batch_seed_refused_where_the_provider_has_no_seed():
+    from keycall import BatchRequest
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a seed on a seedless provider must not reach the network")
+
+    client = make_client(provider="openai", handler=handler)
+    with pytest.raises(KeyCallError) as excinfo:
+        client.start_batch([
+            BatchRequest(model="gpt-4o-mini", messages=simple_messages(), seed=1)
+        ])
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+
+
+# --- Anthropic temperature: pinned to 1.0 on the newest models -------------
+
+
+@pytest.mark.parametrize("model", ["claude-opus-4-8", "claude-fable-5", "claude-sonnet-5"])
+def test_anthropic_newest_models_reject_a_non_default_temperature(model):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must fail before any network call")
+
+    client = make_client(provider="anthropic", handler=handler)
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(model=model, messages=simple_messages(), temperature=0.5)
+    assert excinfo.value.code is ErrorCode.MODEL_NOT_SUITABLE
+    # The message names the one value the model does accept.
+    assert "temperature=1" in excinfo.value.message
+
+
+@pytest.mark.parametrize("model", ["claude-opus-4-8", "claude-fable-5-1", "claude-sonnet-5"])
+def test_anthropic_newest_models_accept_temperature_one(model):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "x"}], "usage": {}})
+
+    make_client(provider="anthropic", handler=handler).generate_text(
+        model=model, messages=simple_messages(), temperature=1.0
+    )
+    assert captured["body"]["temperature"] == 1.0
+
+
+@pytest.mark.parametrize("model", ["claude-opus-4-6", "claude-sonnet-4-6"])
+def test_anthropic_4_6_models_still_accept_an_explicit_temperature(model):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "x"}], "usage": {}})
+
+    make_client(provider="anthropic", handler=handler).generate_text(
+        model=model, messages=simple_messages(), temperature=0.5
+    )
+    assert captured["body"]["temperature"] == 0.5
+
+
+def test_anthropic_newest_models_reject_top_p():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must fail before any network call")
+
+    client = make_client(provider="anthropic", handler=handler)
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(model="claude-opus-4-8", messages=simple_messages(), top_p=0.5)
+    assert excinfo.value.code is ErrorCode.MODEL_NOT_SUITABLE
+    assert "top_p" in excinfo.value.message
+
+
 # --- response-size cap -----------------------------------------------------
 
 
@@ -310,7 +542,7 @@ def test_anthropic_deprecated_sampling_models_gated(model):
     assert excinfo.value.code is ErrorCode.MODEL_NOT_SUITABLE
 
 
-@pytest.mark.parametrize("model", ["claude-opus-4-1", "claude-3-5-sonnet-20241022"])
+@pytest.mark.parametrize("model", ["claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929"])
 def test_older_anthropic_models_still_accept_sampling(model):
     captured = {}
 

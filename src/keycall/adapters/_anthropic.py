@@ -6,7 +6,8 @@ import base64
 import dataclasses
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, ClassVar
+from urllib.parse import urlsplit
 
 from .._classify import classify_model_id
 from .._enums import Operation
@@ -15,6 +16,9 @@ from .._registry import ResolvedProvider
 from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
+    BatchCounts,
+    BatchJob,
+    BatchStatus,
     Citation,
     CitationFound,
     CodeExecutionOutput,
@@ -37,9 +41,12 @@ from .._types import (
     Usage,
 )
 from ._base import (
+    BatchItemOutcome,
+    BatchSubmission,
     InbandStreamError,
     ProviderAdapter,
     StreamAssembler,
+    batch_line_entries,
     context_limit,
     dedupe_citations,
     image_media_type,
@@ -489,6 +496,166 @@ class AnthropicAdapter(ProviderAdapter):
             warnings=tuple(warnings),
         )
 
+    # --- batch generation ---
+    #
+    # The inline dialect: requests ride the create call itself (custom_id
+    # plus ordinary Messages params, so one batch can mix models), results
+    # stream as JSONL from results_url, out of submission order. All
+    # wire facts live-verified 2026-09-02.
+
+    batch_mixed_models = True
+
+    _BATCH_STATUS: ClassVar[dict[str, BatchStatus]] = {
+        "in_progress": "running",
+        "canceling": "running",
+        "ended": "finished",
+    }
+
+    _BATCH_ERROR_CODES: ClassVar[dict[str, str]] = {
+        "authentication_error": "invalid_api_key",
+        "permission_error": "permission_denied",
+        "billing_error": "permission_denied",
+        "not_found_error": "model_not_available",
+        "rate_limit_error": "rate_limited",
+        "overloaded_error": "provider_unavailable",
+        "api_error": "provider_unavailable",
+    }
+
+    def build_batch_submit_spec(
+        self, submission: BatchSubmission, prelude: str | None
+    ) -> RequestSpec:
+        op = self.resolved.operations["batch_create"]
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"],
+            json_body={
+                "requests": [
+                    {"custom_id": key, "params": dict(body)}
+                    for key, body in submission.items
+                ]
+            },
+        )
+
+    def parse_batch_submit(
+        self, payload: Any, *, submission: BatchSubmission, prelude: str | None
+    ) -> BatchJob:
+        job_id = payload.get("id") if isinstance(payload, dict) else None
+        if not job_id:
+            raise KeyCallError(
+                "batch create returned no batch id",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=submission.operation,
+            )
+        job = BatchJob(
+            provider=self.resolved.provider,
+            job_id=str(job_id),
+            operation=submission.operation,
+            model=submission.model,
+            request_keys=tuple(key for key, _ in submission.items),
+        )
+        return self.parse_batch_status(payload, job=job)
+
+    def build_batch_status_spec(self, job: BatchJob) -> RequestSpec:
+        op = self.resolved.operations["batch_status"]
+        return RequestSpec(method=op["method"], path=op["path"].replace("{batch_id}", job.job_id))
+
+    def parse_batch_status(self, payload: Any, *, job: BatchJob) -> BatchJob:
+        provider_status = (
+            str(payload.get("processing_status", "")) if isinstance(payload, dict) else ""
+        )
+        counts_raw = payload.get("request_counts") if isinstance(payload, dict) else None
+        counts = None
+        if isinstance(counts_raw, dict):
+            counts = BatchCounts(
+                pending=counts_raw.get("processing"),
+                succeeded=counts_raw.get("succeeded"),
+                errored=counts_raw.get("errored"),
+                cancelled=counts_raw.get("canceled"),
+                expired=counts_raw.get("expired"),
+                total=len(job.request_keys) or None,
+            )
+        results_url = payload.get("results_url") if isinstance(payload, dict) else None
+        return dataclasses.replace(
+            job,
+            status=self._BATCH_STATUS.get(provider_status, "running"),
+            provider_status=provider_status or None,
+            counts=counts,
+            results_ref=self._pinned_results_path(results_url) if results_url else None,
+        )
+
+    def _pinned_results_path(self, results_url: Any) -> str:
+        """results_url must stay on the provider's own API host — the
+        credential rides the request, so a URL pointing anywhere else is
+        refused rather than followed."""
+        parsed = urlsplit(str(results_url))
+        own = urlsplit(self.resolved.base_url)
+        if parsed.scheme != "https" or parsed.netloc != own.netloc:
+            raise KeyCallError(
+                "batch results_url points off the provider's API host; refusing to follow it",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.BATCH_GENERATION.value,
+            )
+        return parsed.path + (f"?{parsed.query}" if parsed.query else "")
+
+    def build_batch_results_spec(self, job: BatchJob, cursor: str | None) -> RequestSpec:
+        if not job.results_ref:
+            raise KeyCallError(
+                "this batch reported no results_url yet; poll check_batch() until it ends",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=job.operation,
+            )
+        return RequestSpec(method="GET", path=job.results_ref)
+
+    def parse_batch_results(
+        self, payload: Any, *, job: BatchJob
+    ) -> tuple[list[BatchItemOutcome], str | None]:
+        outcomes: list[BatchItemOutcome] = []
+        for entry in batch_line_entries(payload):
+            if not entry.get("custom_id"):
+                continue
+            key = str(entry["custom_id"])
+            raw_result = entry.get("result")
+            result = raw_result if isinstance(raw_result, dict) else {}
+            kind = result.get("type")
+            if kind == "succeeded" and isinstance(result.get("message"), dict):
+                outcomes.append(BatchItemOutcome(key=key, body=result["message"]))
+                continue
+            if kind == "errored":
+                # The per-request error nests one envelope deeper than the
+                # HTTP error body: result.error.error carries type/message
+                # (observed live 2026-09-02).
+                inner = result.get("error")
+                if isinstance(inner, dict) and isinstance(inner.get("error"), dict):
+                    inner = inner["error"]
+                error_type = str(inner.get("type", "")) if isinstance(inner, dict) else ""
+                message = str(inner.get("message", "")) if isinstance(inner, dict) else ""
+                outcomes.append(
+                    BatchItemOutcome(
+                        key=key,
+                        error_code=self._BATCH_ERROR_CODES.get(error_type, error_type or None),
+                        error_message=message or "request errored",
+                    )
+                )
+                continue
+            outcomes.append(
+                BatchItemOutcome(
+                    key=key,
+                    error_code=str(kind) if kind else None,
+                    error_message=f"request {kind or 'returned an unrecognized result'}",
+                )
+            )
+        return outcomes, None
+
+    def build_batch_cancel_spec(self, job: BatchJob) -> RequestSpec:
+        op = self.resolved.operations["batch_cancel"]
+        return RequestSpec(method=op["method"], path=op["path"].replace("{batch_id}", job.job_id))
+
+    def parse_batch_cancel(self, payload: Any, *, job: BatchJob) -> BatchJob:
+        return self.parse_batch_status(payload, job=job)
+
     def translate_error(self, status_code: int, payload: Any) -> tuple[ErrorCode, bool, str]:
         message = ""
         error_type = ""
@@ -497,6 +664,13 @@ class AnthropicAdapter(ProviderAdapter):
             error_type = str(payload["error"].get("type", ""))
         if error_type == "authentication_error" or status_code == 401:
             return ErrorCode.INVALID_API_KEY, False, message or "invalid API key"
+        if "credit balance" in message.lower():
+            # Anthropic sends its unfunded-account refusal as a 400
+            # invalid_request_error — the same status and type as a
+            # malformed request (message observed live 2026-09-01) — so
+            # the message content is the only signal that routes it to
+            # the billing code rather than a request-format one.
+            return ErrorCode.PERMISSION_DENIED, False, message
         if error_type in ("permission_error", "billing_error") or status_code in (402, 403):
             return ErrorCode.PERMISSION_DENIED, False, message or "permission denied"
         if error_type == "rate_limit_error" or status_code == 429:

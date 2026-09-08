@@ -23,7 +23,7 @@ OPENAI_MODELS = {
         {"id": "gpt-4o"},
         {"id": "text-embedding-3-small"},
         {"id": "whisper-1"},
-        {"id": "dall-e-3"},
+        {"id": "gpt-image-2"},
         {"id": "some-mystery-model"},
     ]
 }
@@ -114,7 +114,7 @@ def test_list_models_defaults_to_text_and_excludes_unknown():
     assert "gpt-4o-mini" in ids and "gpt-4o" in ids
     assert "text-embedding-3-small" not in ids
     assert "whisper-1" not in ids
-    assert "dall-e-3" not in ids
+    assert "gpt-image-2" not in ids
     assert "some-mystery-model" not in ids  # unknown never enters default picker
     assert discovery.categories == frozenset({ModelCategory.TEXT_GENERATION})
     assert not discovery.from_cache
@@ -123,7 +123,7 @@ def test_list_models_defaults_to_text_and_excludes_unknown():
 def test_list_models_category_filter_and_unknown_opt_in():
     with make_client() as client:
         images = client.list_models(categories={ModelCategory.IMAGE_GENERATION}, refresh=True)
-        assert [m.id for m in images.models] == ["dall-e-3"]
+        assert [m.id for m in images.models] == ["gpt-image-2"]
         unknowns = client.list_models(categories={ModelCategory.UNKNOWN})
         assert [m.id for m in unknowns.models] == ["some-mystery-model"]
 

@@ -39,8 +39,17 @@ from .._enums import ModelCategory, Operation
 from .._errors import ErrorCode, KeyCallError
 from .._sanitize import safe_request_id
 from .._transport import DownloadPlan, RequestSpec
-from .._types import InvocationResult, Model, TextGenerationRequest, Usage, VideoJob
-from ._base import StreamAssembler
+from .._types import (
+    BatchCounts,
+    BatchJob,
+    BatchStatus,
+    InvocationResult,
+    Model,
+    TextGenerationRequest,
+    Usage,
+    VideoJob,
+)
+from ._base import BatchItemOutcome, BatchSubmission, StreamAssembler
 from ._openai import OpenAIAdapter
 from ._openai_compat import OpenAICompatibleAdapter
 
@@ -69,12 +78,30 @@ class XAIAdapter(OpenAICompatibleAdapter):
             or request.code_interpreter
         )
 
+    def _reject_seed_on_responses_route(self, request: TextGenerationRequest) -> None:
+        """xAI's chat-completions route takes a seed; its Agent Tools route
+        (POST /v1/responses, taken for web search, reasoning effort, and code
+        execution) has no seed field. A seed set alongside one of those would
+        be dropped on the way to that route, so it is refused here rather than
+        silently lost — the caller keeps or drops the seed deliberately."""
+        if request.seed is not None and self._needs_responses_route(request):
+            raise KeyCallError(
+                "xai cannot combine a seed with web_search, reasoning_effort, "
+                "or code_interpreter: those route through xAI's Agent Tools "
+                "API, which has no seed field. Drop the seed or the other option.",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider="xai",
+                operation=Operation.TEXT_GENERATION.value,
+            )
+
     def build_generation_spec(self, request: TextGenerationRequest) -> RequestSpec:
+        self._reject_seed_on_responses_route(request)
         if self._needs_responses_route(request):
             return self._responses_adapter().build_generation_spec(request)
         return super().build_generation_spec(request)
 
     def build_stream_spec(self, request: TextGenerationRequest) -> RequestSpec:
+        self._reject_seed_on_responses_route(request)
         if self._needs_responses_route(request):
             return self._responses_adapter().build_stream_spec(request)
         return super().build_stream_spec(request)
@@ -201,6 +228,141 @@ class XAIAdapter(OpenAICompatibleAdapter):
                 headers.get(self.resolved.provider_request_id_header or "")
             ),
         )
+
+    # --- batch generation ---
+    #
+    # xAI's own dialect (live-verified 2026-09-02): create a named batch
+    # container, add the requests in a second call (atomic — one
+    # ineligible model rejects the whole add), poll counters (no status
+    # string exists; the state is derived from them), then page through
+    # results, which are retrievable even before the batch ends. Only a
+    # subset of models is batch-eligible per xAI's model pages.
+
+    def build_batch_prelude_spec(self, submission: BatchSubmission) -> RequestSpec | None:
+        op = self.resolved.operations["batch_create"]
+        return RequestSpec(method=op["method"], path=op["path"], json_body={"name": "keycall batch"})
+
+    def parse_batch_prelude(self, payload: Any) -> str:
+        batch_id = payload.get("batch_id") if isinstance(payload, dict) else None
+        if not batch_id:
+            raise KeyCallError(
+                "batch create returned no batch id",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.BATCH_GENERATION.value,
+            )
+        return str(batch_id)
+
+    def build_batch_submit_spec(
+        self, submission: BatchSubmission, prelude: str | None
+    ) -> RequestSpec:
+        op = self.resolved.operations["batch_add"]
+        assert prelude is not None
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"].replace("{batch_id}", prelude),
+            json_body={
+                "batch_requests": [
+                    {"batch_request_id": key, "batch_request": {"chat_get_completion": dict(body)}}
+                    for key, body in submission.items
+                ]
+            },
+        )
+
+    def parse_batch_submit(
+        self, payload: Any, *, submission: BatchSubmission, prelude: str | None
+    ) -> BatchJob:
+        # The add call answers with an empty body; the handle came from
+        # the container create.
+        assert prelude is not None
+        return BatchJob(
+            provider=self.resolved.provider,
+            job_id=prelude,
+            operation=submission.operation,
+            model=submission.model,
+            request_keys=tuple(key for key, _ in submission.items),
+            counts=BatchCounts(total=len(submission.items), pending=len(submission.items)),
+        )
+
+    def build_batch_status_spec(self, job: BatchJob) -> RequestSpec:
+        op = self.resolved.operations["batch_status"]
+        return RequestSpec(method=op["method"], path=op["path"].replace("{batch_id}", job.job_id))
+
+    def parse_batch_status(self, payload: Any, *, job: BatchJob) -> BatchJob:
+        state = payload.get("state") if isinstance(payload, dict) else None
+        state = state if isinstance(state, dict) else {}
+        counts = BatchCounts(
+            total=state.get("num_requests"),
+            pending=state.get("num_pending"),
+            succeeded=state.get("num_success"),
+            errored=state.get("num_error"),
+            cancelled=state.get("num_cancelled"),
+        )
+        cancelled = bool(payload.get("cancel_time")) if isinstance(payload, dict) else False
+        status: BatchStatus
+        if cancelled:
+            status = "cancelled"
+        elif (counts.total or 0) > 0 and (counts.pending or 0) == 0:
+            status = "finished"
+        else:
+            status = "running"
+        message = payload.get("cancel_by_xai_message") if isinstance(payload, dict) else None
+        return dataclasses.replace(
+            job,
+            status=status,
+            counts=counts,
+            error_message=str(message) if message else None,
+        )
+
+    def build_batch_results_spec(self, job: BatchJob, cursor: str | None) -> RequestSpec:
+        op = self.resolved.operations["batch_results"]
+        params = {"pagination_token": cursor} if cursor else {}
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"].replace("{batch_id}", job.job_id),
+            params=params,
+        )
+
+    def parse_batch_results(
+        self, payload: Any, *, job: BatchJob
+    ) -> tuple[list[BatchItemOutcome], str | None]:
+        entries = payload.get("results") if isinstance(payload, dict) else None
+        if not isinstance(entries, list):
+            raise KeyCallError(
+                "batch results response carried no results list",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=job.operation,
+            )
+        outcomes: list[BatchItemOutcome] = []
+        for entry in entries:
+            if not isinstance(entry, dict) or not entry.get("batch_request_id"):
+                continue
+            key = str(entry["batch_request_id"])
+            raw_result = entry.get("batch_result")
+            result = raw_result if isinstance(raw_result, dict) else {}
+            raw_response = result.get("response")
+            response = raw_response if isinstance(raw_response, dict) else {}
+            body = response.get("chat_get_completion")
+            if isinstance(body, dict):
+                outcomes.append(BatchItemOutcome(key=key, body=body))
+                continue
+            message = entry.get("error_message")
+            outcomes.append(
+                BatchItemOutcome(
+                    key=key,
+                    error_message=str(message) if message else "request errored",
+                )
+            )
+        cursor = payload.get("pagination_token") if isinstance(payload, dict) else None
+        return outcomes, str(cursor) if cursor else None
+
+    def build_batch_cancel_spec(self, job: BatchJob) -> RequestSpec:
+        op = self.resolved.operations["batch_cancel"]
+        return RequestSpec(method=op["method"], path=op["path"].replace("{batch_id}", job.job_id))
+
+    def parse_batch_cancel(self, payload: Any, *, job: BatchJob) -> BatchJob:
+        return self.parse_batch_status(payload, job=job)
 
     # --- video generation ---
 

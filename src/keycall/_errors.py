@@ -12,9 +12,15 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ._types import VideoJob
+    from ._types import BatchJob, TranscriptionJob, VideoJob
 
-__all__ = ["ErrorCode", "KeyCallError", "VideoJobTimeout"]
+__all__ = [
+    "BatchJobTimeout",
+    "ErrorCode",
+    "KeyCallError",
+    "TranscriptionJobTimeout",
+    "VideoJobTimeout",
+]
 
 
 class ErrorCode(str, Enum):
@@ -33,6 +39,10 @@ class ErrorCode(str, Enum):
     INVALID_PROVIDER_RESPONSE = "invalid_provider_response"
     MODEL_NOT_AVAILABLE = "model_not_available"
     MODEL_NOT_SUITABLE = "model_not_suitable"
+    # Raised before any network call, from the catalog's dated retirement
+    # records: the provider has shut this model down, so the request could
+    # only fail with a bare not-found after a round trip.
+    MODEL_RETIRED = "model_retired"
 
 
 class KeyCallError(Exception):
@@ -70,6 +80,40 @@ class KeyCallError(Exception):
             f"{type(self).__name__}(code={self.code.value!r}, message={self.message!r}, "
             f"provider={self.provider!r}, retryable={self.retryable!r})"
         )
+
+
+class BatchJobTimeout(KeyCallError):
+    """generate_batch's waiting budget ran out while the batch was still
+    processing. The batch is not dead: ``job`` is the still-valid handle,
+    and ``check_batch(error.job)`` picks up polling where the wait left
+    off. Raised with ``code=ErrorCode.TIMEOUT``."""
+
+    def __init__(self, message: str, *, provider: str, job: BatchJob) -> None:
+        super().__init__(
+            message,
+            code=ErrorCode.TIMEOUT,
+            provider=provider,
+            operation="batch_generation",
+            retryable=True,
+        )
+        self.job = job
+
+
+class TranscriptionJobTimeout(KeyCallError):
+    """transcribe()'s waiting budget ran out while a job-shaped provider
+    was still processing. The job is not dead: ``job`` is the still-valid
+    handle, and ``check_transcription(error.job)`` picks up polling where
+    the wait left off. Raised with ``code=ErrorCode.TIMEOUT``."""
+
+    def __init__(self, message: str, *, provider: str, job: TranscriptionJob) -> None:
+        super().__init__(
+            message,
+            code=ErrorCode.TIMEOUT,
+            provider=provider,
+            operation="transcription",
+            retryable=True,
+        )
+        self.job = job
 
 
 class VideoJobTimeout(KeyCallError):

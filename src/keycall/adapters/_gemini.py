@@ -9,19 +9,23 @@ metadata and takes precedence over identifier rules.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import quote, urlsplit
 
 from .._classify import classify_model_id
 from .._enums import ModelCategory, Operation
 from .._errors import ErrorCode, KeyCallError
-from .._registry import ResolvedProvider
+from .._registry import ResolvedProvider, providers_with
 from .._sanitize import safe_request_id
 from .._transport import DownloadPlan, RequestSpec
 from .._types import (
     AudioInput,
+    BatchCounts,
+    BatchJob,
+    BatchStatus,
     Citation,
     CitationFound,
     CodeExecutionOutput,
@@ -46,6 +50,8 @@ from .._types import (
     VideoJob,
 )
 from ._base import (
+    BatchItemOutcome,
+    BatchSubmission,
     ProviderAdapter,
     StreamAssembler,
     context_limit,
@@ -468,6 +474,22 @@ class GeminiAdapter(ProviderAdapter):
             warnings=warnings,
         )
 
+    def build_transcription_spec(self, request: Any) -> RequestSpec:
+        # Gemini has no transcription endpoint: audio understanding is
+        # prompted generation on the content endpoint, where the caller's
+        # own instruction decides what comes back. Point there rather
+        # than injecting a fixed prompt and calling its answer a
+        # transcript.
+        raise KeyCallError(
+            "gemini has no transcription endpoint; send the audio as an "
+            "AudioInput on generate_text() with your own instruction "
+            "instead — transcribe is supported on: "
+            + ", ".join(sorted(providers_with("transcription"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.TRANSCRIPTION.value,
+        )
+
     def build_video_start_spec(self, request: Any) -> RequestSpec:
         # Veo renders through :predictLongRunning — a job-starting verb,
         # not generateContent. The immediate answer is only an operation
@@ -702,6 +724,10 @@ class GeminiAdapter(ProviderAdapter):
             generation_config["temperature"] = request.temperature
         if request.top_p is not None:
             generation_config["topP"] = request.top_p
+        if request.seed is not None:
+            # Live-verified 2026-09-08: generationConfig.seed is a TYPE_INT32
+            # field the API validates (rejects a non-int) and accepts.
+            generation_config["seed"] = request.seed
         if request.reasoning_effort is not None:
             # Gemini's control is thinkingLevel, an uppercase enum
             # (live-verified 2026-08-14: LOW and HIGH accepted, and
@@ -860,6 +886,192 @@ class GeminiAdapter(ProviderAdapter):
             citations=dedupe_citations(citations),
             warnings=tuple(warnings),
         )
+
+    # --- batch generation ---
+    #
+    # The model rides the URL (one per batch) and the requests ride the
+    # create call inline, under 20MB total; results come back inline on
+    # the finished operation object, each echoing the caller's metadata
+    # key. A malformed request refuses the whole create naming its index;
+    # a bad model 404s at create. All wire facts live-verified 2026-09-02,
+    # embeddings included (:asyncBatchEmbedContent, same envelope).
+
+    _BATCH_STATUS: ClassVar[dict[str, BatchStatus]] = {
+        "BATCH_STATE_PENDING": "running",
+        "BATCH_STATE_RUNNING": "running",
+        "BATCH_STATE_SUCCEEDED": "finished",
+        "BATCH_STATE_FAILED": "failed",
+        "BATCH_STATE_CANCELLED": "cancelled",
+        "BATCH_STATE_EXPIRED": "expired",
+    }
+
+    def batch_embed_item_body(self, model: str, text: str) -> Mapping[str, Any]:
+        return {
+            "model": f"models/{model}",
+            "content": {"parts": [{"text": text}]},
+        }
+
+    def build_batch_submit_spec(
+        self, submission: BatchSubmission, prelude: str | None
+    ) -> RequestSpec:
+        op_name = (
+            "batch_embed_create"
+            if submission.operation == Operation.BATCH_EMBEDDING.value
+            else "batch_create"
+        )
+        op = self.resolved.operations[op_name]
+        assert submission.model is not None
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"].replace("{model}", quote(submission.model, safe="")),
+            json_body={
+                "batch": {
+                    "display_name": "keycall batch",
+                    "input_config": {
+                        "requests": {
+                            "requests": [
+                                {"request": dict(body), "metadata": {"key": key}}
+                                for key, body in submission.items
+                            ]
+                        }
+                    },
+                }
+            },
+        )
+
+    def parse_batch_submit(
+        self, payload: Any, *, submission: BatchSubmission, prelude: str | None
+    ) -> BatchJob:
+        name = payload.get("name") if isinstance(payload, dict) else None
+        if not name:
+            raise KeyCallError(
+                "batch create returned no operation name",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=submission.operation,
+            )
+        job = BatchJob(
+            provider=self.resolved.provider,
+            job_id=str(name),
+            operation=submission.operation,
+            model=submission.model,
+            request_keys=tuple(key for key, _ in submission.items),
+        )
+        return self.parse_batch_status(payload, job=job)
+
+    def build_batch_status_spec(self, job: BatchJob) -> RequestSpec:
+        op = self.resolved.operations["batch_status"]
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"].replace("{batch_name}", quote(job.job_id, safe="/")),
+        )
+
+    def parse_batch_status(self, payload: Any, *, job: BatchJob) -> BatchJob:
+        metadata = payload.get("metadata") if isinstance(payload, dict) else None
+        metadata = metadata if isinstance(metadata, dict) else {}
+        provider_status = str(metadata.get("state", ""))
+        raw_stats = metadata.get("batchStats")
+        stats = raw_stats if isinstance(raw_stats, dict) else {}
+
+        def _count(field: str) -> int | None:
+            raw = stats.get(field)
+            try:
+                return int(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        counts = None
+        if stats:
+            counts = BatchCounts(
+                total=_count("requestCount"),
+                pending=_count("pendingRequestCount"),
+                succeeded=_count("successfulRequestCount"),
+                errored=_count("failedRequestCount"),
+            )
+        error_message = None
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict) and error.get("message"):
+            error_message = str(error["message"])
+        return dataclasses.replace(
+            job,
+            status=self._BATCH_STATUS.get(provider_status, "running"),
+            provider_status=provider_status or None,
+            counts=counts,
+            error_message=error_message,
+        )
+
+    def build_batch_results_spec(self, job: BatchJob, cursor: str | None) -> RequestSpec:
+        # Results ride the finished operation object itself; fetching them
+        # is one more status read.
+        return self.build_batch_status_spec(job)
+
+    def parse_batch_results(
+        self, payload: Any, *, job: BatchJob
+    ) -> tuple[list[BatchItemOutcome], str | None]:
+        container = payload.get("response") if isinstance(payload, dict) else None
+        if not isinstance(container, dict):
+            metadata = payload.get("metadata") if isinstance(payload, dict) else {}
+            container = metadata.get("output") if isinstance(metadata, dict) else None
+        inlined: Any = None
+        if isinstance(container, dict):
+            wrapper = container.get("inlinedResponses")
+            if isinstance(wrapper, dict):
+                inlined = wrapper.get("inlinedResponses")
+        if not isinstance(inlined, list):
+            raise KeyCallError(
+                "finished batch carried no inlined responses",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=job.operation,
+            )
+        outcomes: list[BatchItemOutcome] = []
+        for position, entry in enumerate(inlined):
+            if not isinstance(entry, dict):
+                continue
+            raw_meta = entry.get("metadata")
+            metadata = raw_meta if isinstance(raw_meta, dict) else {}
+            key = str(metadata.get("key", ""))
+            if not key and position < len(job.request_keys):
+                key = job.request_keys[position]
+            error = entry.get("error")
+            if isinstance(error, dict):
+                outcomes.append(
+                    BatchItemOutcome(
+                        key=key,
+                        error_code=str(error.get("status") or "") or None,
+                        error_message=str(error.get("message", "request errored")),
+                    )
+                )
+                continue
+            outcomes.append(BatchItemOutcome(key=key, body=entry.get("response")))
+        return outcomes, None
+
+    def build_batch_cancel_spec(self, job: BatchJob) -> RequestSpec:
+        op = self.resolved.operations["batch_cancel"]
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"].replace("{batch_name}", quote(job.job_id, safe="/")),
+        )
+
+    def parse_batch_cancel(self, payload: Any, *, job: BatchJob) -> BatchJob:
+        # The cancel call answers with an empty body; the state appears on
+        # a later poll, so report only that cancellation was asked for.
+        return dataclasses.replace(job, provider_status="cancelling")
+
+    def parse_batch_item(self, body: Any, *, key: str, job: BatchJob) -> InvocationResult:
+        if job.operation == Operation.BATCH_EMBEDDING.value:
+            # Inline embed results carry one embedding object per request,
+            # not the batchEmbedContents {embeddings: [...]} envelope the
+            # synchronous parser reads (observed live 2026-09-02).
+            wrapped = {"embeddings": [body.get("embedding")]} if isinstance(body, dict) else body
+            return self.parse_embedding_response(
+                wrapped,
+                headers={},
+                round_trip_duration_ms=0.0,
+                model=job.model or "",
+                expected=1,
+            )
+        return super().parse_batch_item(body, key=key, job=job)
 
     def translate_error(self, status_code: int, payload: Any) -> tuple[ErrorCode, bool, str]:
         message = ""

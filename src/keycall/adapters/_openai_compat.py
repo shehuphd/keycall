@@ -292,6 +292,11 @@ class OpenAICompatibleAdapter(ProviderAdapter):
         if request.max_output_tokens is not None:
             body["max_tokens"] = request.max_output_tokens
         body.update(self.sampling_fields(request))
+        if request.seed is not None:
+            # Reached only for providers whose catalog entry records a seed
+            # field (DeepSeek, Moonshot, xAI's chat-completions route); the
+            # gate refuses the rest before the body is built.
+            body["seed"] = request.seed
         if request.reasoning_effort is not None:
             # Only providers whose catalog entry records a live-verified
             # binding control reach this line; the gate refuses the rest

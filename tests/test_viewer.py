@@ -22,6 +22,7 @@ from keycall.viewer._api import (
     generate_video,
     list_targets,
     set_settings,
+    transcribe_file,
     verify_target,
 )
 from keycall.viewer._registry import Registry
@@ -239,6 +240,66 @@ def test_generate_refuses_reasoning_effort_on_an_unsupporting_provider():
             },
         )
         assert body["error"]["code"] == "unsupported_operation"
+    finally:
+        reg.close()
+
+
+def test_generate_sends_seed_to_a_supporting_provider():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "deepseek-v4-flash"}]})
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}], "usage": {}},
+        )
+
+    targets = [Target(provider="deepseek", key=CANARY, name="my-deepseek")]
+    reg = Registry(targets, httpx_transport=httpx.MockTransport(handler))
+    try:
+        # The browser sends the seed as a JSON string from a number input;
+        # the server coerces it to an int before the request is built.
+        body = generate(
+            reg, 0, {"target": 0, "model": "deepseek-v4-flash", "prompt": "hi", "seed": "42"}
+        )
+        assert body["text"] == "hi"
+        assert seen[0]["seed"] == 42
+    finally:
+        reg.close()
+
+
+def test_generate_refuses_seed_on_a_provider_without_one():
+    targets = [Target(provider="openai", key=CANARY, name="my-openai")]
+    reg = Registry(
+        targets,
+        httpx_transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+        ),
+    )
+    try:
+        body = generate(
+            reg, 0, {"target": 0, "model": "gpt-4o-mini", "prompt": "hi", "seed": 7}
+        )
+        assert body["error"]["code"] == "unsupported_operation"
+    finally:
+        reg.close()
+
+
+def test_generate_rejects_a_non_numeric_seed():
+    targets = [Target(provider="deepseek", key=CANARY, name="my-deepseek")]
+    reg = Registry(
+        targets,
+        httpx_transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"data": [{"id": "deepseek-v4-flash"}]})
+        ),
+    )
+    try:
+        body = generate(
+            reg, 0, {"target": 0, "model": "deepseek-v4-flash", "prompt": "hi", "seed": "abc"}
+        )
+        assert body["error"]["code"] == "bad_request"
     finally:
         reg.close()
 
@@ -1423,7 +1484,7 @@ def test_browsed_models_lead_with_the_one_the_walk_would_try_first():
                     }
                     # Provider order: the withdrawn one first, the maintained
                     # alias buried, exactly as Gemini serves it.
-                    for name in ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest")
+                    for name in ("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest")
                 ]
             },
         )
@@ -1443,7 +1504,7 @@ def test_browsed_models_lead_with_the_one_the_walk_would_try_first():
         f"the walk would try first; got {listed}"
     )
     # Nothing is dropped: a model the walk deprioritises is still selectable.
-    assert set(listed) == {"gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"}
+    assert set(listed) == {"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"}
 
 
 def test_targets_tell_the_browser_what_each_key_can_accept():
@@ -1904,3 +1965,236 @@ def test_catalog_voices_serve_without_network():
     assert "alloy" in ids and "marin" in ids
     marin = next(v for v in body["voices"] if v["id"] == "marin")
     assert marin["models"] == ["gpt-4o-mini-tts"]
+
+
+# --- file transcription -----------------------------------------------------
+
+WAV = b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 32
+
+
+def test_list_targets_reports_transcription_wires_and_flags():
+    reg = make_registry()
+    try:
+        body = list_targets(reg)
+    finally:
+        reg.close()
+
+    wires = body["transcription_wires"]
+    # ElevenLabs is the provider the split exists for: one model per wire.
+    assert wires["elevenlabs"] == {
+        "streaming": ["scribe_v2_realtime"],
+        "prerecorded": ["scribe_v2"],
+    }
+    assert wires["deepgram"]["streaming"] == ["nova-3", "nova-2"]
+    assert wires["deepgram"]["prerecorded"] == ["nova-3", "nova-2"]
+    assert wires["assemblyai"]["streaming"] == ["universal-3-5-pro"]
+    assert wires["assemblyai"]["prerecorded"] == ["universal-3-5-pro", "universal-2"]
+    # Live-discovered model lists carry no catalog wire facts.
+    assert "openai" not in wires
+
+    caps = body["provider_capabilities"]
+    # OpenAI transcribes files with no streaming STT; the two tasks gate
+    # on their own wire's flag.
+    assert caps["openai"]["file_transcription"] is True
+    assert caps["openai"]["transcription"] is False
+    assert caps["openai"]["transcription_url_input"] is False
+    assert caps["openai"]["transcription_diarization"] is False
+    assert caps["elevenlabs"]["file_transcription"] is True
+    assert caps["elevenlabs"]["transcription_url_input"] is True
+    assert caps["elevenlabs"]["transcription_diarization"] is True
+    assert caps["gemini"]["file_transcription"] is False
+
+
+@pytest.mark.parametrize(
+    ("body", "fragment"),
+    [
+        ({}, "model is required"),
+        ({"model": "nova-3"}, "not both"),
+        (
+            {
+                "model": "nova-3",
+                "audio_base64": "aGk=",
+                "url": "https://a.example/x.wav",
+            },
+            "not both",
+        ),
+        ({"model": "nova-3", "audio_base64": "not-base64!!"}, "audio_base64"),
+    ],
+)
+def test_transcribe_file_bad_bodies(body, fragment):
+    reg = make_registry()
+    try:
+        result = transcribe_file(reg, 0, body)
+    finally:
+        reg.close()
+    assert result["error"]["code"] == "bad_request"
+    assert fragment in result["error"]["message"]
+
+
+def test_transcribe_file_unknown_target():
+    reg = make_registry()
+    try:
+        result = transcribe_file(reg, 99, {"model": "nova-3", "audio_base64": "aGk="})
+    finally:
+        reg.close()
+    assert result["error"]["code"] == "not_found"
+
+
+def test_transcribe_file_sync_provider_round_trip():
+    """Deepgram answers in one round trip; the route sends no job timeout
+    (the library refuses one on a sync provider, so success proves it)."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["params"] = dict(request.url.params)
+        captured["body"] = request.content
+        return httpx.Response(
+            200,
+            json={
+                "metadata": {"request_id": "req_dg", "duration": 2.645},
+                "results": {
+                    "channels": [
+                        {
+                            "alternatives": [
+                                {
+                                    "transcript": "The quick brown fox.",
+                                    "confidence": 0.999,
+                                    "words": [
+                                        {
+                                            "word": "the",
+                                            "punctuated_word": "The",
+                                            "start": 0.08,
+                                            "end": 0.32,
+                                            "confidence": 0.76,
+                                            "speaker": 0,
+                                        },
+                                    ],
+                                }
+                            ]
+                        }
+                    ]
+                },
+            },
+        )
+
+    reg = Registry(
+        [Target(provider="deepgram", key=CANARY, name="my-dg")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = transcribe_file(
+            reg,
+            0,
+            {
+                "model": "nova-3",
+                "audio_base64": base64.b64encode(WAV).decode(),
+                "diarize": True,
+            },
+        )
+    finally:
+        reg.close()
+
+    assert captured["path"] == "/v1/listen"
+    assert captured["params"]["diarize"] == "true"
+    assert captured["body"] == WAV
+    assert result["text"] == "The quick brown fox."
+    assert result["audio_duration_seconds"] == 2.645
+    assert result["confidence"] == 0.999
+    assert result["words"] == [
+        {
+            "text": "The",
+            "start_ms": 80.0,
+            "end_ms": 320.0,
+            "confidence": 0.76,
+            "speaker": "0",
+        }
+    ]
+    assert CANARY not in json.dumps(result)
+
+
+def test_transcribe_file_job_provider_polls_to_a_result():
+    """AssemblyAI's upload/submit/poll job runs inside the one blocking
+    route call, which supplies the timeout the job wire requires."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v2/upload":
+            captured["upload_body"] = request.content
+            return httpx.Response(200, json={"upload_url": "https://cdn.aai/private/x"})
+        if path == "/v2/transcript" and request.method == "POST":
+            captured["submit"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": "t-1", "status": "queued"})
+        if path == "/v2/transcript/t-1":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "t-1",
+                    "status": "completed",
+                    "text": "The quick brown fox.",
+                    "confidence": 0.996,
+                    "audio_duration": 3,
+                    "language_code": "en",
+                    "words": [
+                        {
+                            "text": "The",
+                            "start": 80,
+                            "end": 160,
+                            "confidence": 0.99,
+                            "speaker": "A",
+                        },
+                    ],
+                },
+            )
+        return httpx.Response(404, json={"error": f"no such path {path}"})
+
+    reg = Registry(
+        [Target(provider="assemblyai", key=CANARY, name="my-aai")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = transcribe_file(
+            reg,
+            0,
+            {"model": "universal-2", "audio_base64": base64.b64encode(WAV).decode()},
+        )
+    finally:
+        reg.close()
+
+    assert captured["upload_body"] == WAV
+    assert captured["submit"]["speech_models"] == ["universal-2"]
+    assert result["text"] == "The quick brown fox."
+    assert result["audio_duration_seconds"] == 3
+    assert result["words"][0]["speaker"] == "A"
+
+
+def test_transcribe_file_url_input():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "metadata": {"request_id": "r", "duration": 1.0},
+                "results": {
+                    "channels": [
+                        {"alternatives": [{"transcript": "hi", "confidence": 0.9, "words": []}]}
+                    ]
+                },
+            },
+        )
+
+    reg = Registry(
+        [Target(provider="deepgram", key=CANARY, name="my-dg")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = transcribe_file(
+            reg, 0, {"model": "nova-3", "url": "https://a.example/x.wav"}
+        )
+    finally:
+        reg.close()
+    assert captured["body"] == {"url": "https://a.example/x.wav"}
+    assert result["text"] == "hi"

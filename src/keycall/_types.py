@@ -19,6 +19,11 @@ __all__ = [
     "AliasFact",
     "AudioInput",
     "AudioOutput",
+    "BatchCounts",
+    "BatchJob",
+    "BatchRequest",
+    "BatchResult",
+    "BatchStatus",
     "Citation",
     "CitationFound",
     "CodeExecutionOutput",
@@ -57,6 +62,10 @@ __all__ = [
     "TranscriptWord",
     "TranscriptionConfig",
     "TranscriptionEvent",
+    "TranscriptionJob",
+    "TranscriptionJobStatus",
+    "TranscriptionRequest",
+    "TranscriptionResult",
     "TranscriptionSessionEnded",
     "TranscriptionSessionStarted",
     "UnknownOutput",
@@ -346,6 +355,21 @@ class Message:
         object.__setattr__(self, "content", parts)
 
 
+def _validate_seed(seed: int | None) -> None:
+    """A seed is a non-negative integer. The accepted upper bound differs by
+    provider (xAI and Gemini take an int32, DeepSeek a u64), so the ceiling
+    is left to the provider's own typed error rather than assumed here; the
+    floor is common ground, since the providers that take a seed at all read
+    it as unsigned. ``bool`` is an ``int`` subclass and is refused so a
+    stray ``True`` can't read as ``1``."""
+    if seed is None:
+        return
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError("seed must be an int")
+    if seed < 0:
+        raise ValueError("seed must be non-negative")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TextGenerationRequest:
     """Carries no provider and no credential — those are client identity."""
@@ -355,6 +379,14 @@ class TextGenerationRequest:
     max_output_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None
+    seed: int | None = None
+    """A best-effort reproducibility seed, forwarded only to providers whose
+    API defines the field (Gemini, DeepSeek, Moonshot, xAI — see
+    _capabilities.SEED_PROVIDERS). A provider without it (OpenAI's Responses
+    API, Anthropic, Perplexity) refuses before the network rather than
+    dropping a value the caller set to make a call repeatable; no provider
+    guarantees determinism from a seed, so this narrows variance rather than
+    removing it."""
     web_search: bool = False
     """Enable the provider's native web search/retrieval tool. A bare
     boolean, not a general tool-calling surface — every provider that
@@ -448,6 +480,7 @@ class TextGenerationRequest:
             raise ValueError("temperature must be between 0 and 2")
         if self.top_p is not None and not 0.0 < self.top_p <= 1.0:
             raise ValueError("top_p must be between 0 (exclusive) and 1")
+        _validate_seed(self.seed)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -562,6 +595,90 @@ class VideoJob:
     provider_status: str | None = None
     video_url: str | None = None
     error_message: str | None = None
+
+
+# --- batch generation ------------------------------------------------------
+
+
+BatchStatus = Literal["running", "finished", "failed", "cancelled", "expired"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BatchRequest:
+    """One request inside a text-generation batch. The same core shape
+    ``generate_text`` takes — model, messages, and the basic sampling
+    controls. Batch lanes run each request independently with no replay
+    loop, so the tool/search/caching surfaces stay off this record."""
+
+    model: str
+    messages: Sequence[Message]
+    max_output_tokens: int | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    seed: int | None = None
+
+    def __post_init__(self) -> None:
+        _validate_seed(self.seed)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BatchCounts:
+    """Per-request tallies as the provider reports them; ``None`` means
+    this provider doesn't say. ``total`` is the submitted count."""
+
+    total: int | None = None
+    pending: int | None = None
+    succeeded: int | None = None
+    errored: int | None = None
+    cancelled: int | None = None
+    expired: int | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BatchJob:
+    """A handle to an asynchronous batch in progress. Plain data with no
+    credential inside, so it can be stored and polled later, from another
+    process if needed, through a client bound to the same provider.
+
+    ``status`` is a closed five-value set: ``finished`` means the provider
+    ended processing — individual requests can still have failed, and the
+    per-request outcomes live in ``fetch_batch_results()``. ``failed`` is
+    the batch itself dying wholesale (a validation refusal, for one), with
+    the provider's explanation in ``error_message``. ``provider_status``
+    carries the provider's own word verbatim. ``request_keys`` are the ids
+    KeyCall assigned at submission, in submission order — they are what
+    restores result ordering, so a stored job keeps them."""
+
+    provider: str
+    job_id: str
+    operation: str
+    status: BatchStatus = "running"
+    provider_status: str | None = None
+    counts: BatchCounts | None = None
+    model: str | None = None
+    request_keys: tuple[str, ...] = ()
+    results_ref: str | None = None
+    error_ref: str | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BatchResult:
+    """One request's outcome, in submission order. Either ``result`` holds
+    the same ``InvocationResult`` the synchronous call would have returned,
+    or ``error_code``/``error_message`` hold the provider's per-request
+    refusal (``error_code`` is a ``keycall.ErrorCode`` value where the
+    refusal maps to one, or the provider's own word where it doesn't)."""
+
+    index: int
+    key: str
+    result: InvocationResult | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.result is not None
 
 
 # --- stream events ---------------------------------------------------------
@@ -787,13 +904,18 @@ class TranscriptionSessionStarted:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TranscriptWord:
     """One recognized word inside a finalized transcript, with its timing
-    in milliseconds from the start of the session's audio. ``confidence``
-    is the provider's own 0-1 score where reported."""
+    in milliseconds from the start of the audio. ``confidence`` is the
+    provider's own 0-1 score where reported. ``speaker`` is the
+    provider's own speaker label, verbatim, where diarization applies
+    and the provider reports one — the spelling differs per provider
+    ("speaker_0", "0", "A"), so it identifies a speaker within one
+    result, never across providers."""
 
     text: str
     start_ms: float
     end_ms: float
     confidence: float | None = None
+    speaker: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -874,6 +996,80 @@ class TranscriptionConfig:
     def __post_init__(self) -> None:
         if self.sample_rate < 8000:
             raise ValueError("sample_rate must be at least 8000 Hz")
+
+
+# --- prerecorded transcription ---------------------------------------------
+
+
+TranscriptionJobStatus = Literal["running", "finished", "failed"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TranscriptionRequest:
+    """A stored audio file to transcribe: one of ``data`` (the
+    audio bytes; the media type is read from the content, with
+    ``media_type`` as the label for formats KeyCall doesn't recognize)
+    or ``url`` (a location the provider fetches itself — KeyCall never
+    fetches it, and only some providers take one). ``language`` is an
+    optional hint in the provider's own code style; ``diarize`` asks for
+    speaker labels on the words where the provider offers them."""
+
+    model: str
+    data: bytes | None = None
+    url: str | None = None
+    media_type: str | None = None
+    language: str | None = None
+    diarize: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.model or not self.model.strip():
+            raise ValueError("model must not be empty")
+        if (self.data is None) == (self.url is None):
+            raise ValueError("pass one of data or url, not both")
+        if self.data is not None and not self.data:
+            raise ValueError("data must not be empty")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TranscriptionJob:
+    """A handle to a transcription job on a job-shaped provider
+    (AssemblyAI). Plain data with no credential inside, so it can be
+    stored and polled later, from another process if needed, through a
+    client bound to the same provider. ``status`` is a closed three-value
+    set; ``provider_status`` carries the provider's own word verbatim
+    (AssemblyAI's ``queued`` and ``processing`` both read as running)."""
+
+    provider: str
+    model: str
+    job_id: str
+    status: TranscriptionJobStatus = "running"
+    provider_status: str | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TranscriptionResult:
+    """A finished prerecorded transcription. ``words`` carry millisecond
+    timings (converted where the provider reports seconds) and are empty
+    where the provider reports none (OpenAI's gpt-4o transcribe family).
+    ``language`` is the provider's own code verbatim — spellings differ
+    ("english", "eng", "en"). ``audio_duration_seconds`` is the
+    provider's own count of audio processed, the billing figure on
+    providers that bill per second; ``usage`` carries token counts where
+    the provider bills transcription in tokens instead (OpenAI's gpt-4o
+    transcribe family). ``confidence`` is the provider's overall 0-1
+    score where reported."""
+
+    model: str
+    text: str
+    words: tuple[TranscriptWord, ...] = ()
+    language: str | None = None
+    audio_duration_seconds: float | None = None
+    confidence: float | None = None
+    usage: Usage | None = None
+    provider_request_id: str | None = None
+    round_trip_duration_ms: float | None = None
+    warnings: tuple[str, ...] = ()
 
 
 # --- results ---------------------------------------------------------------

@@ -72,6 +72,11 @@ class ProviderCapabilities:
     custom_tool: bool = False
     tool_search: bool = False
     streaming_transcription: bool = False
+    # Prerecorded transcription, gated at the grain support varies: the
+    # operation itself, audio-by-URL, and diarization are separate facts.
+    transcription: bool = False
+    transcription_url_input: bool = False
+    transcription_diarization: bool = False
     embeddings: bool = False
     image_generation: bool = False
     speech_generation: bool = False
@@ -85,6 +90,11 @@ class ProviderCapabilities:
     # None: no provider-side enforcement, KeyCall falls back to JSON mode.
     schema_enforcement: str | None = None
     sampling_constraints: tuple[SamplingConstraint, ...] = ()
+    # Whether the provider's generation API defines a seed field at all.
+    # Provider-level, not per-model: seed is an API-wide parameter where it
+    # exists (Gemini, DeepSeek, Moonshot, xAI), absent where it doesn't
+    # (OpenAI's Responses API, Anthropic, Perplexity).
+    supports_seed: bool = False
     # Families that advertise a text method and then refuse a text call.
     non_text_model_families: tuple[str, ...] = ()
     # Image input differs by *form*: several providers read raw bytes but
@@ -111,6 +121,10 @@ class ResolvedProvider:
     is_custom: bool = False
     # Providers whose model list is not API-discoverable supply it here.
     catalog_models: tuple[dict[str, Any], ...] = ()
+    # Models the provider has shut down, from the catalog's dated retirement
+    # records: {id, aliases, retired, replacement, note}. Empty means no
+    # recorded retirements, never "nothing was ever retired".
+    retired_models: tuple[dict[str, Any], ...] = ()
     min_max_output_tokens: int | None = None
     # Hosts a finished video download may point at when they differ from
     # the provider's own API host, pinned from live evidence.
@@ -136,6 +150,17 @@ def _load_catalog() -> dict[str, Any]:
 
 def catalog_version() -> str:
     return str(_load_catalog()["catalog_version"])
+
+
+def retired_model_fact(
+    retired_models: tuple[dict[str, Any], ...], model_id: str
+) -> dict[str, Any] | None:
+    """The catalog's retirement record matching a model id or one of its
+    recorded alias spellings, or None when no record covers it."""
+    for entry in retired_models:
+        if model_id == entry.get("id") or model_id in entry.get("aliases", ()):
+            return entry
+    return None
 
 
 # The catalog ships inside the package, so it only moves when KeyCall is
@@ -180,6 +205,9 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
         custom_tool=bool(raw.get("custom_tool", False)),
         tool_search=bool(raw.get("tool_search", False)),
         streaming_transcription=bool(raw.get("streaming_transcription", False)),
+        transcription=bool(raw.get("transcription", False)),
+        transcription_url_input=bool(raw.get("transcription_url_input", False)),
+        transcription_diarization=bool(raw.get("transcription_diarization", False)),
         prompt_caching=bool(raw.get("prompt_caching", False)),
         schema_enforcement=raw.get("schema_enforcement"),
         sampling_constraints=tuple(
@@ -190,6 +218,7 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
             )
             for entry in raw.get("sampling_constraints", ())
         ),
+        supports_seed=bool(raw.get("supports_seed", False)),
         non_text_model_families=tuple(raw.get("non_text_model_families", ())),
         image_input_bytes=bool((raw.get("image_input") or {}).get("bytes", False)),
         image_input_url=bool((raw.get("image_input") or {}).get("url", False)),
@@ -373,6 +402,7 @@ def resolve_provider(
             ),
             provider_request_id_header=profile.get("provider_request_id_header"),
             catalog_models=tuple(profile.get("models", ())),
+            retired_models=tuple(profile.get("retired_models", ())),
             catalog_voices=tuple((profile.get("voices") or {}).get("list", ())),
             catalog_voices_verified=(profile.get("voices") or {}).get("verified"),
             min_max_output_tokens=profile.get("min_max_output_tokens"),

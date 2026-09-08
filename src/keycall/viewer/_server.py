@@ -17,6 +17,8 @@ Routes (all under the base "/"):
   POST /api/generate/image       {target, model, prompt} -> InvocationResult
   POST /api/generate/video       {target, model, prompt} -> InvocationResult
   POST /api/generate/speech      {target, model, text, voice?} -> InvocationResult
+  POST /api/transcribe/file      {target, model, audio_base64|url, diarize?}
+                                  -> transcript with word timings and billing
   GET  /api/voices?target=       the target's voices for the speech task's picker
   GET  /api/realtime?target=&model=&voice=&instructions=   WebSocket upgrade;
                                   bridges the browser to a realtime session
@@ -727,6 +729,14 @@ class _Handler(BaseHTTPRequestHandler):
             # single-user ThreadingHTTPServer has a thread to spare.
             started = time.monotonic()
             result = _api.generate_video(self._registry, target_id, body)
+            self._record(route=route, method="POST", started=started, body=body, result=result)
+            self._send_json(result)
+        elif route == "/api/transcribe/file":
+            # Blocks like the video route: sync providers answer in one
+            # round trip, and the job-shaped provider is polled server-side
+            # within the same call.
+            started = time.monotonic()
+            result = _api.transcribe_file(self._registry, target_id, body)
             self._record(route=route, method="POST", started=started, body=body, result=result)
             self._send_json(result)
         elif route == "/api/generate/stream":

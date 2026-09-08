@@ -155,3 +155,33 @@ def test_incompatible_version_warns_once_and_disables(monkeypatch):
     ):
         trace.event("app", operation="noop")
     _tracing._reset_for_tests()
+
+
+def test_token_counts_reach_traces_unredacted_as_event_kwargs(trace_file):
+    # TraceAct's sanitiser redacts any result field whose name contains
+    # "token", so counts recorded inside result= arrived as "[redacted]"
+    # and its cost estimator could not price KeyCall spans (reported by
+    # the TraceAct dev, 2026-09-02). The counts must ride the model
+    # event's own kwargs — provider/tokens_in/tokens_out, the traceact
+    # 1.1.0 cost-estimator convention — and survive into the sink.
+    run_operations()
+    records = [json.loads(line) for line in trace_file.read_text().splitlines()]
+    model_events = [
+        e
+        for r in records
+        for e in r.get("events", [])
+        if e.get("kind") == "model" and e.get("operation") == "text_generation"
+    ]
+    assert model_events, "no text_generation model event reached the sink"
+    event = model_events[0]
+    found = {k: v for k, v in event.items() if k in ("provider", "tokens_in", "tokens_out")}
+    if not found:
+        found = {
+            k: v
+            for k, v in event.get("meta", {}).items()
+            if k in ("provider", "tokens_in", "tokens_out")
+        }
+    assert found.get("provider") == "openai"
+    assert found.get("tokens_in") == 8
+    assert found.get("tokens_out") == 2
+    assert "[redacted]" not in json.dumps(event)

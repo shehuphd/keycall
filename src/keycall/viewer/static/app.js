@@ -149,6 +149,12 @@ let TARGETS = [];
 // {image: [...providers], audio: [...], file: [...]}, from the catalog.
 let PROVIDERS_ACCEPTING = {};
 let PROVIDER_CAPABILITIES = {};
+// {provider: {streaming: [...model ids], prerecorded: [...]}} from the
+// catalog, for the two transcribe tasks' model pickers: the transcription
+// category alone can't split a streaming-only model from a
+// prerecorded-only one on the same key.
+let TRANSCRIPTION_WIRES = {};
+let SAMPLING_CONSTRAINTS = {};
 
 // --- sortable tables --------------------------------------------------------
 
@@ -262,6 +268,8 @@ async function refreshTargets() {
   TARGETS = data.targets || [];
   PROVIDERS_ACCEPTING = data.providers_accepting || {};
   PROVIDER_CAPABILITIES = data.provider_capabilities || {};
+  TRANSCRIPTION_WIRES = data.transcription_wires || {};
+  SAMPLING_CONSTRAINTS = data.sampling_constraints || {};
   // Only overwrite the control when the server names a value: an older
   // server process without the field must not blank or reset it.
   if (Number.isInteger(data.read_timeout)) {
@@ -524,8 +532,16 @@ function modeCategory(mode) {
     : mode === "video" ? "video_generation"
     : mode === "speech" ? "speech_generation"
     : mode === "voice" ? "realtime"
-    : mode === "transcribe" ? "transcription"
+    : mode === "transcribe" || mode === "transcribe-file" ? "transcription"
     : null;
+}
+
+// The provider capability flag the task gates on. Usually the category
+// name itself; the two transcribe tasks share one model category but gate
+// on their own wire's flag (OpenAI transcribes files and has no streaming
+// STT at all).
+function modeCapability(mode) {
+  return mode === "transcribe-file" ? "file_transcription" : modeCategory(mode);
 }
 
 // "targetId:category" -> whether that key's own model list has at least
@@ -561,11 +577,14 @@ async function renderPlaygroundTargets() {
   const sel = el("pg-target");
   const previous = sel.value;
   const category = modeCategory(currentMode());
+  const capability = modeCapability(currentMode());
   const token = ++PG_TARGET_RENDER;
   let eligible = TARGETS.filter((t) => {
-    if (!category) return true;
+    if (!capability) return true;
     const caps = PROVIDER_CAPABILITIES[t.provider];
-    return !caps || Boolean(caps[category]);
+    // An absent flag is unknown, not "no": an older server process that
+    // predates a newer flag must not disqualify every key for the task.
+    return !caps || caps[capability] === undefined || Boolean(caps[capability]);
   });
   if (category && eligible.length) {
     sel.disabled = true;
@@ -656,6 +675,15 @@ async function loadModelsInner(refresh) {
   el("models-status").textContent =
     `${data.models.length} model${data.models.length === 1 ? "" : "s"}` +
     `${data.from_cache ? ", from a saved copy" : ""} · model list ${data.catalog_version}`;
+  // Listing-level warnings, chief among them retired models withheld from
+  // the table with the provider's recommended replacement: a model that
+  // silently vanished would read as the key losing access.
+  (data.warnings || []).forEach((warning) => {
+    const note = document.createElement("div");
+    note.className = "hint";
+    note.textContent = warning;
+    el("models-status").appendChild(note);
+  });
   // Source only earns its column when it varies (e.g. Gemini mixes
   // provider_metadata with keycall_rule); a constant column is noise.
   const sources = new Set(data.models.map((m) => m.classification_source));
@@ -737,15 +765,10 @@ async function loadPlaygroundModels() {
     sel.appendChild(none);
     sel.disabled = true;
     updateSendEnabled();
+    updateSttRunEnabled();
     return;
   }
-  const category =
-    currentMode() === "image" ? "image_generation"
-    : currentMode() === "video" ? "video_generation"
-    : currentMode() === "speech" ? "speech_generation"
-    : currentMode() === "voice" ? "realtime"
-    : currentMode() === "transcribe" ? "transcription"
-    : "text_generation";
+  const category = modeCategory(currentMode()) || "text_generation";
   const sel = el("pg-model");
   clear(sel);
   const opt = document.createElement("option");
@@ -760,6 +783,19 @@ async function loadPlaygroundModels() {
     updateSendEnabled();
     return;
   }
+  // The two transcribe tasks share one model category but not one wire:
+  // where the catalog carries per-model wire facts, only models on this
+  // task's wire are offered. Providers with no wire facts (live-discovered
+  // model lists) keep every category model.
+  if (category === "transcription") {
+    const target = TARGETS.find((t) => String(t.id) === id);
+    const wires = target ? TRANSCRIPTION_WIRES[target.provider] : null;
+    if (wires) {
+      const wanted = currentMode() === "transcribe-file" ? "prerecorded" : "streaming";
+      const allowed = new Set(wires[wanted] || []);
+      data.models = data.models.filter((m) => allowed.has(m.id));
+    }
+  }
   if (!data.models.length) {
     const none = document.createElement("option");
     // An explicit empty value, not left to default to the option's own
@@ -772,11 +808,13 @@ async function loadPlaygroundModels() {
       : currentMode() === "video" ? "this key has no video models"
       : currentMode() === "speech" ? "this key has no speech models"
       : currentMode() === "voice" ? "this key has no voice models"
-      : currentMode() === "transcribe" ? "this key has no transcription models"
+      : currentMode() === "transcribe" ? "this key has no live-transcription models"
+      : currentMode() === "transcribe-file" ? "this key has no file-transcription models"
       : "this key has no text models";
     sel.appendChild(none);
     sel.disabled = true;
     updateSendEnabled();
+    updateSttRunEnabled();
     return;
   }
   sel.disabled = false;
@@ -800,7 +838,13 @@ async function loadPlaygroundModels() {
     const cheap = cheapestModelId(live.map((m) => m.id));
     if (cheap) sel.value = cheap;
   }
+  // Temperature support is model-level, so the gate can only settle once the
+  // list is populated and a default is chosen: re-gate now that it is. On a
+  // fresh load nothing the user set is being turned off, so this raises no
+  // toast; a later model switch runs through the change handler.
+  applyKeyGates();
   updateSendEnabled();
+  updateSttRunEnabled();
 }
 
 // No provider's model list carries a price or tier field, so a
@@ -838,6 +882,7 @@ function isRefused(targetId, modelId) {
 const MODEL_SCOPED_ERRORS = new Set([
   "model_not_available",
   "model_not_suitable",
+  "model_retired",
 ]);
 
 function noteModelOutcome(targetId, modelId, code) {
@@ -908,6 +953,9 @@ el("pg-model").addEventListener("change", () => {
   if (currentMode() === "speech") {
     renderVoiceOptions(PG_VOICES.get(el("pg-target").value) || []);
   }
+  // Temperature support is per model, so re-gate when the model changes:
+  // switching to a model that fixes temperature disables the control.
+  applyKeyGates();
 });
 
 el("pg-target").addEventListener("change", () => {
@@ -958,41 +1006,54 @@ async function applyMode() {
   const speech = currentMode() === "speech";
   const voice = currentMode() === "voice";
   const transcribe = currentMode() === "transcribe";
-  el("pg-extras").hidden = image || video || speech || voice || transcribe;
-  el("pg-maxtok-row").hidden = image || video || speech || voice || transcribe;
+  const sttFile = currentMode() === "transcribe-file";
+  el("pg-extras").hidden = image || video || speech || voice || transcribe || sttFile;
+  el("pg-maxtok-row").hidden = image || video || speech || voice || transcribe || sttFile;
   // Neither generate_image() nor generate_video() sends reasoning_effort
   // at all (their requests are model + prompt, nothing else), so the
   // control would silently do nothing if left up rather than refusing.
-  el("pg-reasoning-row").hidden = image || video || speech || voice || transcribe;
+  el("pg-reasoning-row").hidden = image || video || speech || voice || transcribe || sttFile;
+  // Temperature and seed ride generate_text/stream_text only; the picture,
+  // video, speech, voice, and transcription tasks build their own requests
+  // without them, so the controls would do nothing if left up.
+  const nonText = image || video || speech || voice || transcribe || sttFile;
+  el("pg-temperature-row").hidden = nonText;
+  el("pg-seed-row").hidden = nonText;
   // Transcription has no instructions either: the session takes audio in
   // and gives words back, with no prompt anywhere in it.
-  el("pg-system-row").hidden = image || video || speech || transcribe;
+  el("pg-system-row").hidden = image || video || speech || transcribe || sttFile;
   // The cache marker only reaches generate_text/stream_text; voice runs
   // over its own realtime connection, a different protocol the marker
   // never touches, so the toggle would silently do nothing there.
-  el("pg-cache-row").hidden = image || video || speech || voice || transcribe;
+  el("pg-cache-row").hidden = image || video || speech || voice || transcribe || sttFile;
   el("pg-image-mode-note").hidden = !image;
   el("pg-speech-mode-note").hidden = !speech;
   el("pg-voice-row").hidden = !speech;
   el("pg-video-mode-note").hidden = !video;
   el("pg-voice-mode-note").hidden = !voice;
   el("pg-transcribe-mode-note").hidden = !transcribe;
+  el("pg-stt-mode-note").hidden = !sttFile;
+  el("pg-stt-diarize-row").hidden = !sttFile;
   el("pg-video-duration-row").hidden = !video;
   if (!video) el("pg-video-duration-warning").hidden = true;
   // An image or video model takes a description and nothing else, so a
   // microphone in the composer would only offer something that cannot be
   // sent. Voice and transcribe sessions each have their own microphone
   // control, in their own panel.
-  el("pg-mic").hidden = image || video || speech || voice || transcribe;
-  el("pg-composer").hidden = voice || transcribe;
-  el("pg-composer-hint").hidden = voice || transcribe;
+  el("pg-mic").hidden = image || video || speech || voice || transcribe || sttFile;
+  el("pg-composer").hidden = voice || transcribe || sttFile;
+  el("pg-composer-hint").hidden = voice || transcribe || sttFile;
   el("pg-voice-panel").hidden = !voice;
   el("pg-transcribe-panel").hidden = !transcribe;
+  el("pg-stt-panel").hidden = !sttFile;
   // Leaving a session mode ends any session in progress rather than
   // leaving a WebSocket open behind a panel nothing points at any more.
   if (!voice) endVoiceSession();
   if (!transcribe) endTranscribeSession();
-  if ((image || video || speech || voice || transcribe) && REC) discardRecording();
+  // A clip queued for file transcription belongs to that task; leaving it
+  // behind an invisible panel would silently resend it on return.
+  if (!sttFile) clearSttSource();
+  if ((image || video || speech || voice || transcribe || sttFile) && REC) discardRecording();
   el("pg-prompt").placeholder = image
     ? `Describe the picture you want. Press Send, or ${MOD_KEY}+Enter.`
     : video
@@ -1887,6 +1948,268 @@ el("pg-transcribe-new").addEventListener("click", startNewConversation);
 
 el("pg-transcribe-talk").addEventListener("click", toggleTranscribeSession);
 
+// --- file transcription -----------------------------------------------------
+
+// The clip queued for the file-transcription task: {data_base64,
+// media_type, label, shape}. shape is the recorded clip's amplitude
+// envelope, null for a picked file (see PG_AUDIO_SHAPE for why a picked
+// file gets no invented contour). One slot on purpose: a clip and a
+// pasted link can't both be queued, so the link input is disabled while
+// a clip is attached rather than silently losing to it.
+let PG_STT_FILE = null;
+
+function setSttStatus(text) {
+  el("pg-stt-status").textContent = text;
+}
+
+function showSttAttached(blob, label) {
+  const preview = el("pg-stt-preview");
+  if (preview.src) URL.revokeObjectURL(preview.src);
+  preview.src = URL.createObjectURL(blob);
+  el("pg-stt-attached").hidden = false;
+  el("pg-stt-attached").querySelector(".pg-attached-label").textContent = label;
+  const link = el("pg-stt-url");
+  link.disabled = true;
+  link.title = "Remove the attached clip to send a link instead";
+}
+
+function clearSttSource() {
+  PG_STT_FILE = null;
+  el("pg-stt-file").value = "";
+  const preview = el("pg-stt-preview");
+  if (preview.src) URL.revokeObjectURL(preview.src);
+  preview.removeAttribute("src");
+  el("pg-stt-attached").hidden = true;
+  el("pg-stt-url").title = "";
+  // Whether the link input comes back depends on the selected key, not
+  // just on the clip going away.
+  gateSttControls([]);
+}
+
+el("pg-stt-file").addEventListener("change", () => {
+  const file = el("pg-stt-file").files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const encoded = String(reader.result).split(",")[1] || "";
+    PG_STT_FILE = {
+      data_base64: encoded,
+      media_type: file.type || undefined,
+      label: `${file.name} · ${humanSize(file.size)}`,
+      shape: null,
+    };
+    showSttAttached(file, `${file.name} · ${humanSize(file.size)}`);
+    setSttStatus("file ready — press Transcribe");
+    updateSttRunEnabled();
+  };
+  reader.onerror = () => {
+    PG_STT_FILE = null;
+    setSttStatus("could not read that file — pick it again");
+  };
+  reader.readAsDataURL(file);
+});
+
+el("pg-stt-mic").addEventListener("click", () => {
+  if (!REC) startRecording();
+});
+
+el("pg-stt-remove").addEventListener("click", () => {
+  clearSttSource();
+  setSttStatus("Pick an audio file, record one, or paste a link.");
+});
+
+el("pg-stt-new").addEventListener("click", startNewConversation);
+el("pg-stt-run").addEventListener("click", runFileTranscription);
+
+function updateSttRunEnabled() {
+  const btn = el("pg-stt-run");
+  const hasModel = Boolean(el("pg-model").value);
+  const link = el("pg-stt-url");
+  const hasSource = Boolean(PG_STT_FILE) || Boolean(!link.disabled && link.value.trim());
+  btn.disabled = !hasModel || !hasSource;
+  btn.title = !hasModel
+    ? "Pick a key and a model on the left first"
+    : !hasSource
+    ? "Pick an audio file, record one, or paste a link first"
+    : "";
+}
+
+// Same contract as gateAttachments, for this task's two per-provider
+// controls: speaker labels and link input each gate on their own catalog
+// flag, so an unsupported choice is plainly unavailable instead of
+// failing after a billable round trip. `off` collects what was
+// force-disabled while switched on, for applyKeyGates' single toast.
+function gateSttControls(off) {
+  const target = TARGETS.find((t) => String(t.id) === el("pg-target").value);
+  const caps = target ? PROVIDER_CAPABILITIES[target.provider] : null;
+  const inMode = !el("pg-stt-panel").hidden;
+  // An absent flag is unknown (an older server), never a refusal.
+  const capOk = (cap) => !target || !caps || caps[cap] === undefined || Boolean(caps[cap]);
+
+  const diarizeOk = capOk("transcription_diarization");
+  const diarize = el("pg-stt-diarize");
+  const diarizeWasOn = diarize.checked;
+  diarize.disabled = !diarizeOk;
+  el("pg-stt-diarize-toggle").classList.toggle("pg-toggle-off", !diarizeOk);
+  const diarizeNote = el("pg-stt-diarize-unavailable");
+  diarizeNote.hidden = diarizeOk || el("pg-stt-diarize-row").hidden;
+  if (!diarizeOk) {
+    diarize.checked = false;
+    const loaded = providersAble("transcription_diarization").filter((p) =>
+      TARGETS.some((t) => t.provider === p)
+    );
+    diarizeNote.textContent = `This ${target.provider} key can't label speakers. ` +
+      (loaded.length
+        ? keyPhrase("Pick", "above", loaded)
+        : keyPhrase("Load", "", providersAble("transcription_diarization")));
+    if (diarizeWasOn && inMode) off.push("label the speakers");
+  }
+
+  const urlOk = capOk("transcription_url_input");
+  const link = el("pg-stt-url");
+  const hadUrl = Boolean(link.value.trim());
+  link.disabled = !urlOk || Boolean(PG_STT_FILE);
+  const urlNote = el("pg-stt-url-unavailable");
+  urlNote.hidden = urlOk || !inMode;
+  if (!urlOk) {
+    if (hadUrl) {
+      link.value = "";
+      if (inMode) off.push("send a link");
+    }
+    const loaded = providersAble("transcription_url_input").filter((p) =>
+      TARGETS.some((t) => t.provider === p)
+    );
+    urlNote.textContent = `This ${target.provider} key can't fetch a link itself. ` +
+      (loaded.length
+        ? keyPhrase("Pick", "above", loaded)
+        : keyPhrase("Load", "", providersAble("transcription_url_input")));
+  }
+  updateSttRunEnabled();
+}
+
+async function runFileTranscription() {
+  const targetId = el("pg-target").value;
+  const model = el("pg-model").value;
+  if (!targetId || !model) {
+    setSttStatus("pick a key and a model first");
+    return;
+  }
+  const link = el("pg-stt-url");
+  const url = PG_STT_FILE ? "" : link.value.trim();
+  if (!PG_STT_FILE && !url) {
+    setSttStatus("pick an audio file, record one, or paste a link first");
+    return;
+  }
+  clearTranscriptPlaceholder();
+  const turn = addBubble("user");
+  if (PG_STT_FILE) {
+    turn.appendChild(playableWaveform(PG_STT_FILE.shape, PG_STT_FILE));
+    const note = document.createElement("div");
+    note.className = "meta";
+    note.textContent = PG_STT_FILE.label;
+    turn.appendChild(note);
+  } else {
+    const body = document.createElement("div");
+    body.className = "result-text";
+    body.textContent = url;
+    turn.appendChild(body);
+  }
+
+  const btn = el("pg-stt-run");
+  working(btn, "Transcribing…");
+  PG_LAST_REQUEST = { targetId, modelId: model };
+  const placeholder = addBubble("model");
+  // A sync provider answers in seconds; the job-shaped one can take a
+  // while on a long recording, so the clock says something is moving.
+  const startedAt = Date.now();
+  const paint = () => {
+    placeholder.textContent = `Transcribing… · ${formatElapsed(startedAt)}`;
+  };
+  paint();
+  const ticker = setInterval(paint, 1000);
+  const body = {
+    target: Number(targetId),
+    model,
+    diarize: el("pg-stt-diarize").checked && !el("pg-stt-diarize").disabled,
+  };
+  if (PG_STT_FILE) body.audio_base64 = PG_STT_FILE.data_base64;
+  else body.url = url;
+  const data = await api("/api/transcribe/file", { method: "POST", body });
+  clearInterval(ticker);
+  placeholder.remove();
+  done(btn);
+  if (data.error) {
+    renderGeneration(addBubble("model"), data);
+    setSttStatus("that didn't work — the reply above says why");
+    updateSttRunEnabled();
+    return;
+  }
+  addTranscriptBubble(data);
+  // The clip belongs to the turn just sent, same as a chat attachment;
+  // the link stays for an easy re-run against another model.
+  if (PG_STT_FILE) clearSttSource();
+  setSttStatus("done — pick another file, or switch models and go again");
+  updateSttRunEnabled();
+  saveCurrentConversation(data.text);
+}
+
+function addTranscriptBubble(result) {
+  const bubble = addBubble("model");
+  const body = document.createElement("div");
+  body.className = "result-text";
+  const words = result.words || [];
+  const speakers = words.some((word) => word.speaker != null);
+  if (speakers) {
+    // Consecutive words from one speaker read as one line, the provider's
+    // own label (spellings differ: "speaker_0", "0", "A") in front.
+    let line = null;
+    words.forEach((word) => {
+      if (!line || line.dataset.speaker !== String(word.speaker)) {
+        line = document.createElement("div");
+        line.dataset.speaker = String(word.speaker);
+        const who = document.createElement("strong");
+        who.textContent = `${word.speaker}: `;
+        line.appendChild(who);
+        body.appendChild(line);
+      }
+      line.appendChild(document.createTextNode(`${word.text} `));
+    });
+  } else {
+    body.textContent = result.text || "(no words recognized)";
+  }
+  bubble.appendChild(body);
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const parts = [result.model];
+  if (result.round_trip_duration_ms != null) {
+    parts.push(formatDuration(result.round_trip_duration_ms));
+  }
+  // The billing figure: seconds of audio on per-second providers, token
+  // usage where the provider bills transcription in tokens instead.
+  if (result.audio_duration_seconds != null) {
+    // Rounded for display: ElevenLabs reports sub-millisecond precision
+    // ("2.6453125"), which reads as noise next to the other figures.
+    parts.push(`${Number(result.audio_duration_seconds.toFixed(1))}s of audio billed`);
+  } else if (result.usage) {
+    parts.push(usageLabel(result.usage));
+  }
+  if (result.language) parts.push(`language ${result.language}`);
+  if (typeof result.confidence === "number") {
+    parts.push(`confidence ${(result.confidence * 100).toFixed(0)}%`);
+  }
+  if (words.length) parts.push(`${words.length} timed word${words.length === 1 ? "" : "s"}`);
+  meta.textContent = parts.join(" · ");
+  bubble.appendChild(meta);
+  (result.warnings || []).forEach((warning) => {
+    const note = document.createElement("div");
+    note.className = "meta";
+    note.textContent = warning;
+    bubble.appendChild(note);
+  });
+  return bubble;
+}
+
 function openLightbox(source) {
   const overlay = document.createElement("div");
   overlay.className = "lightbox";
@@ -2377,11 +2700,18 @@ let REC = null; // {stream, context, node, source, analyser, chunks, started, ti
 // The composer and the recording bar occupy the same place and never show at
 // once: while recording, the only two things to decide are keep or discard.
 function recordingUI(active) {
-  el("pg-composer").hidden = active;
-  el("pg-composer-hint").hidden = active;
+  // In the file-transcription task the recorder replaces that task's own
+  // panel instead; the composer is hidden there either way.
+  if (currentMode() === "transcribe-file") {
+    el("pg-stt-panel").hidden = active;
+  } else {
+    el("pg-composer").hidden = active;
+    el("pg-composer-hint").hidden = active;
+  }
   el("pg-recorder").hidden = !active;
   // Picking a file mid-recording would leave two sources of truth.
   el("pg-audio-file").disabled = active;
+  el("pg-stt-file").disabled = active;
   if (active) el("pg-rec-accept").focus();
 }
 
@@ -2548,6 +2878,25 @@ function stopRecording() {
   }
   const wav = encodeWav(samples, REC_SAMPLE_RATE);
   const seconds = samples.length / REC_SAMPLE_RATE;
+  if (currentMode() === "transcribe-file") {
+    // The clip is this task's input, not a chat attachment: it goes into
+    // the task's own slot and preview, and none of the composer's
+    // attachment bookkeeping below applies.
+    PG_STT_FILE = {
+      data_base64: base64OfBytes(wav),
+      media_type: "audio/wav",
+      label: `recording · ${clockText(Math.round(seconds))}`,
+      shape: envelopeOf(samples),
+    };
+    el("pg-stt-file").value = "";
+    showSttAttached(
+      new Blob([wav], { type: "audio/wav" }),
+      `Recording attached · ${clockText(Math.round(seconds))} · ${humanSize(wav.byteLength)}`
+    );
+    setSttStatus("recording ready — press Transcribe");
+    updateSttRunEnabled();
+    return;
+  }
   PG_MEDIA.audio = { data_base64: base64OfBytes(wav), media_type: "audio/wav" };
   // Measured from the clip itself, and kept out of PG_MEDIA so it is never
   // posted: the server has the audio and has no use for our drawing of it.
@@ -2726,11 +3075,13 @@ document.addEventListener("input", (event) => {
   if (!event.target.closest("#playground")) return;
   updateSendEnabled();
   updateVoiceSendEnabled();
+  updateSttRunEnabled();
 });
 document.addEventListener("change", (event) => {
   if (!event.target.closest("#playground")) return;
   updateSendEnabled();
   updateVoiceSendEnabled();
+  updateSttRunEnabled();
 });
 
 /** Detach everything after a turn goes out. Each attachment kind clears
@@ -2835,6 +3186,25 @@ function providersAble(cap) {
     .sort();
 }
 
+// The first recorded sampling constraint whose pattern matches this model,
+// or null. Mirrors the server gate, which matches the pattern against the
+// lower-cased model id; the patterns are anchored (^...), so an unanchored
+// test here still matches from the start.
+function temperatureConstraint(provider, model) {
+  const list = SAMPLING_CONSTRAINTS[provider] || [];
+  const id = (model || "").toLowerCase();
+  for (const c of list) {
+    let re;
+    try {
+      re = new RegExp(c.pattern);
+    } catch (err) {
+      continue;
+    }
+    if (re.test(id)) return c;
+  }
+  return null;
+}
+
 // Same contract as gateAttachments, for the capability toggles: a key
 // switch mid-conversation must not leave anything switched on that the
 // new provider will refuse after a billable round trip. Controls the new
@@ -2909,6 +3279,47 @@ function gateCapabilities(off) {
     reasoningSelect.value = "";
     off.push("use minimal reasoning effort");
   }
+
+  // Seed is a provider-level fact (the API has the field or it doesn't), so
+  // it gates on the key the same way reasoning effort does.
+  const seedOk = !target || !caps || Boolean(caps.supports_seed);
+  const seedInput = el("pg-seed");
+  const seedWasSet = seedInput.value !== "";
+  seedInput.disabled = !seedOk;
+  const seedNote = el("pg-seed-unavailable");
+  seedNote.hidden = seedOk || el("pg-seed-row").hidden;
+  if (!seedOk) {
+    seedInput.value = "";
+    const loaded = providersAble("supports_seed").filter((p) =>
+      TARGETS.some((t) => t.provider === p)
+    );
+    seedNote.textContent = `This ${target.provider} key can't pin a seed. ` +
+      (loaded.length
+        ? keyPhrase("Pick", "above", loaded)
+        : keyPhrase("Load", "", providersAble("supports_seed")));
+    if (seedWasSet) off.push("pin a seed");
+  }
+
+  // Temperature is model-level, not provider-level: the same key accepts it
+  // on one model and fixes it on another (Anthropic's Opus 4.6 vs 4.8), so
+  // the gate matches the selected model against the provider's recorded
+  // sampling constraints rather than a single key flag.
+  const tempInput = el("pg-temperature");
+  const tempModel = el("pg-model").value;
+  const tempConstraint = target ? temperatureConstraint(target.provider, tempModel) : null;
+  const tempOk = !tempConstraint;
+  const tempWasSet = tempInput.value !== "";
+  tempInput.disabled = !tempOk;
+  const tempNote = el("pg-temperature-unavailable");
+  tempNote.hidden = tempOk || el("pg-temperature-row").hidden;
+  if (!tempOk) {
+    tempInput.value = "";
+    const pinned = (tempConstraint.allowed || {}).temperature;
+    tempNote.textContent = pinned === undefined
+      ? `${tempModel} doesn't accept a temperature; it's fixed for this model.`
+      : `${tempModel} fixes temperature at ${pinned}; it can't be changed for this model.`;
+    if (tempWasSet) off.push("set temperature");
+  }
   updateSuggestedBudget();
 
   // The task picker: picking a task rebuilds the Key list down to keys
@@ -2921,7 +3332,8 @@ function gateCapabilities(off) {
     !TARGETS.length ||
     TARGETS.some((t) => {
       const c = PROVIDER_CAPABILITIES[t.provider];
-      return !c || Boolean(c[cap]);
+      // An absent flag is unknown (an older server process), never "no".
+      return !c || c[cap] === undefined || Boolean(c[cap]);
     });
   const taskGate = (value, cap, noun) => {
     const ok = anyKeyCan(cap);
@@ -2936,7 +3348,8 @@ function gateCapabilities(off) {
   taskGate("image", "image_generation", "make a picture");
   taskGate("video", "video_generation", "make a video");
   taskGate("voice", "realtime", "hold a voice conversation");
-  taskGate("transcribe", "transcription", "transcribe speech");
+  taskGate("transcribe", "transcription", "transcribe speech live");
+  taskGate("transcribe-file", "file_transcription", "transcribe a recording");
 }
 
 // One pass over everything a key switch can invalidate, ending in a
@@ -2945,6 +3358,7 @@ function applyKeyGates() {
   const off = [];
   gateAttachments(off);
   gateCapabilities(off);
+  gateSttControls(off);
   if (off.length) {
     const target = TARGETS.find((t) => String(t.id) === el("pg-target").value);
     const who = target ? `this ${target.provider} key` : "this key";
@@ -3000,7 +3414,7 @@ let PG_CONVERSATION_TITLE = null;
 // writing its id back over the conversation now open.
 let PG_CONVERSATION_EPOCH = 0;
 
-const PG_MODE_LABELS = { text: "Text", image: "Picture", video: "Video", speech: "Speech", voice: "Voice", transcribe: "Transcript" };
+const PG_MODE_LABELS = { text: "Text", image: "Picture", video: "Video", speech: "Speech", voice: "Voice", transcribe: "Live transcript", "transcribe-file": "Transcript" };
 
 function deriveConversationTitle(promptText) {
   const text = (promptText || "").trim();
@@ -3427,6 +3841,15 @@ async function runGeneration({ continuation }) {
     cache_system: el("pg-cache-system").checked,
     max_output_tokens: Number(el("pg-maxtok").value) || undefined,
     reasoning_effort: el("pg-reasoning").value || undefined,
+    // A blank field means "unset"; an explicit 0 is a valid temperature and
+    // must survive, so these read the string rather than coercing through a
+    // falsy check that would drop zero.
+    temperature: el("pg-temperature").value.trim() === ""
+      ? undefined
+      : Number(el("pg-temperature").value),
+    seed: el("pg-seed").value.trim() === ""
+      ? undefined
+      : Number(el("pg-seed").value),
     web_search: el("pg-search").checked,
     tools: tooling.tools,
     tool_choice: tooling.choice,
@@ -3740,6 +4163,7 @@ const TRACE_ROUTE_LABELS = {
   "/api/generate/image": "Picture",
   "/api/generate/speech": "Speech",
   "/api/generate/video": "Video",
+  "/api/transcribe/file": "File transcription",
   "/api/verify": "Verify",
   "/api/models": "Model list",
 };

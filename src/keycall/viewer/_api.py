@@ -54,6 +54,7 @@ __all__ = [
     "list_voices",
     "save_conversation",
     "set_settings",
+    "transcribe_file",
     "verify_target",
 ]
 
@@ -63,6 +64,24 @@ __all__ = [
 # budget from `registry.read_timeout` (each individual start/check/download
 # call within the poll loop still respects that, much shorter, setting).
 VIDEO_JOB_TIMEOUT = 900.0
+
+# Same reasoning for job-shaped transcription (AssemblyAI): the route
+# blocks while the provider works through the file, and a long recording
+# can take minutes. Sync transcription providers get no timeout at all —
+# the library refuses one there, pointing at read_timeout instead.
+TRANSCRIPTION_JOB_TIMEOUT = 900.0
+
+
+def _transcription_wires(provider: str) -> dict[str, list[str]]:
+    """The provider's catalog transcription models split by wire —
+    {"streaming": [...], "prerecorded": [...]} — or {} when no catalog
+    model carries a wire fact."""
+    wires: dict[str, list[str]] = {"streaming": [], "prerecorded": []}
+    for entry in resolve_provider(provider).catalog_models:
+        for wire in entry.get("wires", ()):
+            if wire in wires:
+                wires[wire].append(entry["id"])
+    return wires if (wires["streaming"] or wires["prerecorded"]) else {}
 
 
 def error_body(error: KeyCallError) -> dict[str, Any]:
@@ -100,14 +119,50 @@ def list_targets(registry: Registry) -> dict[str, Any]:
                 "prompt_caching": caps.prompt_caching,
                 "realtime": caps.realtime,
                 "speech_generation": caps.speech_generation,
+                # Whether the provider's generation API takes a seed at all.
+                # Provider-level, so the seed input gates on a key switch.
+                "supports_seed": caps.supports_seed,
                 # Keyed by the model category name rather than the
                 # capability flag's, so the page can use one string for
                 # both the provider gate and the model-list filter, the
                 # same way "realtime" already doubles for voice.
                 "transcription": caps.streaming_transcription,
+                # File transcription is its own flag: a provider can serve
+                # one transcription wire and not the other (OpenAI has no
+                # streaming STT), and the two Playground tasks gate on
+                # their own wire.
+                "file_transcription": caps.transcription,
+                "transcription_url_input": caps.transcription_url_input,
+                "transcription_diarization": caps.transcription_diarization,
             }
             for name in supported_providers()
             for caps in (resolve_provider(name).capabilities,)
+        },
+        # Which wire each catalog transcription model serves, for the two
+        # transcribe tasks' model pickers: the model category alone can't
+        # split ElevenLabs' scribe_v2_realtime (streaming only) from
+        # scribe_v2 (prerecorded only). Providers with live model
+        # discovery (OpenAI) have no catalog models and so no entry here;
+        # their listed transcription models all serve the prerecorded wire.
+        "transcription_wires": {
+            name: wires
+            for name in supported_providers()
+            for wires in (_transcription_wires(name),)
+            if wires
+        },
+        # Per-provider temperature/top_p constraints, so the Playground can
+        # gate its temperature control against the selected model (a family
+        # that pins or refuses an explicit value) instead of finding out
+        # after a billable round trip. Read from the same catalog entries
+        # the adapters gate on. Each entry is a regex on the model id and
+        # the values the family accepts, empty when it takes none.
+        "sampling_constraints": {
+            name: [
+                {"pattern": c.pattern, "allowed": dict(c.allowed)}
+                for c in resolve_provider(name).capabilities.sampling_constraints
+            ]
+            for name in supported_providers()
+            if resolve_provider(name).capabilities.sampling_constraints
         },
         # Every provider a key can be added for, straight from the catalog,
         # so the form's dropdown can't drift from what the library accepts.
@@ -488,12 +543,21 @@ def _generation_fields(body: dict[str, Any]) -> dict[str, Any] | None:
     if user_parts:
         messages.append(Message(role="user", content=user_parts))
     tool_choice = body.get("tool_choice") or None
+    seed_raw = body.get("seed")
+    if seed_raw in (None, ""):
+        seed = None
+    else:
+        try:
+            seed = int(seed_raw)
+        except (TypeError, ValueError):
+            raise _BadRequest("seed must be a whole number") from None
     return {
         "model": model,
         "messages": messages,
         "max_output_tokens": body.get("max_output_tokens"),
         "temperature": body.get("temperature"),
         "top_p": body.get("top_p"),
+        "seed": seed,
         "web_search": bool(body.get("web_search", False)),
         "tools": _parse_tools(body.get("tools")),
         "tool_choice": tool_choice,
@@ -673,6 +737,78 @@ def generate_video(registry: Registry, target_id: int, body: dict[str, Any]) -> 
         if isinstance(part, VideoOutput)
     ]
     return body_out
+
+
+def transcribe_file(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """One stored recording in, its transcript out, through the same
+    `client.transcribe()` a library caller uses. Sync providers answer in
+    one round trip; the job-shaped provider (AssemblyAI) is polled
+    server-side inside this one blocking call, the same shape
+    `generate_video` already has."""
+    try:
+        client = registry.client(target_id)
+    except KeyError:
+        return {"error": {"code": "not_found", "message": "unknown target id"}}
+
+    model = body.get("model")
+    if not model or not isinstance(model, str):
+        return {"error": {"code": "bad_request", "message": "a model is required"}}
+    encoded = body.get("audio_base64")
+    url = body.get("url")
+    if bool(encoded) == bool(url):
+        return {
+            "error": {
+                "code": "bad_request",
+                "message": "pass one of audio_base64 or url, not both",
+            }
+        }
+    audio: bytes | None = None
+    if encoded:
+        try:
+            audio = base64.b64decode(str(encoded), validate=True)
+        except (binascii.Error, TypeError, ValueError) as error:
+            return {"error": {"code": "bad_request", "message": f"audio_base64: {error}"}}
+    if url is not None and not isinstance(url, str):
+        return {"error": {"code": "bad_request", "message": "url must be a string"}}
+
+    # The library requires a timeout on job-shaped providers and refuses
+    # one on sync providers (read_timeout is the knob there), so the route
+    # sends it only where the wire needs it.
+    timeout = TRANSCRIPTION_JOB_TIMEOUT if client._adapter.transcription_is_job_shaped else None
+    try:
+        result = client.transcribe(
+            model=model,
+            audio=audio,
+            url=url or None,
+            diarize=bool(body.get("diarize", False)),
+            timeout=timeout,
+        )
+    except (ValueError, TypeError) as error:
+        return {"error": {"code": "bad_request", "message": str(error)}}
+    except KeyCallError as error:
+        return error_body(error)
+
+    return {
+        "model": result.model,
+        "text": result.text,
+        "words": [
+            {
+                "text": word.text,
+                "start_ms": word.start_ms,
+                "end_ms": word.end_ms,
+                "confidence": word.confidence,
+                "speaker": word.speaker,
+            }
+            for word in result.words
+        ],
+        "language": result.language,
+        "audio_duration_seconds": result.audio_duration_seconds,
+        "confidence": result.confidence,
+        "usage": dataclasses.asdict(result.usage) if result.usage else None,
+        "provider_request_id": result.provider_request_id,
+        "round_trip_duration_ms": result.round_trip_duration_ms,
+        "warnings": list(result.warnings),
+    }
 
 
 def generate_stream_events(

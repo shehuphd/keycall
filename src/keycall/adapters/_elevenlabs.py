@@ -38,13 +38,14 @@ from .._types import (
     TextGenerationRequest,
     TranscriptionConfig,
     TranscriptionEvent,
+    TranscriptionResult,
     TranscriptionSessionStarted,
     TranscriptWord,
     UnknownTranscriptionEvent,
     Usage,
     Voice,
 )
-from ._base import ProviderAdapter
+from ._base import ProviderAdapter, audio_filename
 
 # Sample rates the realtime endpoint's pcm_{rate} audio formats accept
 # (verified against the session config 2026-08-31).
@@ -254,6 +255,72 @@ class ElevenLabsAdapter(ProviderAdapter):
         )
 
     # --- voices ---
+
+    # --- prerecorded transcription ---
+    #
+    # One multipart round trip on /v1/speech-to-text with model_id and
+    # one of file/source_url (never both). Live-verified 2026-09-02 on
+    # scribe_v2 (bytes path): words[] mixes types word/spacing (spacing
+    # entries carry the gaps and are dropped), timings are seconds,
+    # speaker_id appears under diarize, per-word logprob is not a 0-1
+    # confidence and is not passed off as one, language_code is
+    # ISO-639-3, and audio_duration_secs rides the response.
+
+    def build_transcription_spec(self, request: Any) -> RequestSpec:
+        op = self.resolved.operations["transcription"]
+        fields: dict[str, str] = {"model_id": request.model}
+        if request.language:
+            fields["language_code"] = request.language
+        if request.diarize:
+            fields["diarize"] = "true"
+        fields["timestamps_granularity"] = "word"
+        if request.url is not None:
+            fields["source_url"] = request.url
+            return RequestSpec(method=op["method"], path=op["path"], form_fields=fields)
+        media_type = self.transcription_media_type(request)
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"],
+            file_upload=("file", audio_filename(media_type), request.data, media_type),
+            form_fields=fields,
+        )
+
+    def parse_transcription_response(
+        self,
+        payload: Any,
+        *,
+        headers: Any,
+        round_trip_duration_ms: float,
+        model: str,
+    ) -> TranscriptionResult:
+        if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+            raise KeyCallError(
+                "transcription response carried no text",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.TRANSCRIPTION.value,
+            )
+        words = tuple(
+            TranscriptWord(
+                text=str(word.get("text", "")),
+                start_ms=float(word.get("start", 0)) * 1000.0,
+                end_ms=float(word.get("end", 0)) * 1000.0,
+                speaker=str(word["speaker_id"]) if word.get("speaker_id") else None,
+            )
+            for word in payload.get("words") or []
+            if isinstance(word, dict) and word.get("type") == "word"
+        )
+        duration = payload.get("audio_duration_secs")
+        return TranscriptionResult(
+            model=model,
+            text=payload["text"],
+            words=words,
+            language=(
+                str(payload["language_code"]) if payload.get("language_code") else None
+            ),
+            audio_duration_seconds=float(duration) if duration is not None else None,
+            round_trip_duration_ms=round_trip_duration_ms,
+        )
 
     def build_voices_spec(self) -> RequestSpec:
         op = self.resolved.operations["list_voices"]

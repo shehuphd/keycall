@@ -81,7 +81,7 @@ def test_stt_model_listing_validates_credential_and_reads_catalog():
     client.close()
     assert captured["path"] == "/v2/transcript"
     assert captured["auth"] == CANARY  # bare key, no Bearer prefix
-    assert [m.id for m in discovery.models] == ["universal-3-5-pro"]
+    assert [m.id for m in discovery.models] == ["universal-3-5-pro", "universal-2"]
     assert discovery.models[0].classification_source == "keycall_catalog"
 
 

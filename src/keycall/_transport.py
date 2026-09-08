@@ -105,6 +105,16 @@ class RequestSpec:
     # needs only conditionally, such as Anthropic's beta feature flags,
     # which must not be sent on every request the way api_version_header is.
     headers: Mapping[str, str] = field(default_factory=dict)
+    # A multipart/form-data upload (batch input files): the file as
+    # (field name, filename, content bytes, media type) plus plain form
+    # fields. When set, json_body must be None and the JSON Content-Type
+    # header is dropped so the HTTP client can set the multipart boundary.
+    file_upload: tuple[str, str, bytes, str] | None = None
+    form_fields: Mapping[str, str] = field(default_factory=dict)
+    # A raw binary request body as (content bytes, content type) — the
+    # shape Deepgram's prerecorded listen and AssemblyAI's upload take.
+    # Mutually exclusive with json_body and file_upload.
+    binary_body: tuple[bytes, str] | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -202,6 +212,41 @@ def _build_headers(
     headers["Content-Type"] = "application/json"
     headers.update(extra)
     return headers
+
+
+def _build_request_kwargs(
+    spec: RequestSpec, resolved: ResolvedProvider, credential: Credential
+) -> dict[str, Any]:
+    """The httpx build_request keyword set for a spec — JSON by default,
+    multipart when the spec carries a file upload (the JSON Content-Type
+    is dropped there so httpx can set the multipart boundary)."""
+    headers = _build_headers(resolved, credential, extra=spec.headers)
+    kwargs: dict[str, Any] = {
+        "params": dict(spec.params) or None,
+        "headers": headers,
+    }
+    if spec.file_upload is not None:
+        field_name, filename, content, media_type = spec.file_upload
+        headers.pop("Content-Type", None)
+        kwargs["files"] = {field_name: (filename, content, media_type)}
+        if spec.form_fields:
+            kwargs["data"] = dict(spec.form_fields)
+    elif spec.binary_body is not None:
+        content, content_type = spec.binary_body
+        headers["Content-Type"] = content_type
+        kwargs["content"] = content
+    elif spec.form_fields:
+        # Form fields with no file still go out as multipart/form-data
+        # (a filename of None renders a plain field), because the routes
+        # that take them (ElevenLabs speech-to-text by source_url) parse
+        # multipart, not urlencoded bodies.
+        headers.pop("Content-Type", None)
+        kwargs["files"] = {
+            name: (None, str(value)) for name, value in spec.form_fields.items()
+        }
+    else:
+        kwargs["json"] = spec.json_body
+    return kwargs
 
 
 def _parse_retry_after(headers: Mapping[str, str]) -> float | None:
@@ -331,17 +376,32 @@ class _TransportCore:
         flag fixed per route would have gotten the error case wrong.
 
         Conservative on purpose: only a Content-Type that unambiguously
-        names a binary kind (audio/image/video/octet-stream/pdf) skips
-        JSON parsing. Anything else — a JSON type, a text type, or the
-        header missing entirely, which happens on some custom
-        OpenAI-compatible targets — keeps today's behavior. A new
-        binary-returning route only has to exist; it never has to be
-        registered here.
+        names a binary or line-delimited kind (audio/image/video/
+        octet-stream/pdf, or a JSONL type — Anthropic serves batch
+        results as ``application/x-jsonl``, verified live 2026-09-02)
+        skips JSON parsing. Anything else — a JSON type, a text type, or
+        the header missing entirely, which happens on some custom
+        OpenAI-compatible targets — keeps today's behavior, with one
+        exception: a 2xx ``text/*`` body that fails to parse as JSON
+        passes through as bytes rather than erroring, because Moonshot
+        serves its JSONL batch downloads as ``text/plain`` (verified
+        live 2026-09-02) while a custom target serving JSON under a text
+        type still parses. A new binary-returning route only has to
+        exist; it never has to be registered here.
         """
         content_type = (headers.get("content-type") or headers.get("Content-Type") or "").lower()
         is_declared_binary = any(
             content_type.startswith(prefix)
-            for prefix in ("audio/", "image/", "video/", "application/octet-stream", "application/pdf")
+            for prefix in (
+                "audio/",
+                "image/",
+                "video/",
+                "application/octet-stream",
+                "application/pdf",
+                "application/jsonl",
+                "application/x-jsonl",
+                "application/x-ndjson",
+            )
         )
 
         if is_declared_binary and status_code < 300:
@@ -360,13 +420,29 @@ class _TransportCore:
                 duration_ms=duration_ms,
             )
 
-        try:
-            payload = json.loads(body) if body else None
-        except ValueError:
-            payload = None
+        payload: Any = None
+        parse_failed = False
+        if body:
+            try:
+                payload = json.loads(body)
+            except ValueError:
+                parse_failed = True
 
         if status_code < 300:
-            if payload is None:
+            # An empty body and a body of JSON ``null`` both pass through
+            # as a None payload — some routes answer with nothing (xAI's
+            # batch add returns a literal null, observed live 2026-09-02)
+            # and the adapter decides what that means. Only a body that
+            # fails to parse is an error, and even then a ``text/*`` type
+            # passes through as bytes (see above).
+            if parse_failed:
+                if content_type.startswith("text/"):
+                    return TransportResult(
+                        payload=bytes(body),
+                        headers=dict(headers),
+                        status_code=status_code,
+                        duration_ms=duration_ms,
+                    )
                 return KeyCallError(
                     "provider returned a non-JSON response body",
                     code=ErrorCode.INVALID_PROVIDER_RESPONSE,
@@ -557,9 +633,7 @@ class Transport(_TransportCore):
                 http_request = self._client.build_request(
                     spec.method,
                     self._url(spec.path),
-                    params=dict(spec.params) or None,
-                    json=spec.json_body,
-                    headers=_build_headers(self._resolved, self._credential, extra=spec.headers),
+                    **_build_request_kwargs(spec, self._resolved, self._credential),
                 )
                 response = self._client.send(http_request, stream=True)
                 try:
@@ -802,9 +876,7 @@ class AsyncTransport(_TransportCore):
                 http_request = self._client.build_request(
                     spec.method,
                     self._url(spec.path),
-                    params=dict(spec.params) or None,
-                    json=spec.json_body,
-                    headers=_build_headers(self._resolved, self._credential, extra=spec.headers),
+                    **_build_request_kwargs(spec, self._resolved, self._credential),
                 )
                 response = await self._client.send(http_request, stream=True)
                 try:

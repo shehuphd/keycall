@@ -1135,6 +1135,156 @@ def test_live_moonshot_search_still_returns_no_citations():
     print("moonshot: searched answer still carries no citation structure (evidence current)")
 
 
+def test_live_seed_and_temperature_support_still_holds():
+    """Capability-drift probe for the seed gate and the temperature pins,
+    probed raw so a failure is unambiguously the vendor's (evidence
+    2026-09-08):
+
+    - Gemini, DeepSeek, Moonshot, and xAI define a seed field: a valid seed
+      is accepted, a malformed one rejected. If one stops taking a seed,
+      supports_seed / SEED_PROVIDERS and USAGE are stale.
+    - OpenAI (Responses API), Anthropic, and Perplexity have no seed field,
+      so the gate refuses one before the network. Anthropic rejects an
+      unknown top-level field outright; if a seed becomes a validated field
+      on any of the three, the gate is wrongly blocking a usable parameter.
+    - Anthropic's newest models (opus 4.7+, opus/sonnet 5, fable) and every
+      Moonshot kimi model reject a non-default temperature. If one starts
+      accepting 0.5, the catalog's sampling_constraints are stale.
+
+    This test failing IS the notification to re-probe and update the
+    catalog, _capabilities.SEED_PROVIDERS, USAGE.md, and this probe."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import httpx
+
+    targets, _ = load_targets(source)
+    by_provider = {t.provider: t for t in targets}
+    failures: list[str] = []
+
+    chat = {
+        "deepseek": "https://api.deepseek.com/v1/chat/completions",
+        "moonshot": "https://api.moonshot.ai/v1/chat/completions",
+        "xai": "https://api.x.ai/v1/chat/completions",
+    }
+    listing = {
+        "deepseek": "https://api.deepseek.com/v1/models",
+        "moonshot": "https://api.moonshot.ai/v1/models",
+        "xai": "https://api.x.ai/v1/models",
+    }
+
+    def first_chat_model(provider: str, key: str, client: httpx.Client) -> str | None:
+        r = client.get(listing[provider], headers={"Authorization": f"Bearer {key}"})
+        r.raise_for_status()
+        ids = [m["id"] for m in r.json()["data"]]
+        # Skip the image/video model families xAI lists alongside chat.
+        chat_ids = [i for i in ids if "imagine" not in i and "image" not in i]
+        return chat_ids[0] if chat_ids else (ids[0] if ids else None)
+
+    with httpx.Client(timeout=60) as client:
+        # --- seed accepted where the catalog says it exists (compat trio) ---
+        for provider in ("deepseek", "moonshot", "xai"):
+            target = by_provider.get(provider)
+            if target is None:
+                continue
+            model = first_chat_model(provider, target.key, client)
+            if model is None:
+                failures.append(f"{provider}: no chat model listed to probe")
+                continue
+            headers = {"Authorization": f"Bearer {target.key}"}
+            base = {"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 2}
+            ok = client.post(chat[provider], headers=headers, json={**base, "seed": 7})
+            if ok.status_code != 200:
+                failures.append(
+                    f"{provider}: a valid seed returned HTTP {ok.status_code} on {model} "
+                    f"(body {ok.text[:160]}) — seed may no longer be accepted; re-probe "
+                    "supports_seed"
+                )
+            bad = client.post(chat[provider], headers=headers, json={**base, "seed": "not-an-int"})
+            if bad.status_code == 200:
+                failures.append(
+                    f"{provider}: a malformed seed was accepted on {model} — the field may "
+                    "no longer be validated; re-probe supports_seed"
+                )
+
+        # --- Gemini seed in generationConfig ---
+        gem = by_provider.get("gemini")
+        if gem is not None:
+            page = client.get(
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                params={"pageSize": 1000, "key": gem.key},
+            )
+            page.raise_for_status()
+            gen_models = [
+                m["name"].removeprefix("models/")
+                for m in page.json()["models"]
+                if "generateContent" in m.get("supportedGenerationMethods", [])
+                and "flash-lite" in m["name"]
+            ]
+            if gen_models:
+                model = gen_models[0]
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+                body = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                        "generationConfig": {"maxOutputTokens": 2, "seed": 7}}
+                ok = client.post(url, params={"key": gem.key}, json=body)
+                if ok.status_code != 200:
+                    failures.append(
+                        f"gemini: generationConfig.seed returned HTTP {ok.status_code} on "
+                        f"{model} — re-probe supports_seed"
+                    )
+                bad = client.post(url, params={"key": gem.key}, json={
+                    "contents": body["contents"],
+                    "generationConfig": {"maxOutputTokens": 2, "seed": "x"},
+                })
+                if bad.status_code == 200:
+                    failures.append("gemini: a malformed seed was accepted — re-probe supports_seed")
+
+        # --- seed absent on Anthropic: an unknown field is refused outright ---
+        anth = by_provider.get("anthropic")
+        if anth is not None:
+            r = client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": anth.key, "anthropic-version": "2023-06-01"},
+                json={"model": "claude-sonnet-4-5", "max_tokens": 2,
+                      "messages": [{"role": "user", "content": "hi"}], "seed": 1},
+            )
+            if r.status_code == 200:
+                failures.append(
+                    "anthropic: a seed field was accepted — Anthropic may have added seed; "
+                    "flip supports_seed and update the gate"
+                )
+            # --- temperature pinned on the newest Anthropic models ---
+            for model in ("claude-opus-4-8", "claude-fable-5", "claude-sonnet-5"):
+                r = client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": anth.key, "anthropic-version": "2023-06-01"},
+                    json={"model": model, "max_tokens": 2,
+                          "messages": [{"role": "user", "content": "hi"}], "temperature": 0.5},
+                )
+                if r.status_code == 200:
+                    failures.append(
+                        f"anthropic: {model} accepted temperature=0.5 — the sampling_constraints "
+                        "pin is stale"
+                    )
+
+        # --- Moonshot kimi still pins temperature ---
+        moon = by_provider.get("moonshot")
+        if moon is not None:
+            model = first_chat_model("moonshot", moon.key, client) or "kimi-k3"
+            r = client.post(
+                chat["moonshot"], headers={"Authorization": f"Bearer {moon.key}"},
+                json={"model": model, "max_tokens": 2,
+                      "messages": [{"role": "user", "content": "hi"}], "temperature": 0.5},
+            )
+            if r.status_code == 200:
+                failures.append(
+                    f"moonshot: {model} accepted temperature=0.5 — the kimi sampling pin is stale"
+                )
+
+    assert not failures, "seed/temperature capability drift:\n" + "\n".join(failures)
+    print("seed and temperature support current on every probed provider")
+
+
 def test_live_grok_voice_dialect_evidence_still_holds():
     """Capability-drift probe for the three pieces of live evidence the
     xAI realtime support rests on (captured 2026-08-14). Probed raw, not
@@ -1245,7 +1395,10 @@ def _blue_png() -> bytes:
         body = tag + data
         return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
 
-    size = 8
+    # Grok refuses images under 512 total pixels ("below the minimum of
+    # 512 pixels", observed live 2026-09-02), so the probe stays a little
+    # above that; the other providers accept any size.
+    size = 32
     raw = b"".join(b"\x00" + bytes((0, 102, 204)) * size for _ in range(size))
     return (
         b"\x89PNG\r\n\x1a\n"
@@ -1458,9 +1611,10 @@ def test_live_embeddings():
 
 
 def test_live_image_generation():
-    """Both providers answer in different shapes (OpenAI a dedicated images
-    endpoint, Gemini an inlineData part on generateContent), and the bytes
-    have to decode to a valid image, not just arrive."""
+    """The providers answer over different wires (OpenAI and xAI a
+    dedicated images endpoint, Gemini an inlineData part on
+    generateContent), and the bytes have to decode to a valid image, not
+    just arrive."""
     source = os.environ.get("KEYCALL_LIVE_SOURCE")
     if not source:
         pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
@@ -1471,7 +1625,11 @@ def test_live_image_generation():
 
     # Image models aren't what the text walk selects, so name one per
     # provider; a retirement shows up as a clean model_not_available.
-    models = {"openai": "gpt-image-1", "gemini": "gemini-3.1-flash-image"}
+    models = {
+        "openai": "gpt-image-1",
+        "gemini": "gemini-3.1-flash-image",
+        "xai": "grok-imagine-image",
+    }
     signatures = ((b"\x89PNG\r\n\x1a\n", "png"), (b"\xff\xd8\xff", "jpeg"),
                   (b"RIFF", "webp"))
 
@@ -1584,6 +1742,284 @@ def test_live_video_generation():
         finally:
             client.close()
     assert checked, "no video-capable target in the live source"
+
+
+def test_live_prerecorded_transcription_every_supporting_target():
+    """Four providers, two wire forms (three answer in one round trip,
+    AssemblyAI runs a job); each release transcribes one synthesized
+    clip on every one through transcribe() itself and checks the words
+    came back with the timings each wire promises. All wire facts
+    live-verified 2026-09-02."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    if not shutil.which("say") or not shutil.which("ffmpeg"):
+        pytest.skip("live transcription check needs `say` and `ffmpeg` to synthesize audio")
+    from keycall import KeyCall
+    from keycall._registry import providers_with
+
+    with tempfile.TemporaryDirectory() as tmp:
+        aiff = str(Path(tmp) / "probe.aiff")
+        wav_path = str(Path(tmp) / "probe.wav")
+        subprocess.run(
+            ["say", "-o", aiff, "The quick brown fox jumps over the lazy dog."],
+            check=True,
+        )
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", aiff, "-ar", "16000",
+             "-ac", "1", wav_path],
+            check=True,
+        )
+        wav = Path(wav_path).read_bytes()
+
+    plans = {
+        "openai": {"model": "whisper-1", "words_promised": True},
+        "elevenlabs": {"model": "scribe_v2", "words_promised": True},
+        "deepgram": {"model": "nova-3", "words_promised": True},
+        "assemblyai": {
+            "model": "universal-2", "words_promised": True,
+            "timeout": 300.0, "poll_interval": 3.0,
+        },
+    }
+    targets, _ = load_targets(source)
+    supporting = providers_with("transcription")
+    checked = []
+    for target in targets:
+        if target.provider not in supporting or target.provider in checked:
+            continue
+        plan = dict(plans[target.provider])
+        words_promised = plan.pop("words_promised")
+        model = plan.pop("model")
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+            read_timeout=120.0,
+        )
+        try:
+            result = client.transcribe(model=model, audio=wav, **plan)
+            text = result.text.lower()
+            for expected in ("quick", "brown", "fox", "lazy"):
+                assert expected in text, (
+                    f"{target.display_name}: {model} heard {result.text!r}"
+                )
+            if words_promised:
+                assert result.words, f"{target.display_name}: no word timings"
+                assert result.words[0].end_ms > 0
+            print(
+                f"{target.display_name}: {model} -> {len(result.words)} words, "
+                f"{result.audio_duration_seconds}s audio"
+            )
+            checked.append(target.provider)
+        finally:
+            client.close()
+    assert checked, "no transcription-capable target in the live source"
+
+
+def test_live_openai_transcribe_family_still_refuses_verbose_json():
+    """Drift probe for a pinned refusal: the gpt-4o transcribe family
+    400s on response_format=verbose_json (observed live 2026-09-02),
+    which is why KeyCall asks for word timings on whisper-1 only. If this
+    starts succeeding, the adapter should start asking that family for
+    words too — probed raw, not through the adapter, so a change is
+    unambiguously the vendor's."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import httpx
+
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider == "openai"), None)
+    if target is None:
+        pytest.skip("no openai target in the live source")
+    silent_wav = (
+        b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00"
+        b"\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
+    ) + b"\x00" * 32000
+    with httpx.Client(
+        timeout=60, headers={"Authorization": f"Bearer {target.key}"}
+    ) as raw:
+        response = raw.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            files={"file": ("probe.wav", silent_wav, "audio/wav")},
+            data={"model": "gpt-4o-mini-transcribe", "response_format": "verbose_json"},
+        )
+    assert response.status_code == 400, (
+        "gpt-4o-mini-transcribe now accepts verbose_json "
+        f"(HTTP {response.status_code}): the whisper-1-only word-timing rule in "
+        "the openai adapter, its catalog transcription_note, and USAGE's "
+        "transcription section can all be widened"
+    )
+    print("gpt-4o-mini-transcribe still refuses verbose_json (400)")
+
+
+def test_live_batch_generation_every_supporting_target():
+    """Five providers, five batch dialects; each release submits a tiny
+    two-request batch on every one and reads the results back in
+    submission order. All batches go out first and poll together, because
+    completion is provider-paced (Moonshot took ~12.5 minutes for two
+    requests when probed 2026-09-02; the others 13s-4min). The named
+    models double as drift probes: xAI validates batch eligibility at the
+    add call, so grok-4.3 losing its batch lane fails this test by name,
+    and each other id retiring fails as a create-time refusal."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import time
+
+    from keycall import BatchRequest, KeyCall, Message, TextInput
+    from keycall._registry import providers_with
+
+    models = {
+        "openai": "gpt-4o-mini",
+        "anthropic": "claude-haiku-4-5-20251001",
+        "gemini": "gemini-flash-latest",
+        "moonshot": "kimi-k2.6",
+        "xai": "grok-4.3",
+    }
+
+    targets, _ = load_targets(source)
+    supporting = providers_with("batch_generation")
+
+    def preferred(provider):
+        # The openai-keycall-batch-test key exists because the account's
+        # Default project refuses its own batch input files (verified
+        # 2026-09-02); prefer a batch-named target where one is present.
+        candidates = [t for t in targets if t.provider == provider]
+        named = [t for t in candidates if "batch" in (t.name or "")]
+        return (named or candidates or [None])[0]
+
+    in_flight = []
+    opened = []
+    finished = []
+    try:
+        for provider in sorted(supporting):
+            target = preferred(provider)
+            if target is None:
+                continue
+            client = KeyCall(
+                provider=target.provider,
+                api_key=target.key,
+                protocol=target.protocol,
+                base_url=target.base_url,
+            )
+            requests = [
+                BatchRequest(
+                    model=models[target.provider],
+                    messages=[Message(role="user", content=[TextInput(text=prompt)])],
+                    max_output_tokens=200,
+                )
+                for prompt in ("Reply with the word one.", "Reply with the word two.")
+            ]
+            opened.append(client)
+            job = client.start_batch(requests)
+            print(f"{target.display_name}: submitted {job.job_id} ({job.provider_status})")
+            in_flight.append({"target": target, "client": client, "job": job})
+
+        assert in_flight, "no batch-capable target in the live source"
+
+        deadline = time.monotonic() + 2400.0
+        while in_flight and time.monotonic() < deadline:
+            time.sleep(15.0)
+            still_running = []
+            for entry in in_flight:
+                entry["job"] = entry["client"].check_batch(entry["job"])
+                if entry["job"].status == "running":
+                    still_running.append(entry)
+                else:
+                    finished.append(entry)
+            in_flight = still_running
+
+        for entry in finished:
+            target, job = entry["target"], entry["job"]
+            assert job.status == "finished", (
+                f"{target.display_name}: batch ended {job.status} "
+                f"({job.provider_status}): {job.error_message}"
+            )
+            results = entry["client"].fetch_batch_results(job)
+            assert len(results) == 2, f"{target.display_name}: {len(results)} results for 2 requests"
+            assert [r.key for r in results] == ["kc-0", "kc-1"]
+            for result in results:
+                assert result.succeeded, (
+                    f"{target.display_name}: request {result.index} errored "
+                    f"({result.error_code}): {result.error_message}"
+                )
+                assert result.result.text, f"{target.display_name}: empty text in a result"
+            print(
+                f"{target.display_name}: 2/2 succeeded on {models[target.provider]}, "
+                f"texts {[r.result.text[:20] for r in results]}"
+            )
+
+        if in_flight:
+            # Completion is provider-paced (promised within 24h), so a
+            # straggler at the deadline is a verification-environment
+            # outcome: the provider isn't implicated, but its batch lane
+            # stays unverified this run. Build the message by hand — a
+            # bare assert would let pytest render the entries, Target
+            # keys included.
+            pytest.fail(
+                "batch still processing at the deadline (provider-paced, provider "
+                "not implicated, release still unverified): "
+                + ", ".join(
+                    f"{e['target'].display_name} ({e['job'].job_id}, "
+                    f"{e['job'].provider_status})"
+                    for e in in_flight
+                )
+            )
+    finally:
+        for entry in in_flight:
+            # Leftover running batches would bill on their own schedule;
+            # stop them before reporting.
+            try:
+                entry["client"].cancel_batch(entry["job"])
+            except KeyCallError:
+                pass
+        for client in opened:
+            client.close()
+
+
+def test_live_gemini_batch_cancel_path_still_exists():
+    """Gemini's :cancel endpoint is the one batch route the 2026-09-02
+    probes never exercised (round 1's cancel probe died with its create);
+    the adapter carries the documented path, so each release confirms the
+    verb answers rather than 404ing. The cancelled batch is one tiny
+    request, submitted and stopped in the same breath."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import BatchRequest, KeyCall, Message, TextInput
+
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider == "gemini"), None)
+    if target is None:
+        pytest.skip("no gemini target in the live source")
+    client = KeyCall(
+        provider=target.provider,
+        api_key=target.key,
+        protocol=target.protocol,
+        base_url=target.base_url,
+    )
+    try:
+        job = client.start_batch(
+            [
+                BatchRequest(
+                    model="gemini-flash-latest",
+                    messages=[Message(role="user", content=[TextInput(text="Say hi.")])],
+                    max_output_tokens=16,
+                )
+            ]
+        )
+        cancelled = client.cancel_batch(job)
+        assert cancelled.provider_status == "cancelling"
+        print(f"{target.display_name}: cancel accepted for {job.job_id}")
+    finally:
+        client.close()
 
 
 def test_live_async_client_parity():
@@ -2110,3 +2546,222 @@ def test_live_speech_generation_every_supporting_target():
     assert not failures, "; ".join(failures)
     if not probed:
         pytest.skip("no speech-capable target in the live source")
+
+
+def test_live_retired_models_still_refused_by_their_providers():
+    """Drift probe behind the retired-model registry: every catalog
+    retirement entry (id and each alias spelling) must still be refused by
+    its provider, probed raw so a change is unambiguously the vendor's. A
+    model answering again means the entry is stale — remove it from the
+    provider's retired_models in catalog.json (the pre-flight gate and the
+    listing filter both read it), and re-check USAGE's retired-models
+    section. Gemini is probed by listing absence (Google removes shut-down
+    models from GET /models, verified 2026-09-04); the chat providers are
+    probed with a one-token request, which a retired model refuses without
+    billing; ElevenLabs with a speech request its refusal never bills."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import concurrent.futures
+
+    import httpx
+
+    from keycall._registry import resolve_provider, supported_providers
+
+    targets, _ = load_targets(source)
+    by_provider = {t.provider: t for t in targets}
+
+    failures: list[str] = []
+    probes: list[tuple[str, str]] = []
+    for provider in supported_providers():
+        resolved = resolve_provider(provider)
+        if not resolved.retired_models or provider not in by_provider:
+            continue
+        for entry in resolved.retired_models:
+            for spelling in (entry["id"], *entry.get("aliases", ())):
+                probes.append((provider, spelling))
+
+    chat_urls = {
+        "openai": "https://api.openai.com/v1/chat/completions",
+        "perplexity": "https://api.perplexity.ai/chat/completions",
+        "moonshot": "https://api.moonshot.ai/v1/chat/completions",
+        "xai": "https://api.x.ai/v1/chat/completions",
+    }
+
+    gemini_listed: set[str] = set()
+    if "gemini" in by_provider and any(p == "gemini" for p, _ in probes):
+        with httpx.Client(timeout=60) as raw:
+            page = raw.get(
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                params={"pageSize": 1000, "key": by_provider["gemini"].key},
+            )
+            page.raise_for_status()
+            gemini_listed = {
+                m["name"].removeprefix("models/") for m in page.json()["models"]
+            }
+
+    # One client per provider, shared across its probes: a client per
+    # probe floods macOS DNS resolution and fails with spurious
+    # ConnectErrors at this volume.
+    clients: dict[str, httpx.Client] = {}
+    for provider, _model in probes:
+        if provider not in clients and provider != "gemini":
+            key = by_provider[provider].key
+            headers = (
+                {"x-api-key": key, "anthropic-version": "2023-06-01"}
+                if provider == "anthropic"
+                else {"xi-api-key": key}
+                if provider == "elevenlabs"
+                else {"Authorization": f"Bearer {key}"}
+            )
+            clients[provider] = httpx.Client(timeout=60, headers=headers)
+
+    def probe(provider: str, model: str) -> str | None:
+        fix = (
+            f"{provider}/{model} answered again: remove its retired_models "
+            "entry from catalog.json and re-check USAGE's retired-models table"
+        )
+        if provider == "gemini":
+            return fix + " (it reappeared in the model listing)" if model in gemini_listed else None
+        raw = clients[provider]
+        for attempt in range(2):
+            try:
+                if provider == "anthropic":
+                    response = raw.post(
+                        "https://api.anthropic.com/v1/messages",
+                        json={"model": model, "max_tokens": 1,
+                              "messages": [{"role": "user", "content": "x"}]},
+                    )
+                    return None if response.status_code == 404 else f"{fix} (HTTP {response.status_code})"
+                if provider == "elevenlabs":
+                    response = raw.post(
+                        "https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+                        json={"text": "x", "model_id": model},
+                    )
+                    refused = response.status_code == 400 and "unsupported_model" in response.text
+                    return None if refused else f"{fix} (HTTP {response.status_code})"
+                response = raw.post(
+                    chat_urls[provider],
+                    json={"model": model, "max_tokens": 16,
+                          "messages": [{"role": "user", "content": "x"}]},
+                )
+                break
+            except httpx.TransportError:
+                if attempt:
+                    raise
+        # A refusal is a 4xx that names the model as gone; a 200 means
+        # the model (or a redirect for it) answered and the entry is
+        # stale. Other 4xx forms (bad key, rate limit) are
+        # inconclusive rather than a pass.
+        if response.status_code == 200:
+            return fix + " (HTTP 200)"
+        text = response.text.lower()
+        gone = any(
+            marker in text
+            for marker in ("not found", "not_found", "deprecated", "invalid model",
+                           "does not exist", "no longer available")
+        )
+        return None if gone else f"{fix} (HTTP {response.status_code}: {response.text[:120]})"
+
+    ran = 0
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {
+                pool.submit(probe, provider, model): (provider, model)
+                for provider, model in probes
+            }
+            for future in concurrent.futures.as_completed(futures):
+                ran += 1
+                outcome = future.result()
+                if outcome:
+                    failures.append(outcome)
+    finally:
+        for client in clients.values():
+            client.close()
+
+    if not ran:
+        pytest.skip("no live key covers a provider with retirement entries")
+    assert not failures, "\n".join(sorted(failures))
+    print(f"all {ran} retired-model spellings still refused across their providers")
+
+
+def test_live_retired_model_replacements_still_exist():
+    """The other half of the registry's promise: every recommended
+    replacement the refusal names must itself be alive, or the error sends
+    the caller on a second failing round trip. Checked against each
+    provider's own live listing; entries whose note says the replacement is
+    not verifiable in a listing are skipped by that note."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import httpx
+
+    from keycall._registry import resolve_provider, supported_providers
+
+    targets, _ = load_targets(source)
+    by_provider = {t.provider: t for t in targets}
+
+    listings: dict[str, set[str]] = {}
+
+    def listed(provider: str) -> set[str] | None:
+        if provider in listings:
+            return listings[provider]
+        target = by_provider.get(provider)
+        if target is None:
+            return None
+        with httpx.Client(timeout=60) as raw:
+            if provider == "gemini":
+                page = raw.get(
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    params={"pageSize": 1000, "key": target.key},
+                )
+                page.raise_for_status()
+                ids = {m["name"].removeprefix("models/") for m in page.json()["models"]}
+            elif provider in ("openai", "moonshot", "xai"):
+                base = {
+                    "openai": "https://api.openai.com/v1",
+                    "moonshot": "https://api.moonshot.ai/v1",
+                    "xai": "https://api.x.ai/v1",
+                }[provider]
+                page = raw.get(f"{base}/models", headers={"Authorization": f"Bearer {target.key}"})
+                page.raise_for_status()
+                ids = {m["id"] for m in page.json()["data"]}
+            elif provider == "anthropic":
+                page = raw.get(
+                    "https://api.anthropic.com/v1/models",
+                    params={"limit": 1000},
+                    headers={"x-api-key": target.key, "anthropic-version": "2023-06-01"},
+                )
+                page.raise_for_status()
+                ids = {m["id"] for m in page.json()["data"]}
+            else:
+                # Perplexity and ElevenLabs have no listing that carries
+                # these ids; their replacements are covered by other live
+                # tests using them directly.
+                listings[provider] = set()
+                return listings[provider]
+        listings[provider] = ids
+        return ids
+
+    failures: list[str] = []
+    checked = 0
+    for provider in supported_providers():
+        resolved = resolve_provider(provider)
+        for entry in resolved.retired_models:
+            replacement = entry.get("replacement")
+            if not replacement or "not verifiable" in entry.get("note", ""):
+                continue
+            ids = listed(provider)
+            if not ids:
+                continue
+            checked += 1
+            if replacement not in ids:
+                failures.append(
+                    f"{provider}: replacement {replacement} (for retired "
+                    f"{entry['id']}) is gone from the live listing — update "
+                    "the catalog entry to the provider's current recommendation"
+                )
+    if not checked:
+        pytest.skip("no live key covers a provider with verifiable replacements")
+    assert not failures, "\n".join(failures)
+    print(f"all {checked} recorded replacements still listed by their providers")

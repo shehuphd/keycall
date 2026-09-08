@@ -27,16 +27,26 @@ from . import _cache, _capabilities, _classify, _tracing
 from ._cache import CachedModels
 from ._credential import Credential
 from ._enums import ModelCategory, Operation, ProviderProtocol
-from ._errors import ErrorCode, KeyCallError, VideoJobTimeout
+from ._errors import (
+    BatchJobTimeout,
+    ErrorCode,
+    KeyCallError,
+    TranscriptionJobTimeout,
+    VideoJobTimeout,
+)
 from ._registry import (
     ResolvedProvider,
     catalog_age_days,
     catalog_is_stale,
     catalog_version,
     resolve_provider,
+    retired_model_fact,
 )
 from ._transport import AsyncTransport, Transport
 from ._types import (
+    BatchJob,
+    BatchRequest,
+    BatchResult,
     EmbeddingRequest,
     ImageGenerationRequest,
     InvocationResult,
@@ -49,13 +59,16 @@ from ._types import (
     TextGenerationRequest,
     Tool,
     TranscriptionConfig,
+    TranscriptionJob,
+    TranscriptionRequest,
+    TranscriptionResult,
     Usage,
     VideoGenerationRequest,
     VideoJob,
     Voice,
 )
 from .adapters import ProviderAdapter, adapter_for
-from .adapters._base import InbandStreamError, StreamAssembler
+from .adapters._base import BatchSubmission, InbandStreamError, StreamAssembler
 
 __all__ = ["AsyncKeyCall", "AsyncTextStream", "KeyCall", "TextStream"]
 
@@ -295,6 +308,34 @@ class _BaseClient:
             raise RuntimeError(f"{type(self).__name__} is closed; construct a new client")
         return credential
 
+    def _require_model_not_retired(self, model: str | None) -> None:
+        """Refuse a model the catalog records as shut down, before any
+        network call: the provider would only answer with a bare not-found
+        after a bill-nothing round trip, and this error can name the
+        retirement date and the provider's own recommended replacement.
+        Matches the id and its recorded alias spellings. Every entry is
+        backed by a live release-suite probe, so a stale record fails the
+        suite rather than silently blocking a model that came back."""
+        if model is None:
+            return
+        fact = retired_model_fact(self._resolved.retired_models, model)
+        if fact is None:
+            return
+        when = fact.get("retired")
+        replacement = fact.get("replacement")
+        raise KeyCallError(
+            f"{model} was retired by {self.provider}"
+            + (f" on {when}" if when else "")
+            + (
+                f"; the provider recommends {replacement}"
+                if replacement
+                else "; the provider named no replacement"
+            ),
+            code=ErrorCode.MODEL_RETIRED,
+            provider=self.provider,
+            retryable=False,
+        )
+
     def __repr__(self) -> str:
         state = "closed" if self.closed else "open"
         return (
@@ -346,6 +387,28 @@ class _BaseClient:
                     f"{_MAX_LIST_PAGES}-page limit; this list is truncated"
                 ),
             )
+        # Models the catalog records as retired are withheld: some
+        # providers keep shut-down models in their listing while requests
+        # to them fail (OpenAI does), so offering one is offering a dead
+        # end. Each withheld id is named in a warning, never dropped
+        # silently. One site for both clients, before caching, so cached
+        # reads carry the same filtered view.
+        if self._resolved.retired_models:
+            kept: list[Model] = []
+            for model in models:
+                fact = retired_model_fact(self._resolved.retired_models, model.id)
+                if fact is None:
+                    kept.append(model)
+                    continue
+                when = fact.get("retired")
+                replacement = fact.get("replacement")
+                warnings += (
+                    f"{model.id} was retired by {self.provider}"
+                    + (f" on {when}" if when else "")
+                    + (f"; the provider recommends {replacement}" if replacement else "")
+                    + "; withheld from this listing",
+                )
+            models = kept
         # One annotation site for both clients, before caching, so cached
         # reads carry the fact too. Only ids matching a recorded convention
         # gain one; everything else keeps alias=None.
@@ -372,6 +435,7 @@ class _BaseClient:
     def _image_spec(self, request: ImageGenerationRequest) -> Any:
         # The refusal lives in ProviderAdapter.build_image_spec, whose
         # default covers every adapter without an implementation.
+        self._require_model_not_retired(request.model)
         return self._adapter.build_image_spec(request)
 
     def _parse_image(
@@ -395,6 +459,7 @@ class _BaseClient:
     def _speech_spec(self, request: SpeechGenerationRequest) -> Any:
         # The refusal lives in ProviderAdapter.build_speech_spec, whose
         # default covers every adapter without an implementation.
+        self._require_model_not_retired(request.model)
         return self._adapter.build_speech_spec(request)
 
     def _parse_speech(
@@ -427,6 +492,178 @@ class _BaseClient:
                 provider=self.provider,
                 operation="video_generation",
             )
+
+    def _require_batch_job(self, job: BatchJob) -> None:
+        if not isinstance(job, BatchJob):
+            raise TypeError(f"expected a BatchJob, got {type(job).__name__}")
+        if job.provider != self.provider:
+            raise KeyCallError(
+                f"this batch belongs to provider {job.provider!r}; this client is "
+                f"bound to {self.provider!r} and its credential must not poll "
+                "another provider's batch",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.provider,
+                operation=job.operation,
+            )
+
+    def _raise_batch_failure(self, job: BatchJob) -> NoReturn:
+        detail = job.error_message or "no detail from the provider"
+        state = f" ({job.provider_status})" if job.provider_status else ""
+        raise KeyCallError(
+            f"the batch failed{state}: {detail}",
+            code=ErrorCode.PROVIDER_UNAVAILABLE,
+            provider=self.provider,
+            operation=job.operation,
+        )
+
+    def _batch_submission(self, requests: Sequence[BatchRequest]) -> BatchSubmission:
+        items = tuple(requests)
+        if not items:
+            raise ValueError("start_batch needs at least one request")
+        for request in items:
+            if not isinstance(request, BatchRequest):
+                raise TypeError(f"expected BatchRequest entries, got {type(request).__name__}")
+            self._require_model_not_retired(request.model)
+        models = {request.model for request in items}
+        if len(models) > 1 and not self._adapter.batch_mixed_models:
+            raise KeyCallError(
+                f"{self.provider} runs one model per batch, and these requests "
+                f"name {len(models)}: {', '.join(sorted(models))}. Split them "
+                "into one batch per model — Anthropic's batch lane is the one "
+                "that takes mixed models.",
+                code=ErrorCode.MODEL_NOT_SUITABLE,
+                provider=self.provider,
+                operation=Operation.BATCH_GENERATION.value,
+            )
+        wired = []
+        for index, request in enumerate(items):
+            generation = TextGenerationRequest(
+                model=request.model,
+                messages=request.messages,
+                max_output_tokens=request.max_output_tokens,
+                temperature=request.temperature,
+                top_p=request.top_p,
+                seed=request.seed,
+            )
+            wired.append((f"kc-{index}", self._adapter.batch_item_body(generation)))
+        return BatchSubmission(
+            operation=Operation.BATCH_GENERATION.value,
+            model=items[0].model if len(models) == 1 else None,
+            items=tuple(wired),
+        )
+
+    def _embed_batch_submission(self, model: str, inputs: Sequence[str]) -> BatchSubmission:
+        self._require_model_not_retired(model)
+        texts = tuple(inputs)
+        if not texts:
+            raise ValueError("start_embedding_batch needs at least one input")
+        return BatchSubmission(
+            operation=Operation.BATCH_EMBEDDING.value,
+            model=model,
+            items=tuple(
+                (f"kc-{index}", self._adapter.batch_embed_item_body(model, text))
+                for index, text in enumerate(texts)
+            ),
+        )
+
+    def _assemble_batch_results(
+        self, job: BatchJob, outcomes: Sequence[Any]
+    ) -> tuple[BatchResult, ...]:
+        by_key: dict[str, Any] = {}
+        for outcome in outcomes:
+            by_key.setdefault(outcome.key, outcome)
+        results = []
+        for index, key in enumerate(job.request_keys):
+            outcome = by_key.get(key)
+            if outcome is None:
+                results.append(
+                    BatchResult(
+                        index=index,
+                        key=key,
+                        error_message="the provider returned no result for this request",
+                    )
+                )
+            elif outcome.body is not None:
+                try:
+                    invocation = self._adapter.parse_batch_item(outcome.body, key=key, job=job)
+                except KeyCallError as error:
+                    results.append(
+                        BatchResult(
+                            index=index,
+                            key=key,
+                            error_code=error.code.value,
+                            error_message=error.message,
+                        )
+                    )
+                else:
+                    results.append(BatchResult(index=index, key=key, result=invocation))
+            else:
+                results.append(
+                    BatchResult(
+                        index=index,
+                        key=key,
+                        error_code=outcome.error_code,
+                        error_message=outcome.error_message,
+                    )
+                )
+        return tuple(results)
+
+    def _transcription_request(
+        self,
+        *,
+        model: str,
+        audio: bytes | None,
+        url: str | None,
+        media_type: str | None,
+        language: str | None,
+        diarize: bool,
+    ) -> TranscriptionRequest:
+        self._require_model_not_retired(model)
+        request = TranscriptionRequest(
+            model=model,
+            data=audio,
+            url=url,
+            media_type=media_type,
+            language=language,
+            diarize=diarize,
+        )
+        self._adapter.validate_transcription_request(request)
+        return request
+
+    def _require_transcription_job(self, job: TranscriptionJob) -> None:
+        if not isinstance(job, TranscriptionJob):
+            raise TypeError(f"expected a TranscriptionJob, got {type(job).__name__}")
+        if job.provider != self.provider:
+            raise KeyCallError(
+                f"this transcription belongs to provider {job.provider!r}; this "
+                f"client is bound to {self.provider!r} and its credential must "
+                "not poll another provider's job",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.provider,
+                operation=Operation.TRANSCRIPTION.value,
+            )
+
+    def _raise_transcription_failure(self, job: TranscriptionJob) -> NoReturn:
+        detail = job.error_message or "no detail from the provider"
+        state = f" ({job.provider_status})" if job.provider_status else ""
+        raise KeyCallError(
+            f"the transcription failed{state}: {detail}",
+            code=ErrorCode.PROVIDER_UNAVAILABLE,
+            provider=self.provider,
+            operation=Operation.TRANSCRIPTION.value,
+        )
+
+    def _refuse_transcription_jobs_here(self) -> NoReturn:
+        # The one job-shaped transcription provider today is AssemblyAI;
+        # this message names the pattern rather than enumerating, so a
+        # second job-shaped provider needs no edit here.
+        raise KeyCallError(
+            f"provider {self.provider!r} answers transcription in one round "
+            "trip, so no job handle exists — call transcribe()",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.provider,
+            operation=Operation.TRANSCRIPTION.value,
+        )
 
     def _raise_video_failure(self, job: VideoJob) -> NoReturn:
         detail = job.error_message or "no detail from the provider"
@@ -464,6 +701,7 @@ class _BaseClient:
         # default raises for every adapter that hasn't implemented one.
         # Gating here as well would duplicate the message in a second
         # place that could drift from it.
+        self._require_model_not_retired(request.model)
         return self._adapter.build_embedding_spec(request)
 
     def _parse_embedding(
@@ -491,6 +729,7 @@ class _BaseClient:
                 f"invoke() accepts typed request objects, got {type(request).__name__}",
                 code=ErrorCode.UNSUPPORTED_OPERATION,
             )
+        self._require_model_not_retired(request.model)
         return self._adapter.build_generation_spec(request)
 
     def _parse_invocation(
@@ -507,17 +746,22 @@ class _BaseClient:
         invocation = _with_custom_tool_warning(
             invocation, request, self.provider, is_custom=self._resolved.is_custom
         )
+        # Token counts ride as event kwargs, not inside result=:
+        # TraceAct's sanitiser redacts any result field whose name
+        # contains "token", and its cost estimator reads model events'
+        # provider/tokens_in/tokens_out kwargs (traceact 1.1.0
+        # convention, verified against the installed signature
+        # 2026-09-02).
         trace.event(
             "model",
             operation="text_generation",
             target=invocation.model,
             status=invocation.finish_reason or "ok",
             duration_ms=invocation.round_trip_duration_ms,
-            result={
-                "input_tokens": invocation.usage.input_tokens,
-                "output_tokens": invocation.usage.output_tokens,
-                "parts": len(invocation.parts),
-            },
+            provider=self.provider,
+            tokens_in=invocation.usage.input_tokens,
+            tokens_out=invocation.usage.output_tokens,
+            result={"parts": len(invocation.parts)},
         )
         return invocation
 
@@ -570,6 +814,7 @@ class _StreamCore:
     def __init__(self, client: _BaseClient, request: TextGenerationRequest) -> None:
         self._client = client
         self._request = request
+        client._require_model_not_retired(request.model)
         self._assembler: StreamAssembler = client._adapter.stream_assembler(request)
         self._spec = client._adapter.build_stream_spec(request)
         self._started_at: float | None = None
@@ -1056,6 +1301,7 @@ class KeyCall(_BaseClient):
         the job reports succeeded — or let generate_video() do all three
         against a waiting budget."""
         self._require_open()
+        self._require_model_not_retired(model)
         request = VideoGenerationRequest(
             model=model,
             prompt=prompt,
@@ -1171,6 +1417,172 @@ class KeyCall(_BaseClient):
                 )
             time.sleep(min(poll_interval, remaining))
 
+    def start_batch(self, requests: Sequence[BatchRequest]) -> BatchJob:
+        """Submit a batch of text-generation requests to the provider's
+        asynchronous batch lane — half-price tokens on the three majors,
+        with results arriving minutes to hours later — and return its job
+        handle immediately. Poll with check_batch(), read outcomes with
+        fetch_batch_results() once the job reports finished — or let
+        generate_batch() run all three against a waiting budget."""
+        self._require_open()
+        return self._submit_batch(self._batch_submission(requests))
+
+    def start_embedding_batch(self, *, model: str, inputs: Sequence[str]) -> BatchJob:
+        """Submit a batch of embedding inputs (one vector per input, in
+        input order, same as embed()) to the batch lane. OpenAI and Gemini
+        support it; every other provider refuses before the network."""
+        self._require_open()
+        return self._submit_batch(self._embed_batch_submission(model, inputs))
+
+    def _submit_batch(self, submission: BatchSubmission) -> BatchJob:
+        with _tracing.span(
+            "keycall.batch.start", provider=self.provider, operation=submission.operation
+        ) as trace:
+            prelude = None
+            prelude_spec = self._adapter.build_batch_prelude_spec(submission)
+            if prelude_spec is not None:
+                result = self._transport.request(
+                    prelude_spec,
+                    operation=submission.operation,
+                    retry_policy="generation",
+                    translate_error=self._adapter.translate_error,
+                )
+                prelude = self._adapter.parse_batch_prelude(result.payload)
+            spec = self._adapter.build_batch_submit_spec(submission, prelude)
+            result = self._transport.request(
+                spec,
+                operation=submission.operation,
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            job = self._adapter.parse_batch_submit(
+                result.payload, submission=submission, prelude=prelude
+            )
+            trace.event(
+                "model",
+                operation=submission.operation,
+                status="submitted",
+                result={"requests": len(submission.items)},
+            )
+            return job
+
+    def check_batch(self, job: BatchJob) -> BatchJob:
+        """Ask the provider where a batch stands. Returns a new BatchJob
+        rather than mutating; a job that already ended is returned as-is
+        without a network call."""
+        self._require_open()
+        self._require_batch_job(job)
+        if job.status != "running":
+            return job
+        spec = self._adapter.build_batch_status_spec(job)
+        result = self._transport.request(
+            spec,
+            operation=job.operation,
+            retry_policy="list",
+            translate_error=self._adapter.translate_error,
+        )
+        return self._adapter.parse_batch_status(result.payload, job=job)
+
+    def fetch_batch_results(self, job: BatchJob) -> tuple[BatchResult, ...]:
+        """Every request's outcome, in submission order: an
+        InvocationResult where the request succeeded, the provider's
+        per-request error where it didn't. A batch that ended cancelled or
+        expired still reports whatever completed before the end."""
+        self._require_open()
+        self._require_batch_job(job)
+        if job.status == "running":
+            raise ValueError("this batch has not ended yet; call check_batch() until it does")
+        if job.status == "failed":
+            self._raise_batch_failure(job)
+        with _tracing.span(
+            "keycall.batch.results", provider=self.provider, operation=job.operation
+        ) as trace:
+            outcomes: list[Any] = []
+            cursor: str | None = None
+            while True:
+                spec = self._adapter.build_batch_results_spec(job, cursor)
+                if spec is None:
+                    break
+                result = self._transport.request(
+                    spec,
+                    operation=job.operation,
+                    retry_policy="list",
+                    translate_error=self._adapter.translate_error,
+                )
+                page, cursor = self._adapter.parse_batch_results(result.payload, job=job)
+                outcomes.extend(page)
+                if not cursor:
+                    break
+            error_spec = self._adapter.build_batch_error_spec(job)
+            if error_spec is not None:
+                result = self._transport.request(
+                    error_spec,
+                    operation=job.operation,
+                    retry_policy="list",
+                    translate_error=self._adapter.translate_error,
+                )
+                outcomes.extend(self._adapter.parse_batch_error_file(result.payload, job=job))
+            results = self._assemble_batch_results(job, outcomes)
+            trace.event(
+                "model",
+                operation=job.operation,
+                status="ok",
+                result={
+                    "requests": len(results),
+                    "succeeded": sum(1 for entry in results if entry.succeeded),
+                },
+            )
+            return results
+
+    def cancel_batch(self, job: BatchJob) -> BatchJob:
+        """Ask the provider to stop a running batch. Requests already
+        processed stay billed and readable; the rest report cancelled in
+        the results. A job that already ended is returned as-is."""
+        self._require_open()
+        self._require_batch_job(job)
+        if job.status != "running":
+            return job
+        spec = self._adapter.build_batch_cancel_spec(job)
+        result = self._transport.request(
+            spec,
+            operation=job.operation,
+            retry_policy="generation",
+            translate_error=self._adapter.translate_error,
+        )
+        return self._adapter.parse_batch_cancel(result.payload, job=job)
+
+    def generate_batch(
+        self,
+        requests: Sequence[BatchRequest],
+        *,
+        timeout: float,
+        poll_interval: float = 10.0,
+    ) -> tuple[BatchResult, ...]:
+        """Submit, poll, and fetch in one call. ``timeout`` is the
+        caller's waiting budget in seconds and has no default: providers
+        promise completion within 24 hours and usually finish in minutes,
+        so only the caller can say how long is too long. When the budget
+        runs out the raised BatchJobTimeout carries the still-valid job —
+        the batch keeps processing provider-side and check_batch() resumes
+        where the wait left off."""
+        job = self.start_batch(requests)
+        deadline = time.monotonic() + timeout
+        while True:
+            job = self.check_batch(job)
+            if job.status == "failed":
+                self._raise_batch_failure(job)
+            if job.status != "running":
+                return self.fetch_batch_results(job)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise BatchJobTimeout(
+                    f"batch still processing after {timeout:g}s; the job remains "
+                    "valid — poll it with check_batch(error.job)",
+                    provider=self.provider,
+                    job=job,
+                )
+            time.sleep(min(poll_interval, remaining))
+
     def generate_text(
         self,
         *,
@@ -1179,6 +1591,7 @@ class KeyCall(_BaseClient):
         max_output_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
+        seed: int | None = None,
         web_search: bool = False,
         apply_patch: bool = False,
         code_interpreter: bool = False,
@@ -1194,6 +1607,7 @@ class KeyCall(_BaseClient):
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                seed=seed,
                 web_search=web_search,
                 apply_patch=apply_patch,
                 code_interpreter=code_interpreter,
@@ -1212,6 +1626,7 @@ class KeyCall(_BaseClient):
         max_output_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
+        seed: int | None = None,
         web_search: bool = False,
         apply_patch: bool = False,
         code_interpreter: bool = False,
@@ -1231,6 +1646,7 @@ class KeyCall(_BaseClient):
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                seed=seed,
                 web_search=web_search,
                 apply_patch=apply_patch,
                 code_interpreter=code_interpreter,
@@ -1253,6 +1669,7 @@ class KeyCall(_BaseClient):
         context manager; push turns with send_text/send_audio and read
         normalized events from events()."""
         self._require_open()
+        self._require_model_not_retired(model)
         config = RealtimeConfig(
             model=model,
             voice=voice,
@@ -1282,11 +1699,217 @@ class KeyCall(_BaseClient):
         events(). model None takes the provider's default streaming
         model."""
         self._require_open()
+        self._require_model_not_retired(model)
         config = TranscriptionConfig(model=model, sample_rate=sample_rate)
         path, translator = self._adapter.transcription_plan(config)
         from ._transcription import TranscriptionSession
 
         return TranscriptionSession(self._transport, path=path, translator=translator)
+
+    def transcribe(
+        self,
+        *,
+        model: str,
+        audio: bytes | None = None,
+        url: str | None = None,
+        media_type: str | None = None,
+        language: str | None = None,
+        diarize: bool = False,
+        timeout: float | None = None,
+        poll_interval: float = 2.0,
+    ) -> TranscriptionResult:
+        """Transcribe a stored audio file (OpenAI, ElevenLabs, Deepgram,
+        AssemblyAI). Pass one of ``audio`` (bytes) or ``url`` (a
+        location the provider fetches itself — only some providers take
+        one). On the sync providers the transcript comes back in one round
+        trip and ``timeout`` does not apply; on a job-shaped provider
+        (AssemblyAI) ``timeout`` is your required waiting budget in
+        seconds, and running out raises TranscriptionJobTimeout carrying
+        the still-valid job. Gemini refuses here: send the audio as an
+        AudioInput on generate_text() with your own instruction."""
+        self._require_open()
+        request = self._transcription_request(
+            model=model, audio=audio, url=url, media_type=media_type,
+            language=language, diarize=diarize,
+        )
+        if not self._adapter.transcription_is_job_shaped:
+            if timeout is not None:
+                raise ValueError(
+                    f"timeout applies to providers that transcribe as a job; "
+                    f"{self.provider} answers in one round trip — set "
+                    "read_timeout on the client instead"
+                )
+            return self._transcribe_sync(request)
+        if timeout is None:
+            raise ValueError(
+                f"{self.provider} transcribes as a job; pass timeout=<seconds> "
+                "as your waiting budget"
+            )
+        job = self._submit_transcription(request)
+        deadline = time.monotonic() + timeout
+        while True:
+            job = self.check_transcription(job)
+            if job.status == "failed":
+                self._raise_transcription_failure(job)
+            if job.status == "finished":
+                return self.fetch_transcription(job)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TranscriptionJobTimeout(
+                    f"transcription still processing after {timeout:g}s; the "
+                    "job remains valid — poll it with "
+                    "check_transcription(error.job)",
+                    provider=self.provider,
+                    job=job,
+                )
+            time.sleep(min(poll_interval, remaining))
+
+    def _transcribe_sync(self, request: TranscriptionRequest) -> TranscriptionResult:
+        with _tracing.span(
+            "keycall.transcription", provider=self.provider, operation="transcription"
+        ) as trace:
+            spec = self._adapter.build_transcription_spec(request)
+            result = self._transport.request(
+                spec,
+                operation=Operation.TRANSCRIPTION.value,
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            parsed = self._adapter.parse_transcription_response(
+                result.payload,
+                headers=result.headers,
+                round_trip_duration_ms=result.duration_ms,
+                model=request.model,
+            )
+            trace.event(
+                "model",
+                operation="transcription",
+                target=request.model,
+                status="ok",
+                duration_ms=result.duration_ms,
+                provider=self.provider,
+                result={
+                    "words": len(parsed.words),
+                    "audio_seconds": parsed.audio_duration_seconds,
+                },
+            )
+            return parsed
+
+    def start_transcription(
+        self,
+        *,
+        model: str,
+        audio: bytes | None = None,
+        url: str | None = None,
+        media_type: str | None = None,
+        language: str | None = None,
+        diarize: bool = False,
+    ) -> TranscriptionJob:
+        """Submit a transcription to a job-shaped provider (AssemblyAI)
+        and return its handle immediately. Poll with check_transcription()
+        and read the result with fetch_transcription() — or let
+        transcribe(timeout=) run all three against a waiting budget.
+        Providers that answer in one round trip have no job to hand back
+        and refuse here."""
+        self._require_open()
+        request = self._transcription_request(
+            model=model, audio=audio, url=url, media_type=media_type,
+            language=language, diarize=diarize,
+        )
+        if not self._adapter.transcription_is_job_shaped:
+            self._refuse_transcription_jobs_here()
+        return self._submit_transcription(request)
+
+    def _submit_transcription(self, request: TranscriptionRequest) -> TranscriptionJob:
+        with _tracing.span(
+            "keycall.transcription.start",
+            provider=self.provider,
+            operation="transcription",
+        ) as trace:
+            audio_ref = None
+            upload_spec = self._adapter.build_transcription_upload_spec(request)
+            if upload_spec is not None:
+                result = self._transport.request(
+                    upload_spec,
+                    operation=Operation.TRANSCRIPTION.value,
+                    retry_policy="generation",
+                    translate_error=self._adapter.translate_error,
+                )
+                audio_ref = self._adapter.parse_transcription_upload(result.payload)
+            spec = self._adapter.build_transcription_submit_spec(request, audio_ref)
+            result = self._transport.request(
+                spec,
+                operation=Operation.TRANSCRIPTION.value,
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            job = self._adapter.parse_transcription_submit(
+                result.payload, request=request
+            )
+            trace.event(
+                "model",
+                operation="transcription",
+                target=request.model,
+                status="submitted",
+                provider=self.provider,
+            )
+            return job
+
+    def check_transcription(self, job: TranscriptionJob) -> TranscriptionJob:
+        """Ask the provider where a transcription job stands. Returns a
+        new TranscriptionJob rather than mutating; a job that already
+        ended is returned as-is without a network call."""
+        self._require_open()
+        self._require_transcription_job(job)
+        if job.status != "running":
+            return job
+        spec = self._adapter.build_transcription_status_spec(job)
+        result = self._transport.request(
+            spec,
+            operation=Operation.TRANSCRIPTION.value,
+            retry_policy="list",
+            translate_error=self._adapter.translate_error,
+        )
+        return self._adapter.parse_transcription_status(result.payload, job=job)
+
+    def fetch_transcription(self, job: TranscriptionJob) -> TranscriptionResult:
+        """The finished transcript of a job that reported finished. A
+        running job is refused (poll check_transcription() first); a
+        failed one raises with the provider's own explanation."""
+        self._require_open()
+        self._require_transcription_job(job)
+        if job.status == "running":
+            raise ValueError(
+                "this transcription has not ended yet; call "
+                "check_transcription() until it does"
+            )
+        if job.status == "failed":
+            self._raise_transcription_failure(job)
+        with _tracing.span(
+            "keycall.transcription.results",
+            provider=self.provider,
+            operation="transcription",
+        ) as trace:
+            spec = self._adapter.build_transcription_status_spec(job)
+            result = self._transport.request(
+                spec,
+                operation=Operation.TRANSCRIPTION.value,
+                retry_policy="list",
+                translate_error=self._adapter.translate_error,
+            )
+            parsed = self._adapter.parse_transcription_result(result.payload, job=job)
+            trace.event(
+                "model",
+                operation="transcription",
+                target=job.model,
+                status="ok",
+                provider=self.provider,
+                result={
+                    "words": len(parsed.words),
+                    "audio_seconds": parsed.audio_duration_seconds,
+                },
+            )
+            return parsed
 
 
 class AsyncKeyCall(_BaseClient):
@@ -1516,6 +2139,7 @@ class AsyncKeyCall(_BaseClient):
     ) -> VideoJob:
         """Async twin of KeyCall.start_video()."""
         self._require_open()
+        self._require_model_not_retired(model)
         request = VideoGenerationRequest(
             model=model,
             prompt=prompt,
@@ -1622,6 +2246,156 @@ class AsyncKeyCall(_BaseClient):
                 )
             await anyio.sleep(min(poll_interval, remaining))
 
+    async def start_batch(self, requests: Sequence[BatchRequest]) -> BatchJob:
+        """Async twin of KeyCall.start_batch()."""
+        self._require_open()
+        return await self._submit_batch(self._batch_submission(requests))
+
+    async def start_embedding_batch(
+        self, *, model: str, inputs: Sequence[str]
+    ) -> BatchJob:
+        """Async twin of KeyCall.start_embedding_batch()."""
+        self._require_open()
+        return await self._submit_batch(self._embed_batch_submission(model, inputs))
+
+    async def _submit_batch(self, submission: BatchSubmission) -> BatchJob:
+        with _tracing.span(
+            "keycall.batch.start", provider=self.provider, operation=submission.operation
+        ) as trace:
+            prelude = None
+            prelude_spec = self._adapter.build_batch_prelude_spec(submission)
+            if prelude_spec is not None:
+                result = await self._transport.request(
+                    prelude_spec,
+                    operation=submission.operation,
+                    retry_policy="generation",
+                    translate_error=self._adapter.translate_error,
+                )
+                prelude = self._adapter.parse_batch_prelude(result.payload)
+            spec = self._adapter.build_batch_submit_spec(submission, prelude)
+            result = await self._transport.request(
+                spec,
+                operation=submission.operation,
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            job = self._adapter.parse_batch_submit(
+                result.payload, submission=submission, prelude=prelude
+            )
+            trace.event(
+                "model",
+                operation=submission.operation,
+                status="submitted",
+                result={"requests": len(submission.items)},
+            )
+            return job
+
+    async def check_batch(self, job: BatchJob) -> BatchJob:
+        """Async twin of KeyCall.check_batch()."""
+        self._require_open()
+        self._require_batch_job(job)
+        if job.status != "running":
+            return job
+        spec = self._adapter.build_batch_status_spec(job)
+        result = await self._transport.request(
+            spec,
+            operation=job.operation,
+            retry_policy="list",
+            translate_error=self._adapter.translate_error,
+        )
+        return self._adapter.parse_batch_status(result.payload, job=job)
+
+    async def fetch_batch_results(self, job: BatchJob) -> tuple[BatchResult, ...]:
+        """Async twin of KeyCall.fetch_batch_results()."""
+        self._require_open()
+        self._require_batch_job(job)
+        if job.status == "running":
+            raise ValueError("this batch has not ended yet; call check_batch() until it does")
+        if job.status == "failed":
+            self._raise_batch_failure(job)
+        with _tracing.span(
+            "keycall.batch.results", provider=self.provider, operation=job.operation
+        ) as trace:
+            outcomes: list[Any] = []
+            cursor: str | None = None
+            while True:
+                spec = self._adapter.build_batch_results_spec(job, cursor)
+                if spec is None:
+                    break
+                result = await self._transport.request(
+                    spec,
+                    operation=job.operation,
+                    retry_policy="list",
+                    translate_error=self._adapter.translate_error,
+                )
+                page, cursor = self._adapter.parse_batch_results(result.payload, job=job)
+                outcomes.extend(page)
+                if not cursor:
+                    break
+            error_spec = self._adapter.build_batch_error_spec(job)
+            if error_spec is not None:
+                result = await self._transport.request(
+                    error_spec,
+                    operation=job.operation,
+                    retry_policy="list",
+                    translate_error=self._adapter.translate_error,
+                )
+                outcomes.extend(self._adapter.parse_batch_error_file(result.payload, job=job))
+            results = self._assemble_batch_results(job, outcomes)
+            trace.event(
+                "model",
+                operation=job.operation,
+                status="ok",
+                result={
+                    "requests": len(results),
+                    "succeeded": sum(1 for entry in results if entry.succeeded),
+                },
+            )
+            return results
+
+    async def cancel_batch(self, job: BatchJob) -> BatchJob:
+        """Async twin of KeyCall.cancel_batch()."""
+        self._require_open()
+        self._require_batch_job(job)
+        if job.status != "running":
+            return job
+        spec = self._adapter.build_batch_cancel_spec(job)
+        result = await self._transport.request(
+            spec,
+            operation=job.operation,
+            retry_policy="generation",
+            translate_error=self._adapter.translate_error,
+        )
+        return self._adapter.parse_batch_cancel(result.payload, job=job)
+
+    async def generate_batch(
+        self,
+        requests: Sequence[BatchRequest],
+        *,
+        timeout: float,
+        poll_interval: float = 10.0,
+    ) -> tuple[BatchResult, ...]:
+        """Async twin of KeyCall.generate_batch()."""
+        import anyio
+
+        job = await self.start_batch(requests)
+        deadline = time.monotonic() + timeout
+        while True:
+            job = await self.check_batch(job)
+            if job.status == "failed":
+                self._raise_batch_failure(job)
+            if job.status != "running":
+                return await self.fetch_batch_results(job)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise BatchJobTimeout(
+                    f"batch still processing after {timeout:g}s; the job remains "
+                    "valid — poll it with check_batch(error.job)",
+                    provider=self.provider,
+                    job=job,
+                )
+            await anyio.sleep(min(poll_interval, remaining))
+
     async def generate_text(
         self,
         *,
@@ -1630,6 +2404,7 @@ class AsyncKeyCall(_BaseClient):
         max_output_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
+        seed: int | None = None,
         web_search: bool = False,
         apply_patch: bool = False,
         code_interpreter: bool = False,
@@ -1645,6 +2420,7 @@ class AsyncKeyCall(_BaseClient):
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                seed=seed,
                 web_search=web_search,
                 apply_patch=apply_patch,
                 code_interpreter=code_interpreter,
@@ -1663,6 +2439,7 @@ class AsyncKeyCall(_BaseClient):
         max_output_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
+        seed: int | None = None,
         web_search: bool = False,
         apply_patch: bool = False,
         code_interpreter: bool = False,
@@ -1682,6 +2459,7 @@ class AsyncKeyCall(_BaseClient):
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                seed=seed,
                 web_search=web_search,
                 apply_patch=apply_patch,
                 code_interpreter=code_interpreter,
@@ -1704,6 +2482,7 @@ class AsyncKeyCall(_BaseClient):
         async context manager; push turns with send_text/send_audio and
         read normalized events with `async for`."""
         self._require_open()
+        self._require_model_not_retired(model)
         config = RealtimeConfig(
             model=model,
             voice=voice,
@@ -1729,6 +2508,7 @@ class AsyncKeyCall(_BaseClient):
     ) -> AsyncTranscriptionSession:
         """Async twin of KeyCall.transcribe_stream."""
         self._require_open()
+        self._require_model_not_retired(model)
         config = TranscriptionConfig(model=model, sample_rate=sample_rate)
         path, translator = self._adapter.transcription_plan(config)
         from ._transcription import AsyncTranscriptionSession
@@ -1736,3 +2516,195 @@ class AsyncKeyCall(_BaseClient):
         return AsyncTranscriptionSession(
             self._transport, path=path, translator=translator
         )
+
+    async def transcribe(
+        self,
+        *,
+        model: str,
+        audio: bytes | None = None,
+        url: str | None = None,
+        media_type: str | None = None,
+        language: str | None = None,
+        diarize: bool = False,
+        timeout: float | None = None,
+        poll_interval: float = 2.0,
+    ) -> TranscriptionResult:
+        """Async twin of KeyCall.transcribe()."""
+        import anyio
+
+        self._require_open()
+        request = self._transcription_request(
+            model=model, audio=audio, url=url, media_type=media_type,
+            language=language, diarize=diarize,
+        )
+        if not self._adapter.transcription_is_job_shaped:
+            if timeout is not None:
+                raise ValueError(
+                    f"timeout applies to providers that transcribe as a job; "
+                    f"{self.provider} answers in one round trip — set "
+                    "read_timeout on the client instead"
+                )
+            return await self._transcribe_sync(request)
+        if timeout is None:
+            raise ValueError(
+                f"{self.provider} transcribes as a job; pass timeout=<seconds> "
+                "as your waiting budget"
+            )
+        job = await self._submit_transcription(request)
+        deadline = time.monotonic() + timeout
+        while True:
+            job = await self.check_transcription(job)
+            if job.status == "failed":
+                self._raise_transcription_failure(job)
+            if job.status == "finished":
+                return await self.fetch_transcription(job)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TranscriptionJobTimeout(
+                    f"transcription still processing after {timeout:g}s; the "
+                    "job remains valid — poll it with "
+                    "check_transcription(error.job)",
+                    provider=self.provider,
+                    job=job,
+                )
+            await anyio.sleep(min(poll_interval, remaining))
+
+    async def _transcribe_sync(self, request: TranscriptionRequest) -> TranscriptionResult:
+        with _tracing.span(
+            "keycall.transcription", provider=self.provider, operation="transcription"
+        ) as trace:
+            spec = self._adapter.build_transcription_spec(request)
+            result = await self._transport.request(
+                spec,
+                operation=Operation.TRANSCRIPTION.value,
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            parsed = self._adapter.parse_transcription_response(
+                result.payload,
+                headers=result.headers,
+                round_trip_duration_ms=result.duration_ms,
+                model=request.model,
+            )
+            trace.event(
+                "model",
+                operation="transcription",
+                target=request.model,
+                status="ok",
+                duration_ms=result.duration_ms,
+                provider=self.provider,
+                result={
+                    "words": len(parsed.words),
+                    "audio_seconds": parsed.audio_duration_seconds,
+                },
+            )
+            return parsed
+
+    async def start_transcription(
+        self,
+        *,
+        model: str,
+        audio: bytes | None = None,
+        url: str | None = None,
+        media_type: str | None = None,
+        language: str | None = None,
+        diarize: bool = False,
+    ) -> TranscriptionJob:
+        """Async twin of KeyCall.start_transcription()."""
+        self._require_open()
+        request = self._transcription_request(
+            model=model, audio=audio, url=url, media_type=media_type,
+            language=language, diarize=diarize,
+        )
+        if not self._adapter.transcription_is_job_shaped:
+            self._refuse_transcription_jobs_here()
+        return await self._submit_transcription(request)
+
+    async def _submit_transcription(
+        self, request: TranscriptionRequest
+    ) -> TranscriptionJob:
+        with _tracing.span(
+            "keycall.transcription.start",
+            provider=self.provider,
+            operation="transcription",
+        ) as trace:
+            audio_ref = None
+            upload_spec = self._adapter.build_transcription_upload_spec(request)
+            if upload_spec is not None:
+                result = await self._transport.request(
+                    upload_spec,
+                    operation=Operation.TRANSCRIPTION.value,
+                    retry_policy="generation",
+                    translate_error=self._adapter.translate_error,
+                )
+                audio_ref = self._adapter.parse_transcription_upload(result.payload)
+            spec = self._adapter.build_transcription_submit_spec(request, audio_ref)
+            result = await self._transport.request(
+                spec,
+                operation=Operation.TRANSCRIPTION.value,
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            job = self._adapter.parse_transcription_submit(
+                result.payload, request=request
+            )
+            trace.event(
+                "model",
+                operation="transcription",
+                target=request.model,
+                status="submitted",
+                provider=self.provider,
+            )
+            return job
+
+    async def check_transcription(self, job: TranscriptionJob) -> TranscriptionJob:
+        """Async twin of KeyCall.check_transcription()."""
+        self._require_open()
+        self._require_transcription_job(job)
+        if job.status != "running":
+            return job
+        spec = self._adapter.build_transcription_status_spec(job)
+        result = await self._transport.request(
+            spec,
+            operation=Operation.TRANSCRIPTION.value,
+            retry_policy="list",
+            translate_error=self._adapter.translate_error,
+        )
+        return self._adapter.parse_transcription_status(result.payload, job=job)
+
+    async def fetch_transcription(self, job: TranscriptionJob) -> TranscriptionResult:
+        """Async twin of KeyCall.fetch_transcription()."""
+        self._require_open()
+        self._require_transcription_job(job)
+        if job.status == "running":
+            raise ValueError(
+                "this transcription has not ended yet; call "
+                "check_transcription() until it does"
+            )
+        if job.status == "failed":
+            self._raise_transcription_failure(job)
+        with _tracing.span(
+            "keycall.transcription.results",
+            provider=self.provider,
+            operation="transcription",
+        ) as trace:
+            spec = self._adapter.build_transcription_status_spec(job)
+            result = await self._transport.request(
+                spec,
+                operation=Operation.TRANSCRIPTION.value,
+                retry_policy="list",
+                translate_error=self._adapter.translate_error,
+            )
+            parsed = self._adapter.parse_transcription_result(result.payload, job=job)
+            trace.event(
+                "model",
+                operation="transcription",
+                target=job.model,
+                status="ok",
+                provider=self.provider,
+                result={
+                    "words": len(parsed.words),
+                    "audio_seconds": parsed.audio_duration_seconds,
+                },
+            )
+            return parsed

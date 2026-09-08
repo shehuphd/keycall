@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,6 +21,7 @@ from .._sanitize import safe_request_id
 from .._transport import DownloadPlan, RequestSpec
 from .._types import (
     AudioOutput,
+    BatchJob,
     Citation,
     CodeExecutionOutput,
     EmbeddingOutput,
@@ -34,6 +36,9 @@ from .._types import (
     ToolCallArgumentsDelta,
     ToolCallComplete,
     ToolCallStarted,
+    TranscriptionJob,
+    TranscriptionRequest,
+    TranscriptionResult,
     Usage,
     VideoJob,
     VideoOutput,
@@ -379,6 +384,71 @@ class StreamAssembler(ABC):
         )
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BatchSubmission:
+    """Internal: a batch ready for the wire. Each item pairs the key
+    KeyCall assigned (what restores result order) with the wire body the
+    adapter's own synchronous builder produced for that request."""
+
+    operation: str
+    model: str | None
+    items: tuple[tuple[str, Mapping[str, Any]], ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BatchItemOutcome:
+    """Internal: one per-request outcome as the provider reported it —
+    a success payload, or a per-request error, keyed for reordering."""
+
+    key: str
+    body: Any = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+_AUDIO_EXTENSIONS = {
+    "audio/wav": "wav",
+    "audio/mpeg": "mp3",
+    "audio/ogg": "ogg",
+    "audio/flac": "flac",
+    "audio/mp4": "m4a",
+    "audio/webm": "webm",
+    "audio/aac": "aac",
+}
+
+
+def audio_filename(media_type: str) -> str:
+    """A filename for a multipart audio upload whose extension matches the
+    sniffed media type — providers that look at the extension get one that
+    agrees with the bytes."""
+    subtype = media_type.split("/")[-1] or "bin"
+    return "audio." + _AUDIO_EXTENSIONS.get(media_type, subtype)
+
+
+def batch_line_entries(payload: Any) -> list[Mapping[str, Any]]:
+    """Records from a JSONL batch download, however the transport
+    delivered it: bytes for a multi-record body, or one parsed dict when
+    a single-record body was itself valid JSON. Non-JSON and non-dict
+    lines are skipped; per-record validation stays with the caller."""
+    if isinstance(payload, Mapping):
+        return [payload]
+    if not isinstance(payload, (bytes, str)):
+        return []
+    text = payload.decode("utf-8", "replace") if isinstance(payload, bytes) else payload
+    entries: list[Mapping[str, Any]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries
+
+
 class ProviderAdapter(ABC):
     """One instance per resolved provider profile. Stateless and pure."""
 
@@ -635,6 +705,122 @@ class ProviderAdapter(ABC):
             operation=Operation.SPEECH_GENERATION.value,
         )
 
+    # --- batch generation ---
+    #
+    # Asynchronous job lifecycle over wires that disagree in shape: two
+    # providers upload a JSONL file first (OpenAI, Moonshot), one submits
+    # requests inline (Anthropic), one binds the model in the URL (Gemini),
+    # and one fills a named container in a second call (xAI). The client
+    # sequences one generic three-phase flow — optional prelude, submit,
+    # then poll/results/cancel — and each adapter maps its dialect onto it.
+    # Item bodies reuse the adapter's own synchronous builders, so a batch
+    # request carries the same meaning it would outside a batch.
+
+    # Whether one batch can carry different models per request. Anthropic's
+    # params carry the model per request (verified live 2026-09-02); every
+    # other lane binds one model per batch, in the URL or per input file.
+    batch_mixed_models = False
+
+    def _batch_gate(self, operation: str = Operation.BATCH_GENERATION.value) -> KeyCallError:
+        return KeyCallError(
+            f"provider {self.resolved.provider!r} has no batch API; "
+            "batch generation is supported on: "
+            + ", ".join(sorted(providers_with("batch_generation"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=operation,
+        )
+
+    def batch_item_body(self, request: Any) -> Mapping[str, Any]:
+        """One request's wire body inside a batch: the same body the
+        synchronous call would send, from the same builder."""
+        body = self.build_generation_spec(request).json_body
+        assert body is not None
+        return body
+
+    def batch_embed_item_body(self, model: str, text: str) -> Mapping[str, Any]:
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} has no batch embeddings "
+            "lane; batch embeddings are supported on: "
+            + ", ".join(sorted(providers_with("batch_embeddings"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.BATCH_EMBEDDING.value,
+        )
+
+    def build_batch_prelude_spec(self, submission: BatchSubmission) -> RequestSpec | None:
+        """A request that must complete before the submit (OpenAI's and
+        Moonshot's file upload; xAI's container create). None where the
+        submit stands alone."""
+        return None
+
+    def parse_batch_prelude(self, payload: Any) -> str:
+        raise self._batch_gate()
+
+    def build_batch_submit_spec(
+        self, submission: BatchSubmission, prelude: str | None
+    ) -> RequestSpec:
+        raise self._batch_gate()
+
+    def parse_batch_submit(
+        self, payload: Any, *, submission: BatchSubmission, prelude: str | None
+    ) -> BatchJob:
+        raise self._batch_gate()
+
+    def build_batch_status_spec(self, job: BatchJob) -> RequestSpec:
+        raise self._batch_gate()
+
+    def parse_batch_status(self, payload: Any, *, job: BatchJob) -> BatchJob:
+        raise self._batch_gate()
+
+    def build_batch_results_spec(self, job: BatchJob, cursor: str | None) -> RequestSpec | None:
+        """The request that fetches one page of results, or None when the
+        provider produced no results download at all (a file-dialect batch
+        whose every request failed has only the error file)."""
+        raise self._batch_gate()
+
+    def parse_batch_results(
+        self, payload: Any, *, job: BatchJob
+    ) -> tuple[list[BatchItemOutcome], str | None]:
+        """One page of per-request outcomes plus the next page's cursor
+        (None on the last page — only xAI paginates)."""
+        raise self._batch_gate()
+
+    def build_batch_error_spec(self, job: BatchJob) -> RequestSpec | None:
+        """Where per-line errors live in a separate downloadable file
+        (OpenAI, Moonshot), the request that fetches it. None elsewhere."""
+        return None
+
+    def parse_batch_error_file(
+        self, payload: Any, *, job: BatchJob
+    ) -> list[BatchItemOutcome]:
+        return []
+
+    def build_batch_cancel_spec(self, job: BatchJob) -> RequestSpec:
+        raise self._batch_gate()
+
+    def parse_batch_cancel(self, payload: Any, *, job: BatchJob) -> BatchJob:
+        raise self._batch_gate()
+
+    def parse_batch_item(self, body: Any, *, key: str, job: BatchJob) -> InvocationResult:
+        """One succeeded request's payload, through the same parser the
+        synchronous call would use."""
+        if job.operation == Operation.BATCH_EMBEDDING.value:
+            return self.parse_embedding_response(
+                body,
+                headers={},
+                round_trip_duration_ms=0.0,
+                model=job.model or "",
+                expected=1,
+            )
+        model = body.get("model") if isinstance(body, dict) else None
+        return self.parse_generation_response(
+            body,
+            headers={},
+            round_trip_duration_ms=0.0,
+            model=str(model or job.model or ""),
+        )
+
     # --- video generation ---
     #
     # Three-phase job lifecycle, unlike every synchronous operation above:
@@ -703,6 +889,103 @@ class ProviderAdapter(ABC):
             provider=self.resolved.provider,
             operation=Operation.STREAMING_TRANSCRIPTION.value,
         )
+
+    # --- prerecorded transcription ---
+    #
+    # One HTTP round trip on most providers; AssemblyAI is job-shaped
+    # (upload, submit, poll), so the contract splits: the sync hooks
+    # (build/parse) and the job hooks (upload/submit/status/result), with
+    # transcription_is_job_shaped saying which set a provider implements.
+    # The shared pre-flight gates read the same catalog capability data
+    # the refusal messages name, so the two can never drift apart.
+
+    transcription_is_job_shaped = False
+
+    def _transcription_gate(self) -> KeyCallError:
+        return KeyCallError(
+            f"provider {self.resolved.provider!r} has no prerecorded "
+            "transcription API; transcribe is supported on: "
+            + ", ".join(sorted(providers_with("transcription"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.TRANSCRIPTION.value,
+        )
+
+    def validate_transcription_request(self, request: TranscriptionRequest) -> None:
+        """Shared pre-flight: a URL or diarization ask on a provider whose
+        wire doesn't take it refuses here, before any network call."""
+        caps = self.resolved.capabilities
+        if request.url is not None and not caps.transcription_url_input:
+            raise KeyCallError(
+                f"provider {self.resolved.provider!r} takes transcription "
+                "audio as bytes only; audio by URL is supported on: "
+                + ", ".join(sorted(providers_with("transcription_url_input"))),
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.resolved.provider,
+                operation=Operation.TRANSCRIPTION.value,
+            )
+        if request.diarize and not caps.transcription_diarization:
+            raise KeyCallError(
+                f"provider {self.resolved.provider!r} does not diarize on "
+                "this surface; diarize=True is supported on: "
+                + ", ".join(sorted(providers_with("transcription_diarization"))),
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.resolved.provider,
+                operation=Operation.TRANSCRIPTION.value,
+            )
+
+    def transcription_media_type(self, request: TranscriptionRequest) -> str:
+        """The audio's media type, read from the content (the same
+        sniffing audio inputs use), with the request's own label covering
+        formats KeyCall doesn't recognize."""
+        return media_type_for(request, kind="audio", provider=self.resolved.provider)
+
+    def build_transcription_spec(self, request: TranscriptionRequest) -> RequestSpec:
+        raise self._transcription_gate()
+
+    def parse_transcription_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        model: str,
+    ) -> TranscriptionResult:
+        raise self._transcription_gate()
+
+    def build_transcription_upload_spec(
+        self, request: TranscriptionRequest
+    ) -> RequestSpec | None:
+        """The audio-upload step before a job submit, where the provider
+        needs one (AssemblyAI with bytes). None when the request already
+        carries a URL the provider can fetch."""
+        raise self._transcription_gate()
+
+    def parse_transcription_upload(self, payload: Any) -> str:
+        raise self._transcription_gate()
+
+    def build_transcription_submit_spec(
+        self, request: TranscriptionRequest, audio_ref: str | None
+    ) -> RequestSpec:
+        raise self._transcription_gate()
+
+    def parse_transcription_submit(
+        self, payload: Any, *, request: TranscriptionRequest
+    ) -> TranscriptionJob:
+        raise self._transcription_gate()
+
+    def build_transcription_status_spec(self, job: TranscriptionJob) -> RequestSpec:
+        raise self._transcription_gate()
+
+    def parse_transcription_status(
+        self, payload: Any, *, job: TranscriptionJob
+    ) -> TranscriptionJob:
+        raise self._transcription_gate()
+
+    def parse_transcription_result(
+        self, payload: Any, *, job: TranscriptionJob
+    ) -> TranscriptionResult:
+        raise self._transcription_gate()
 
     def video_result(
         self,
@@ -901,6 +1184,16 @@ class ProviderAdapter(ABC):
             raise KeyCallError(
                 violation,
                 code=ErrorCode.MODEL_NOT_SUITABLE,
+                provider=self.resolved.provider,
+                operation=Operation.TEXT_GENERATION.value,
+            )
+        if request.seed is not None and not self.resolved.capabilities.supports_seed:
+            from .._capabilities import SEED_PROVIDERS
+
+            raise KeyCallError(
+                f"provider {self.resolved.provider!r} has no seed parameter; a "
+                "seed is accepted on: " + ", ".join(sorted(SEED_PROVIDERS)),
+                code=ErrorCode.UNSUPPORTED_OPERATION,
                 provider=self.resolved.provider,
                 operation=Operation.TEXT_GENERATION.value,
             )

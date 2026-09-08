@@ -6,7 +6,7 @@ import base64
 import dataclasses
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, ClassVar
 
 from .._classify import classify_model_id
 from .._enums import Operation
@@ -15,6 +15,9 @@ from .._registry import ResolvedProvider
 from .._sanitize import safe_request_id
 from .._transport import RequestSpec
 from .._types import (
+    BatchCounts,
+    BatchJob,
+    BatchStatus,
     Citation,
     CitationFound,
     CodeExecutionOutput,
@@ -36,14 +39,20 @@ from .._types import (
     ToolCallComplete,
     ToolCallStarted,
     ToolResult,
+    TranscriptionResult,
+    TranscriptWord,
     UnknownOutput,
     UnknownStreamEvent,
     Usage,
 )
 from ._base import (
+    BatchItemOutcome,
+    BatchSubmission,
     InbandStreamError,
     ProviderAdapter,
     StreamAssembler,
+    audio_filename,
+    batch_line_entries,
     dedupe_citations,
     image_media_type,
     media_type_for,
@@ -304,7 +313,211 @@ class _OpenAIStreamAssembler(StreamAssembler):
         return dataclasses.replace(self._final, round_trip_duration_ms=round_trip_duration_ms)
 
 
-class OpenAIAdapter(ProviderAdapter):
+def _parse_openai_batch_lines(payload: Any) -> list[BatchItemOutcome]:
+    """Outcomes from a downloaded batch output or error file: JSONL lines
+    of {custom_id, response: {status_code, body}, error}. Shared with
+    Moonshot, whose clone wraps the same fields but reports status_code 0
+    on success where OpenAI reports 200 (both observed 2026-09-02). A
+    one-record download is itself valid JSON and may arrive from the
+    transport already parsed, so a dict payload counts as one entry."""
+    outcomes: list[BatchItemOutcome] = []
+    for entry in batch_line_entries(payload):
+        if not entry.get("custom_id"):
+            continue
+        key = str(entry["custom_id"])
+        error = entry.get("error")
+        raw_response = entry.get("response")
+        response = raw_response if isinstance(raw_response, dict) else {}
+        body = response.get("body")
+        status_code = response.get("status_code")
+        if not error and isinstance(body, dict) and status_code in (0, 200):
+            outcomes.append(BatchItemOutcome(key=key, body=body))
+            continue
+        message = None
+        code = None
+        if isinstance(error, dict):
+            message = error.get("message")
+            code = error.get("code")
+        if message is None and isinstance(body, dict):
+            body_error = body.get("error")
+            if isinstance(body_error, dict):
+                message = body_error.get("message")
+                code = body_error.get("code") or body_error.get("type")
+        outcomes.append(
+            BatchItemOutcome(
+                key=key,
+                error_code=str(code) if code else None,
+                error_message=str(message) if message else f"request failed ({status_code})",
+            )
+        )
+    return outcomes
+
+
+class FileBatchDialect:
+    """The Files-API batch dialect: upload a JSONL of requests
+    (purpose=batch), create the batch against it, poll, then download
+    the output and error files. OpenAI's shape, spoken verbatim enough
+    by Moonshot that both adapters share it (each live-verified
+    2026-09-02); the target URL inside the JSONL lines is the one
+    point of divergence."""
+
+    resolved: ResolvedProvider
+
+    _BATCH_STATUS: ClassVar[dict[str, BatchStatus]] = {
+        "validating": "running",
+        "in_progress": "running",
+        "finalizing": "running",
+        "cancelling": "running",
+        "completed": "finished",
+        "failed": "failed",
+        "expired": "expired",
+        "cancelled": "cancelled",
+    }
+
+    def _batch_target(self, operation: str) -> str:
+        return (
+            "/v1/embeddings"
+            if operation == Operation.BATCH_EMBEDDING.value
+            else "/v1/responses"
+        )
+
+    def build_batch_prelude_spec(self, submission: BatchSubmission) -> RequestSpec | None:
+        lines = "\n".join(
+            json.dumps(
+                {
+                    "custom_id": key,
+                    "method": "POST",
+                    "url": self._batch_target(submission.operation),
+                    "body": dict(body),
+                }
+            )
+            for key, body in submission.items
+        )
+        op = self.resolved.operations["batch_upload"]
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"],
+            file_upload=("file", "keycall-batch.jsonl", lines.encode(), "application/jsonl"),
+            form_fields={"purpose": "batch"},
+        )
+
+    def parse_batch_prelude(self, payload: Any) -> str:
+        file_id = payload.get("id") if isinstance(payload, dict) else None
+        if not file_id:
+            raise KeyCallError(
+                "batch input upload returned no file id",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.BATCH_GENERATION.value,
+            )
+        return str(file_id)
+
+    def build_batch_submit_spec(
+        self, submission: BatchSubmission, prelude: str | None
+    ) -> RequestSpec:
+        op = self.resolved.operations["batch_create"]
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"],
+            json_body={
+                "input_file_id": prelude,
+                "endpoint": self._batch_target(submission.operation),
+                "completion_window": "24h",
+            },
+        )
+
+    def parse_batch_submit(
+        self, payload: Any, *, submission: BatchSubmission, prelude: str | None
+    ) -> BatchJob:
+        job_id = payload.get("id") if isinstance(payload, dict) else None
+        if not job_id:
+            raise KeyCallError(
+                "batch create returned no batch id",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=submission.operation,
+            )
+        job = BatchJob(
+            provider=self.resolved.provider,
+            job_id=str(job_id),
+            operation=submission.operation,
+            model=submission.model,
+            request_keys=tuple(key for key, _ in submission.items),
+        )
+        return self.parse_batch_status(payload, job=job)
+
+    def build_batch_status_spec(self, job: BatchJob) -> RequestSpec:
+        op = self.resolved.operations["batch_status"]
+        return RequestSpec(method=op["method"], path=op["path"].replace("{batch_id}", job.job_id))
+
+    def parse_batch_status(self, payload: Any, *, job: BatchJob) -> BatchJob:
+        provider_status = str(payload.get("status", "")) if isinstance(payload, dict) else ""
+        counts_raw = payload.get("request_counts") if isinstance(payload, dict) else None
+        counts = None
+        if isinstance(counts_raw, dict):
+            completed = counts_raw.get("completed")
+            failed = counts_raw.get("failed")
+            total = counts_raw.get("total")
+            pending = None
+            if total is not None and completed is not None and failed is not None:
+                pending = max(0, total - completed - failed)
+            counts = BatchCounts(
+                total=total, pending=pending, succeeded=completed, errored=failed
+            )
+        error_message = None
+        errors = payload.get("errors") if isinstance(payload, dict) else None
+        if isinstance(errors, dict) and isinstance(errors.get("data"), list) and errors["data"]:
+            first = errors["data"][0]
+            if isinstance(first, dict) and first.get("message"):
+                error_message = str(first["message"])
+        return dataclasses.replace(
+            job,
+            status=self._BATCH_STATUS.get(provider_status, "running"),
+            provider_status=provider_status or None,
+            counts=counts,
+            results_ref=payload.get("output_file_id") if isinstance(payload, dict) else None,
+            error_ref=payload.get("error_file_id") if isinstance(payload, dict) else None,
+            error_message=error_message,
+        )
+
+    def build_batch_results_spec(self, job: BatchJob, cursor: str | None) -> RequestSpec | None:
+        if not job.results_ref:
+            # A batch whose every request failed completes with no output
+            # file at all — only the error file. Skip the download; the
+            # error file carries each request's outcome.
+            return None
+        op = self.resolved.operations["batch_results"]
+        return RequestSpec(
+            method=op["method"], path=op["path"].replace("{file_id}", job.results_ref)
+        )
+
+    def parse_batch_results(
+        self, payload: Any, *, job: BatchJob
+    ) -> tuple[list[BatchItemOutcome], str | None]:
+        return _parse_openai_batch_lines(payload), None
+
+    def build_batch_error_spec(self, job: BatchJob) -> RequestSpec | None:
+        if not job.error_ref:
+            return None
+        op = self.resolved.operations["batch_results"]
+        return RequestSpec(
+            method=op["method"], path=op["path"].replace("{file_id}", job.error_ref)
+        )
+
+    def parse_batch_error_file(
+        self, payload: Any, *, job: BatchJob
+    ) -> list[BatchItemOutcome]:
+        return _parse_openai_batch_lines(payload)
+
+    def build_batch_cancel_spec(self, job: BatchJob) -> RequestSpec:
+        op = self.resolved.operations["batch_cancel"]
+        return RequestSpec(method=op["method"], path=op["path"].replace("{batch_id}", job.job_id))
+
+    def parse_batch_cancel(self, payload: Any, *, job: BatchJob) -> BatchJob:
+        return self.parse_batch_status(payload, job=job)
+
+
+class OpenAIAdapter(FileBatchDialect, ProviderAdapter):
     def build_stream_spec(self, request: TextGenerationRequest) -> RequestSpec:
         spec = self.build_generation_spec(request)
         return RequestSpec(
@@ -392,12 +605,93 @@ class OpenAIAdapter(ProviderAdapter):
             ),
         )
 
+    # --- prerecorded transcription ---
+    #
+    # One multipart round trip. whisper-1 is the one model that takes
+    # response_format=verbose_json + word timestamp granularity (words
+    # with start/end seconds, no per-word confidence); the gpt-4o
+    # transcribe family refuses verbose_json with a 400 naming json/text,
+    # so those models return text plus token-billed usage and no words.
+    # Both behaviors live-verified 2026-09-02. gpt-4o-transcribe-diarize's
+    # segment-level diarized_json is not wired; diarize=True refuses on
+    # this provider via the shared capability gate.
+
+    def build_transcription_spec(self, request: Any) -> RequestSpec:
+        op = self.resolved.operations["transcription"]
+        media_type = self.transcription_media_type(request)
+        fields = {"model": request.model}
+        if request.language:
+            fields["language"] = request.language
+        if request.model == "whisper-1":
+            fields["response_format"] = "verbose_json"
+            fields["timestamp_granularities[]"] = "word"
+        assert request.data is not None  # the URL gate refused above
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"],
+            file_upload=("file", audio_filename(media_type), request.data, media_type),
+            form_fields=fields,
+        )
+
+    def parse_transcription_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        model: str,
+    ) -> TranscriptionResult:
+        if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+            raise KeyCallError(
+                "transcription response carried no text",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.TRANSCRIPTION.value,
+            )
+        words = tuple(
+            TranscriptWord(
+                text=str(word.get("word", "")),
+                start_ms=float(word.get("start", 0)) * 1000.0,
+                end_ms=float(word.get("end", 0)) * 1000.0,
+            )
+            for word in payload.get("words") or []
+            if isinstance(word, dict)
+        )
+        usage = None
+        duration = payload.get("duration")
+        raw_usage = payload.get("usage")
+        if isinstance(raw_usage, dict):
+            if raw_usage.get("type") == "tokens":
+                usage = Usage(
+                    input_tokens=raw_usage.get("input_tokens"),
+                    output_tokens=raw_usage.get("output_tokens"),
+                    total_tokens=raw_usage.get("total_tokens"),
+                )
+            elif duration is None and raw_usage.get("seconds") is not None:
+                duration = raw_usage.get("seconds")
+        return TranscriptionResult(
+            model=model,
+            text=payload["text"],
+            words=words,
+            language=str(payload["language"]) if payload.get("language") else None,
+            audio_duration_seconds=float(duration) if duration is not None else None,
+            usage=usage,
+            round_trip_duration_ms=round_trip_duration_ms,
+            provider_request_id=safe_request_id(
+                headers.get(self.resolved.provider_request_id_header or "")
+            ),
+        )
+
     def build_speech_spec(self, request: Any) -> RequestSpec:
         op = self.resolved.operations["speech_generation"]
         body: dict[str, Any] = {"model": request.model, "input": request.text}
         if request.voice:
             body["voice"] = request.voice
         return RequestSpec(method=op["method"], path=op["path"], json_body=body)
+
+    def batch_embed_item_body(self, model: str, text: str) -> Mapping[str, Any]:
+        return {"model": model, "input": text}
+
 
     def parse_speech_response(
         self,

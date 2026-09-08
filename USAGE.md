@@ -37,7 +37,7 @@ keycall verify --provider openai --source env:OPENAI_API_KEY --generate
 ✓ OPENAI_API_KEY: generated with gpt-5.6-luna (filtered position 0, provider-list position 123, 830 ms, total tokens: 18)
 ```
 
-Then open the same key in the local viewer and click around: a live dashboard, a browsable model list, and a Playground for chatting, showing a model a picture, recording a voice message in the page, holding a live voice conversation, transcribing your speech live, attaching a PDF, offering a tool, or generating an image.
+Then open the same key in the local viewer and click around: a live dashboard, a browsable model list, and a Playground for chatting, showing a model a picture, recording a voice message in the page, holding a live voice conversation, transcribing your speech live, transcribing an audio file, attaching a PDF, offering a tool, or generating an image.
 
 ```bash
 keycall view --provider openai --source env:OPENAI_API_KEY
@@ -121,7 +121,7 @@ Categories: `TEXT_GENERATION`, `IMAGE_GENERATION`, `EMBEDDING`, `TRANSCRIPTION`,
 
 Results are cached in-process for 5 minutes, keyed by an HMAC fingerprint of the credential. Force a live call with `client.list_models(refresh=True)`, always do this when verifying a newly entered key.
 
-A successful listing proves the credential works for discovery. It doesn't prove every listed model can be invoked; some providers advertise retired or quota-walled models with no lifecycle field to filter on.
+A successful listing proves the credential works for discovery. It doesn't prove every listed model can be invoked; some providers advertise retired or quota-walled models with no lifecycle field to filter on. KeyCall withholds the ones its catalog records as shut down, with one warning per withheld model in `ModelDiscovery.warnings` (see [Retired models](#retired-models)); a listed model can still be quota-walled, entitlement-gated, or retired more recently than the catalog's evidence.
 
 ## Model aliases
 
@@ -148,6 +148,27 @@ Providers not in the table have no recorded convention, so every id returns `Non
 
 `list_models()` attaches the same fact to each model as `Model.alias`, populated only where a convention matches, and the viewer's Models tab badges those rows with the evidence a hover away. Whether to prefer, avoid, or exclude alias ids stays your decision — the fact says what the id is, never what to do with it.
 
+## Retired models
+
+The catalog records the models each provider has shut down: the id, any alias spellings the provider also refuses, the retirement date where the provider publishes one, and the replacement the provider names. Every entry's refusal was live-verified against the provider on a dated probe; a model a provider merely deprecates but still serves, or a legacy id it redirects to a live model (DeepSeek's `deepseek-chat`, xAI's pre-rename Grok slugs), keeps working through KeyCall like any other model.
+
+Two behaviors follow from an entry:
+
+**Any call naming a retired model refuses before the network** with `MODEL_RETIRED`, not retryable, on every operation that takes a model id — generation, streaming, tool calling, structured output, embeddings, image, speech, and video generation, batches (any request in the submission), file and streaming transcription, and realtime sessions. The message carries the fix:
+
+```python
+client.generate_text(model="claude-3-5-haiku-latest", messages=messages)
+# KeyCallError, code=MODEL_RETIRED:
+# "claude-3-5-haiku-latest was retired by anthropic on 2026-02-19;
+#  the provider recommends claude-haiku-4-5-20251001"
+```
+
+Where a provider publishes no dates (xAI), the message omits the date; where it names no replacement, the message says so instead of guessing one. A named replacement is always itself a live model — chains through intermediate retired models are resolved in the catalog data.
+
+**`list_models()` withholds retired models the provider still advertises.** Some providers keep shut-down models in their list endpoint indefinitely (OpenAI listed 13 such ids on 2026-09-04, including the whole `-chat-latest` family), so a picker built from the raw listing offers models that fail on use. Each withheld model adds one warning to `ModelDiscovery.warnings` naming the model, the retirement date, and the replacement, so the filtering is visible, never silent. The viewer's Models tab prints the same warnings under the model count.
+
+The registry is dated evidence, and two release probes re-verify it: one sends each recorded id and alias to its provider raw and fails if any now answers, the other confirms every recorded replacement still appears in its provider's listing. A stale entry is a failing release test, never a silent false refusal.
+
 ## Generating text
 
 ```python
@@ -162,6 +183,7 @@ result = client.generate_text(
     max_output_tokens=200,
     temperature=0.7,   # optional; omitted from the wire when unset
     top_p=0.9,         # optional
+    seed=42,           # optional; best-effort reproducibility where supported
 )
 
 result.text                      # concatenated text output, or None
@@ -183,12 +205,28 @@ request = TextGenerationRequest(model="...", messages=[...], max_output_tokens=6
 result = client.invoke(request)
 ```
 
-Some models constrain sampling parameters, and KeyCall raises `MODEL_NOT_SUITABLE` before any network call rather than letting the provider 400. Two shapes:
+Avoid leaving a call on the model's own default: that default is often high, so a call meant to be repeatable varies run to run. Set `temperature` (and `top_p`) on purpose, low for extraction, classification, and anything feeding a stored record.
 
-- **No explicit value accepted**: OpenAI o-series and gpt-5, Anthropic Opus 4.7+, Opus 5+, and Sonnet 5+. Omit `temperature` and `top_p`.
-- **One value accepted**: every Moonshot kimi model takes `temperature=1.0` and `top_p=0.95` and rejects anything else. Those values pass through; the error names the permitted one.
+Some models constrain sampling, and KeyCall raises `MODEL_NOT_SUITABLE` before any network call rather than letting the provider 400. Two forms:
 
-The evidence lives in the bundled catalog per provider, with the date each claim was last checked against the live API. A provider that merely announces a deprecation isn't gated: Gemini announced `temperature` and `top_p` as deprecated in July 2026 and still accepts both, so KeyCall passes them through.
+- **One value accepted**: every Moonshot Kimi model takes `temperature=1.0` and `top_p=0.95`; Anthropic's Opus 4.7+, Opus 5+, Sonnet 5+, Fable, and Mythos take `temperature=1.0` and reject any explicit `top_p`. That one value passes through, and the error names it for every other.
+- **No explicit value accepted**: OpenAI's o-series and gpt-5 family. Omit `temperature` and `top_p`.
+
+`seed` narrows run-to-run variance for repeatable sampling. It is forwarded only to providers whose generation API defines the field, live-verified 2026-09-08:
+
+| Provider | `seed` |
+|---|---|
+| Gemini | forwarded (`generationConfig.seed`) |
+| DeepSeek | forwarded |
+| Moonshot | forwarded |
+| xAI | forwarded on chat completions; refused when combined with `web_search`, `reasoning_effort`, or `code_interpreter`, which route through xAI's Agent Tools API, which has no seed field |
+| OpenAI | refused (`UNSUPPORTED_OPERATION`) — the Responses API has no seed field |
+| Anthropic | refused — no seed field |
+| Perplexity | refused — no seed field |
+
+A `seed` set for a provider without one is refused before the network rather than dropped, so reproducibility a caller asked for never silently disappears. No provider guarantees determinism from a seed; it narrows variance rather than removing it, which every provider that has the field states.
+
+The evidence lives in the bundled catalog per provider, with the date each claim was last checked against the live API, and two release probes re-verify that the seed-supporting providers still accept a seed and the pinned models still reject a non-default temperature. A provider that merely announces a deprecation isn't gated: Gemini announced `temperature` and `top_p` as deprecated in July 2026 and still accepts both, so KeyCall passes them through.
 
 ## Streaming
 
@@ -586,6 +624,47 @@ These providers bill per second of audio, not per token — `session_ended.audio
 - `list_models(categories={ModelCategory.TRANSCRIPTION})` lists each provider's streaming models. AssemblyAI's and Deepgram's are maintained by KeyCall (neither has a model-list API; the call still validates the credential against a live endpoint); ElevenLabs lists its speech models live, with the streaming-transcription model as maintained catalog data since its models endpoint omits it. `keycall verify`-style key checking works the same way as for LLM providers.
 - `AsyncKeyCall.transcribe_stream()` is the same surface with `async with` / `async for`. LLM providers refuse `transcribe_stream` with `UNSUPPORTED_OPERATION` before any connection, and the speech providers refuse `generate_text` and every other LLM operation the same way (ElevenLabs keeps `generate_speech` and `list_voices`).
 
+## Transcribing audio files
+
+`transcribe()` turns a stored audio file into text with word timings, on OpenAI, ElevenLabs, Deepgram, and AssemblyAI:
+
+```python
+result = client.transcribe(model="nova-3", audio=Path("meeting.wav").read_bytes())
+
+result.text                    # the transcript
+result.language                # the provider's own language code, verbatim
+result.audio_duration_seconds  # the billing figure where the provider bills per second
+for word in result.words:
+    word.text, word.start_ms, word.end_ms, word.confidence, word.speaker
+```
+
+Three providers answer in one round trip; AssemblyAI processes as a job, so there `transcribe()` takes a required `timeout` (your waiting budget in seconds) and polls for you — or drive the job yourself, from another process if you like, since the handle is plain picklable data:
+
+```python
+job = client.start_transcription(model="universal-2", audio=audio)
+job = client.check_transcription(job)      # returns a new TranscriptionJob; never mutates
+if job.status == "finished":
+    result = client.fetch_transcription(job)
+```
+
+| Provider | Example model | Word timings | Diarization | Audio by URL |
+|---|---|---|---|---|
+| OpenAI | `whisper-1`, `gpt-4o-mini-transcribe` | `whisper-1` only | no | no |
+| ElevenLabs | `scribe_v2` | yes | yes | yes |
+| Deepgram | `nova-3` | yes, with per-word confidence | yes | yes |
+| AssemblyAI | `universal-2` | yes, with per-word confidence | yes | yes |
+| Gemini | no transcription endpoint: `generate_text()` + `AudioInput` instead | | | |
+| Anthropic, DeepSeek, Perplexity, Moonshot, xAI | no | | | |
+
+- **Audio arrives as bytes, or as a URL where the provider fetches one.** `url=` works on ElevenLabs, Deepgram, and AssemblyAI — the provider downloads it, KeyCall never does — and refuses before the network elsewhere, naming who takes one. The media type of bytes is read from the content; pass `media_type=` for a format KeyCall doesn't recognize.
+- **`diarize=True` labels each word with its speaker** on the three providers whose wire reports one; `word.speaker` carries the provider's own label verbatim ("speaker_0", "0", "A" — meaningful within one result, never across providers). OpenAI's plain transcribe models don't diarize and refuse the flag before the network. `language=` is an optional hint in the provider's own code style.
+- **Word timings differ by model on OpenAI.** `whisper-1` returns per-word timings; the gpt-4o transcribe family refuses the format that carries them, so those models return text plus token-billed `usage` and an empty `words`. A release probe watches for OpenAI lifting that restriction.
+- **Timing units and language codes are the provider's quirks, normalized or passed through honestly.** Every provider's timings converge on `TranscriptWord`'s milliseconds; language codes stay verbatim because the spellings differ ("english", "eng", "en").
+- **`timeout` applies only where a job exists.** On AssemblyAI it's required, with `TranscriptionJobTimeout` carrying the still-valid job when it runs out (`check_transcription(error.job)` resumes). On the one-round-trip providers passing it raises — the client's `read_timeout` is the knob there.
+- **Gemini refuses with directions**, because it has no transcription endpoint: send the audio as an `AudioInput` on `generate_text()` with your own instruction (see [Images, audio, and documents](#images-audio-and-documents)); the reply is the model's answer rather than measured transcription, which is why it lives behind that door.
+
+`AsyncKeyCall` carries the same four methods as awaitables. Prerecorded transcription is separate from [streaming transcription](#streaming-transcription) above: this surface takes a finished file, that one a live microphone.
+
 ## Prompt caching
 
 `TextInput(cacheable=True)` marks a block of text as a stable prefix to cache: a large, unchanging context (a system prompt, a big set of instructions, reference material) that rides along on every call in a session while only a small trailing part changes:
@@ -692,6 +771,7 @@ Path("out.png").write_bytes(base64.b64decode(image.base64_data))
 |---|---|---|---|
 | OpenAI | yes | `gpt-image-1`, `gpt-image-2` | base64 PNG from `/images/generations` |
 | Gemini | yes | `gemini-3.1-flash-image` | base64 JPEG, from the ordinary content endpoint |
+| xAI | yes | `grok-imagine-image` | base64 JPEG from `/images/generations` |
 | Anthropic, DeepSeek, Perplexity, Moonshot | no | | |
 
 - **The request is a model and a prompt, nothing else.** OpenAI accepts a size and a count; Gemini's image models accept neither, and a parameter that silently does nothing on half the providers is worse than no parameter.
@@ -783,6 +863,62 @@ if job.status == "succeeded":
 - **Job failures are outcomes, not HTTP errors.** Veo under load refuses renders with "high demand" messages inside a successful poll response; KeyCall reports these as failed jobs with the provider's wording, and never silently re-renders — a retry would be a second billable job.
 - **Downloads are pinned.** The URL a job reports is only followed to hosts live-verified for that provider, the credential is only ever sent to the provider's own API host, and xAI's download URL works with no credential at all — treat that URL as a secret, since anyone holding it can fetch the file while it lives.
 
+## Batch generation
+
+Five providers run an asynchronous batch lane: submit many requests at once, let the provider process them on its own schedule (minutes to hours, promised within 24), and read every outcome back afterwards. The three majors bill batch traffic at half their live token rates, Moonshot at 60% of them, and xAI discounts a model subset (pricing as published 2026-09-02; confirm on each provider's pricing page). KeyCall gives you the job directly, plus a one-call wrapper:
+
+```python
+from keycall import BatchRequest, Message, TextInput
+
+requests = [
+    BatchRequest(
+        model="gpt-4o-mini",
+        messages=[Message(role="user", content=[TextInput(text=prompt)])],
+        max_output_tokens=200,
+    )
+    for prompt in prompts
+]
+
+results = client.generate_batch(requests, timeout=1800.0)  # submit, poll, fetch
+
+for result in results:
+    if result.succeeded:
+        result.result.text          # a full InvocationResult, usage included
+    else:
+        result.error_code, result.error_message
+```
+
+Or drive the phases yourself — the handle is plain data you can store, pickle, and poll later, even from another process:
+
+```python
+job = client.start_batch(requests)
+job = client.check_batch(job)          # returns a new BatchJob; never mutates
+if job.status == "finished":
+    results = client.fetch_batch_results(job)
+job = client.cancel_batch(job)         # stop a running batch; done work stays billed
+```
+
+| Provider | Batch generation | Batch embeddings | Dialect |
+|---|---|---|---|
+| OpenAI | yes | yes | JSONL file upload, then a batch against it |
+| Anthropic | yes | no | requests inline on the create call; models can mix in one batch |
+| Gemini | yes | yes | model in the URL; requests and results inline |
+| Moonshot | yes | no | OpenAI's file dialect against chat completions |
+| xAI | yes | no | named container, requests added in a second call |
+| DeepSeek, Perplexity | no | no | no batch API published (verified 2026-09-02) |
+
+- **`timeout` on `generate_batch()` has no default.** Providers promise completion within 24 hours and usually finish in minutes; only you know how long your caller can wait. When the budget runs out KeyCall raises `BatchJobTimeout`, whose `.job` is the still-valid handle: the batch keeps processing provider-side, and `check_batch(error.job)` resumes where the wait left off.
+- **Results come back in submission order, always.** Providers return outcomes out of order (Anthropic does so routinely, observed live 2026-09-02); KeyCall keys every request and restores your order, so `results[i]` answers `requests[i]`.
+- **Per-request failures are results, not exceptions.** A bad model id or a refused request inside an otherwise healthy batch arrives as a `BatchResult` with `succeeded=False`, `error_code`, and the provider's message. Only a failure of the batch itself (a malformed input file, a create-time refusal) raises.
+- **`job.status` is a closed set** — `running`, `finished`, `failed`, `cancelled`, `expired` — and `job.provider_status` carries the provider's own word verbatim (Anthropic's terminal value is `ended`, mapped to `finished`). `finished` means the provider stopped processing; whether each request succeeded lives in the results.
+- **One model per batch, except on Anthropic.** The other four providers bind a batch to a single model; mixing models there raises `MODEL_NOT_SUITABLE` before the network, naming the models involved.
+- **Where a request fails differs per provider.** Anthropic reports a bad request per-request in the results; Gemini refuses the whole create naming the offending index; Moonshot validates line by line at file upload; xAI's add call is atomic, so one ineligible model rejects every request in the submission. All observed live 2026-09-02.
+- **Embedding batches** run on OpenAI and Gemini via `start_embedding_batch(model=..., inputs=[...])`: one vector per input, same ordering rule as `embed()`. The other providers refuse before the network, naming the two that support it.
+- **Cancel is best-effort by design.** Requests already processed stay billed and readable from the results; Gemini acknowledges the ask with an empty body, so the cancelled state appears on a later `check_batch()` rather than in the cancel response.
+- **Anthropic's results download is pinned** to the provider's own API host; a `results_url` pointing anywhere else is refused rather than followed with the credential.
+
+`AsyncKeyCall` carries the same five methods as awaitables.
+
 ## Error handling
 
 Every failure raises `KeyCallError` with a typed `code`:
@@ -804,13 +940,14 @@ except KeyCallError as error:
 | Code | Meaning | Retryable |
 |---|---|---|
 | `INVALID_API_KEY` | Provider rejected the credential | no |
-| `PERMISSION_DENIED` | Key valid but not entitled: permissions, or an unfunded account (HTTP 402) | no |
+| `PERMISSION_DENIED` | Key valid but not entitled: missing permissions, or an unfunded account (HTTP 402, and Anthropic's credit-balance refusal, which arrives as a 400) | no |
 | `RATE_LIMITED` | Rate or quota limit; `retry_after` set when provided | yes |
 | `PROVIDER_UNAVAILABLE` | 5xx or overload | yes |
 | `NETWORK_ERROR` | Could not reach the provider | yes |
 | `TIMEOUT` | No response within the timeout | yes |
 | `INVALID_PROVIDER_RESPONSE` | Malformed body, redirect, or oversized response | no |
 | `MODEL_NOT_AVAILABLE` | Model missing, retired, or rejected by name | no |
+| `MODEL_RETIRED` | The catalog records this model as shut down by its provider; refused before the network, with the retirement date and replacement in the message where the provider publishes them (see [Retired models](#retired-models)) | no |
 | `MODEL_NOT_SUITABLE` | Model can't serve this request: sampling parameters it pins or refuses, or a feature the provider has that this model lacks (web search on an older model) | no |
 | `UNSUPPORTED_PROVIDER` | Unknown name or invalid custom target | no |
 | `UNSUPPORTED_OPERATION` | Request shape not supported in this version, or a refused configuration (a proxy variable set for a guarded custom target, an unsupported cache TTL) | no |
@@ -932,7 +1069,7 @@ Security properties, in brief: a fresh auth token is generated per run, required
 
 ## Tracing (optional)
 
-If the host application configures [TraceAct](https://github.com/traceact/traceact), KeyCall emits `keycall.list_models` and `keycall.text_generation` spans with safe fields only: provider, model IDs, counts, status, durations, token totals. Prompts, responses, and credentials are never captured. On its own spans, KeyCall pins every capture flag off (function inputs, event inputs, outputs) and both redaction layers on (field-name and value-pattern, with the `api_keys`/`ai_prompts` presets), regardless of the host's global TraceAct settings.
+If the host application configures [TraceAct](https://github.com/traceact/traceact), KeyCall emits `keycall.list_models` and `keycall.text_generation` spans with safe fields only: provider, model IDs, counts, status, durations, token totals. Text-generation model events carry `provider`, `tokens_in`, and `tokens_out` as event fields, the convention TraceAct's cost estimator prices from. Prompts, responses, and credentials are never captured. On its own spans, KeyCall pins every capture flag off (function inputs, event inputs, outputs) and both redaction layers on (field-name and value-pattern, with the `api_keys`/`ai_prompts` presets), regardless of the host's global TraceAct settings.
 
 ```python
 import traceact

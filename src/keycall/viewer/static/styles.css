@@ -536,6 +536,15 @@ a { color: var(--accent); }
    status line. */
 #pg-voice-wave { color: var(--accent); }
 
+/* The file-transcription composer: the picker takes the textarea's slot,
+   the mic and Transcribe trail to the right, same shape as every other
+   composer row. */
+#pg-stt-composer input[type=file] { flex: 1; min-width: 10rem; }
+#pg-stt-composer .icon-btn {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* What is about to be sent, shown above the box that sends it. */
 .pg-attached {
   display: flex;

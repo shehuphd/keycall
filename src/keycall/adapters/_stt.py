@@ -18,7 +18,7 @@ Perplexity's non-discoverable model list uses.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import quote
 
 from .._enums import ModelCategory, Operation
@@ -32,6 +32,9 @@ from .._types import (
     TextGenerationRequest,
     TranscriptionConfig,
     TranscriptionEvent,
+    TranscriptionJob,
+    TranscriptionRequest,
+    TranscriptionResult,
     TranscriptionSessionStarted,
     TranscriptWord,
     UnknownTranscriptionEvent,
@@ -236,8 +239,211 @@ class AssemblyAIAdapter(_SttAdapter):
             path += f"&speech_model={quote(config.model, safe='')}"
         return path, AssemblyAITranslator()
 
+    # --- prerecorded transcription (job-shaped) ---
+    #
+    # Live-verified 2026-09-02: raw-binary upload answers an upload_url
+    # readable only by AssemblyAI, the submit takes speech_models as an
+    # array (the accepted spelling; the legacy singular echoes null), and
+    # the poll walks queued/processing to completed or error. Word
+    # timings arrive in milliseconds already; audio_duration is integer
+    # seconds; speaker letters appear under speaker_labels.
+
+    transcription_is_job_shaped = True
+
+    _JOB_STATUS: ClassVar[dict[str, str]] = {
+        "queued": "running",
+        "processing": "running",
+        "completed": "finished",
+        "error": "failed",
+    }
+
+    def build_transcription_upload_spec(
+        self, request: TranscriptionRequest
+    ) -> RequestSpec | None:
+        if request.url is not None:
+            return None
+        op = self.resolved.operations["transcription_upload"]
+        assert request.data is not None
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"],
+            binary_body=(request.data, "application/octet-stream"),
+        )
+
+    def parse_transcription_upload(self, payload: Any) -> str:
+        upload_url = payload.get("upload_url") if isinstance(payload, dict) else None
+        if not upload_url:
+            raise KeyCallError(
+                "audio upload returned no upload_url",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.TRANSCRIPTION.value,
+            )
+        return str(upload_url)
+
+    def build_transcription_submit_spec(
+        self, request: TranscriptionRequest, audio_ref: str | None
+    ) -> RequestSpec:
+        op = self.resolved.operations["transcription_create"]
+        body: dict[str, Any] = {
+            "audio_url": audio_ref or request.url,
+            "speech_models": [request.model],
+        }
+        if request.language:
+            body["language_code"] = request.language
+        if request.diarize:
+            body["speaker_labels"] = True
+        return RequestSpec(method=op["method"], path=op["path"], json_body=body)
+
+    def parse_transcription_submit(
+        self, payload: Any, *, request: TranscriptionRequest
+    ) -> TranscriptionJob:
+        job_id = payload.get("id") if isinstance(payload, dict) else None
+        if not job_id:
+            raise KeyCallError(
+                "transcription submit returned no job id",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.TRANSCRIPTION.value,
+            )
+        job = TranscriptionJob(
+            provider=self.resolved.provider,
+            model=request.model,
+            job_id=str(job_id),
+        )
+        return self.parse_transcription_status(payload, job=job)
+
+    def build_transcription_status_spec(self, job: TranscriptionJob) -> RequestSpec:
+        op = self.resolved.operations["transcription_status"]
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"].replace("{transcript_id}", job.job_id),
+        )
+
+    def parse_transcription_status(
+        self, payload: Any, *, job: TranscriptionJob
+    ) -> TranscriptionJob:
+        import dataclasses
+
+        provider_status = str(payload.get("status", "")) if isinstance(payload, dict) else ""
+        error = payload.get("error") if isinstance(payload, dict) else None
+        return dataclasses.replace(
+            job,
+            status=self._JOB_STATUS.get(provider_status, "running"),  # type: ignore[arg-type]
+            provider_status=provider_status or None,
+            error_message=str(error) if error else None,
+        )
+
+    def parse_transcription_result(
+        self, payload: Any, *, job: TranscriptionJob
+    ) -> TranscriptionResult:
+        if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+            raise KeyCallError(
+                "completed transcription carried no text",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.TRANSCRIPTION.value,
+            )
+        words = tuple(
+            TranscriptWord(
+                text=str(word.get("text", "")),
+                start_ms=float(word.get("start", 0)),
+                end_ms=float(word.get("end", 0)),
+                confidence=word.get("confidence"),
+                speaker=str(word["speaker"]) if word.get("speaker") else None,
+            )
+            for word in payload.get("words") or []
+            if isinstance(word, dict)
+        )
+        duration = payload.get("audio_duration")
+        return TranscriptionResult(
+            model=job.model,
+            text=payload["text"],
+            words=words,
+            language=(
+                str(payload["language_code"]) if payload.get("language_code") else None
+            ),
+            audio_duration_seconds=float(duration) if duration is not None else None,
+            confidence=payload.get("confidence"),
+            provider_request_id=str(payload.get("id") or "") or None,
+        )
+
 
 class DeepgramAdapter(_SttAdapter):
+    # --- prerecorded transcription ---
+    #
+    # One round trip on /v1/listen: a raw binary audio body (Content-Type
+    # from the sniffed media type) or a JSON {url}, options as query
+    # params. Live-verified 2026-09-02 on nova-3 (bytes path): word
+    # timings in seconds, per-word confidence, punctuated_word preferred
+    # under punctuate=true (matching the streaming translator), speaker
+    # ints under diarize, metadata carrying duration and request_id.
+
+    def build_transcription_spec(self, request: TranscriptionRequest) -> RequestSpec:
+        op = self.resolved.operations["transcription"]
+        params = {"model": request.model, "punctuate": "true"}
+        if request.language:
+            params["language"] = request.language
+        if request.diarize:
+            params["diarize"] = "true"
+        if request.url is not None:
+            return RequestSpec(
+                method=op["method"], path=op["path"], params=params,
+                json_body={"url": request.url},
+            )
+        media_type = self.transcription_media_type(request)
+        assert request.data is not None
+        return RequestSpec(
+            method=op["method"], path=op["path"], params=params,
+            binary_body=(request.data, media_type),
+        )
+
+    def parse_transcription_response(
+        self,
+        payload: Any,
+        *,
+        headers: Any,
+        round_trip_duration_ms: float,
+        model: str,
+    ) -> TranscriptionResult:
+        results = payload.get("results") if isinstance(payload, dict) else None
+        channels = results.get("channels") if isinstance(results, dict) else None
+        first = channels[0] if isinstance(channels, list) and channels else None
+        alternatives = first.get("alternatives") if isinstance(first, dict) else None
+        alt = alternatives[0] if isinstance(alternatives, list) and alternatives else None
+        if not isinstance(alt, dict) or not isinstance(alt.get("transcript"), str):
+            raise KeyCallError(
+                "transcription response carried no transcript",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.TRANSCRIPTION.value,
+            )
+        words = tuple(
+            TranscriptWord(
+                text=str(word.get("punctuated_word") or word.get("word", "")),
+                start_ms=float(word.get("start", 0)) * 1000.0,
+                end_ms=float(word.get("end", 0)) * 1000.0,
+                confidence=word.get("confidence"),
+                speaker=(
+                    str(word["speaker"]) if word.get("speaker") is not None else None
+                ),
+            )
+            for word in alt.get("words") or []
+            if isinstance(word, dict)
+        )
+        raw_metadata = payload.get("metadata")
+        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+        duration = metadata.get("duration")
+        return TranscriptionResult(
+            model=model,
+            text=alt["transcript"],
+            words=words,
+            audio_duration_seconds=float(duration) if duration is not None else None,
+            confidence=alt.get("confidence"),
+            round_trip_duration_ms=round_trip_duration_ms,
+            provider_request_id=str(metadata.get("request_id") or "") or None,
+        )
+
     def transcription_plan(self, config: TranscriptionConfig) -> tuple[str, Any]:
         path = self.resolved.operations["streaming_transcription"]["path"]
         path += (

@@ -200,3 +200,13 @@ def test_control_characters_removed_from_display_name(tmp_path):
     targets, _ = load_targets(source)
     assert "\x07" not in targets[0].display_name
     assert "\x1b" not in targets[0].display_name
+
+
+def test_target_repr_never_carries_the_key(tmp_path):
+    # pytest's assertion introspection renders any object appearing in a
+    # failing assert's operands, so a Target repr that included the key
+    # would write it into test logs (observed live 2026-09-02).
+    source = write(tmp_path, "keys.txt", "provider=openai key=sk-secret-canary-123\n")
+    targets, _ = load_targets(source)
+    assert "sk-secret-canary-123" not in repr(targets[0])
+    assert "sk-secret-canary-123" not in str(targets)

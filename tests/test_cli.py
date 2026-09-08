@@ -215,7 +215,7 @@ def test_verify_walk_tries_maintained_aliases_first():
                 json={
                     "models": [
                         {"name": f"models/{m}", "supportedGenerationMethods": ["generateContent"]}
-                        for m in ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest")
+                        for m in ("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest")
                     ]
                 },
             )

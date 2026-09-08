@@ -690,7 +690,7 @@ REASONING_ITEM = {
 }
 
 OPENAI_REASONING_CALL_RESPONSE = {
-    "model": "gpt-5.3-chat-latest",
+    "model": "gpt-5.6-sol",
     "status": "completed",
     "output": [
         REASONING_ITEM,
@@ -711,14 +711,14 @@ def test_openai_reasoning_item_travels_with_the_call():
     it is a 400 on reasoning models (verified live 2026-08-09, 3/3)."""
     handler, captured = capture(OPENAI_REASONING_CALL_RESPONSE)
     client = make_client("openai", handler)
-    result = client.generate_text(model="gpt-5.3-chat-latest", messages=[user()], tools=[WEATHER])
+    result = client.generate_text(model="gpt-5.6-sol", messages=[user()], tools=[WEATHER])
 
     echo = json.loads(result.tool_calls[0].opaque)
     assert echo["id"] == "fc_abc"
     assert echo["reasoning"] == REASONING_ITEM
 
     client.generate_text(
-        model="gpt-5.3-chat-latest",
+        model="gpt-5.6-sol",
         messages=[
             user(),
             result.to_assistant_message(),
@@ -753,11 +753,11 @@ def test_openai_parallel_calls_replay_one_shared_reasoning_item():
     )
     handler, captured = capture(payload)
     client = make_client("openai", handler)
-    result = client.generate_text(model="gpt-5.3-chat-latest", messages=[user()], tools=[WEATHER])
+    result = client.generate_text(model="gpt-5.6-sol", messages=[user()], tools=[WEATHER])
     assert len(result.tool_calls) == 2
 
     client.generate_text(
-        model="gpt-5.3-chat-latest",
+        model="gpt-5.6-sol",
         messages=[user(), result.to_assistant_message()],
         tools=[WEATHER],
     )

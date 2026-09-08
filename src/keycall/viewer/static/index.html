@@ -148,7 +148,8 @@
                 <option value="video">Make a video</option>
                 <option value="speech">Speak text</option>
                 <option value="voice">Have a voice conversation</option>
-                <option value="transcribe">Transcribe speech</option>
+                <option value="transcribe">Transcribe speech live</option>
+                <option value="transcribe-file">Transcribe a recording</option>
               </select>
             </div>
             <div class="pg-row">
@@ -170,6 +171,16 @@
               </select>
             </div>
             <p class="hint pg-unavailable" id="pg-reasoning-unavailable" hidden></p>
+            <div class="pg-row" id="pg-temperature-row">
+              <label for="pg-temperature" title="How random the reply is. Lower is more focused and repeatable, higher is more varied. Left blank, the model's own default applies, which is often high. Some newer models fix this and reject any value you set.">Temperature</label>
+              <input id="pg-temperature" type="number" min="0" max="2" step="0.1" placeholder="Model default">
+            </div>
+            <p class="hint pg-unavailable" id="pg-temperature-unavailable" hidden></p>
+            <div class="pg-row" id="pg-seed-row">
+              <label for="pg-seed" title="A number that asks the provider to sample the same way across runs, for repeatable output. Best effort, not a guarantee, and only some providers have it.">Seed</label>
+              <input id="pg-seed" type="number" min="0" step="1" placeholder="None">
+            </div>
+            <p class="hint pg-unavailable" id="pg-seed-unavailable" hidden></p>
             <div class="pg-row" id="pg-maxtok-row">
               <label for="pg-maxtok" title="Caps the tokens the model may spend on a reply. On a reasoning model the hidden reasoning is charged to this same budget, so a small number can be used up before any text appears. Suggested automatically from what's selected above until you type a value yourself.">Reply budget</label>
               <input id="pg-maxtok" type="number" value="2048" min="1">
@@ -234,6 +245,19 @@
               audio it billed. Nothing talks back — this is transcription,
               not a conversation.
             </p>
+            <p class="hint" id="pg-stt-mode-note" hidden>
+              A stored recording in, its transcript out. Pick an audio file,
+              record one, or paste a link, then press Transcribe. Word
+              timings come back where the model reports them.
+            </p>
+            <div id="pg-stt-diarize-row" hidden>
+              <label class="pg-toggle" id="pg-stt-diarize-toggle">
+                <span>Label the speakers</span>
+                <input id="pg-stt-diarize" type="checkbox">
+                <span class="switch" aria-hidden="true"></span>
+              </label>
+              <p class="hint pg-unavailable" id="pg-stt-diarize-unavailable" hidden></p>
+            </div>
           </div>
 
           <div class="pg-group" id="pg-extras">
@@ -393,6 +417,34 @@
               <button id="pg-transcribe-new" type="button" class="secondary"
                       title="Clear the transcript and start a new conversation">New chat</button>
             </div>
+          </div>
+          <!-- Replaces the composer in the file-transcription task: pick or
+               record a clip (or paste a link), then one button sends it. -->
+          <div class="pg-voice-panel" id="pg-stt-panel" hidden>
+            <div class="pg-voice-status" id="pg-stt-status">Pick an audio file, record one, or paste a link.</div>
+            <div class="pg-attached" id="pg-stt-attached" hidden>
+              <span class="pg-attached-label">Recording attached</span>
+              <audio id="pg-stt-preview" controls></audio>
+              <button id="pg-stt-remove" class="secondary danger" type="button"
+                      aria-label="Remove the recording">Remove</button>
+            </div>
+            <div class="pg-composer" id="pg-stt-composer">
+              <input id="pg-stt-file" type="file"
+                     accept="audio/wav,audio/mpeg,audio/mp4,audio/ogg,audio/flac,audio/aac">
+              <button id="pg-stt-mic" type="button" class="icon-btn"
+                      title="Record from your microphone" aria-label="Record from your microphone">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z"/>
+                  <path fill="currentColor" d="M18 11a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.91V19H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.09A6 6 0 0 0 18 11Z"/>
+                </svg>
+              </button>
+              <button id="pg-stt-run" disabled
+                      title="Pick an audio file, record one, or paste a link first">Transcribe</button>
+              <button id="pg-stt-new" type="button" class="secondary"
+                      title="Clear the transcript and start a new conversation">New chat</button>
+            </div>
+            <input id="pg-stt-url" type="text" placeholder="…or paste a link to an audio file">
+            <p class="hint pg-unavailable" id="pg-stt-url-unavailable" hidden></p>
           </div>
           <div class="pg-recorder" id="pg-recorder" hidden>
             <span class="rec-dot" aria-hidden="true"></span>
