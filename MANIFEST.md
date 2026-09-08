@@ -66,7 +66,7 @@ Every current source file, with what it does and what it touches. A map for orie
 
 ## Tests (`tests/`)
 
-One file per surface, adversarial-first. `test_live.py` (deselected by default, `-m live`) holds the live smokes and capability-drift probes; `test_docs.py` is the docs-hygiene guard; `tests/js/markdown.test.mjs` covers the frontend renderer via `node --test`. The rest mock the wire per feature: adapters, client, CLI, streaming, tools, caching, realtime, transcription, viewer, sources, transport, types, tracing, hardening, alias facts, classification, credential, registry, embeddings, image/speech/video generation, batch generation (`test_batch.py`), prerecorded transcription (`test_transcribe.py`), structured output, web search, reasoning effort, async parity, the retired-model gate, listing filter, and catalog invariants (`test_retired_models.py`), the sampling and seed gates (`test_hardening.py`), and the ElevenLabs adapter with voice listing (`test_elevenlabs.py`).
+One file per surface, adversarial-first. `test_live.py` (deselected by default, `-m live`) holds the live smokes and capability-drift probes; `test_docs.py` is the docs-hygiene guard; `tests/js/markdown.test.mjs` covers the frontend renderer via `node --test`. The rest mock the wire per feature: adapters, client, CLI, streaming, tools, caching, realtime, transcription, viewer, sources, transport, types, tracing, hardening, alias facts, classification, credential, registry, embeddings, image/speech/video generation, batch generation (`test_batch.py`), prerecorded transcription (`test_transcribe.py`), structured output, web search, reasoning effort, async parity, the retired-model gate, listing filter, and catalog invariants (`test_retired_models.py`), the sampling and seed gates (`test_hardening.py`), the ElevenLabs adapter with voice listing (`test_elevenlabs.py`), and the docs-vs-code release gate (`test_shiplock.py`).
 
 ## Everything else
 
@@ -76,4 +76,6 @@ One file per surface, adversarial-first. `test_live.py` (deselected by default, 
 | `keycall-test-keys.example.toml`, `keycall-test-keys.example.txt` | Placeholder-only examples of the verify/viewer key-file format, one per accepted syntax. |
 | `.github/workflows/ci.yml` | Push/PR gate: tests, lint, JS tests; live smoke on manual dispatch only. |
 | `.github/workflows/release.yml` | Tag-driven release: build, tests, live-strict verification, PyPI publish, GitHub release. |
+| `.github/workflows/release-gate.yml` | Calls ShipLock's reusable gate: deterministic docs-vs-code checks plus the semantic audit, routed to the audit key's own provider. Manual dispatch until a hand-run passes. |
+| `shiplock.toml` | Declares the doc surfaces, source globs, and version files the ShipLock gate checks. |
 | `README.md`, `USAGE.md`, `ARCHITECTURE.md`, `CHANGELOG.md` | The public doc set. |
