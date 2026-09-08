@@ -4,6 +4,12 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.1] — 2026-09-08
+
+### Changed
+
+- **The release suite submits its batch jobs before the rest of the live tests run, instead of submitting and then waiting on them inline.** Batch completion is provider-paced and swings by hours on one provider between days: OpenAI answered in under four minutes on 2026-09-02 and took 163 minutes on 2026-09-08, both inside the 24 hours every provider reserves. The jobs now go out at session start and are read back at the end, so the suite's own runtime doubles as the waiting budget instead of being spent twice. A lane that skipped whenever a queue was slow now verifies on any ordinary day; a straggler still skips rather than failing a release, and a targeted test run submits nothing it will not read. The provider-support table's live-verified date moves to 2026-09-08, the day the full matrix last ran green across every provider.
+
 ## [1.11.0] — 2026-09-08
 
 ### Fixed

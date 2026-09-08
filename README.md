@@ -102,7 +102,7 @@ print(result.round_trip_duration_ms)
 
 ## Provider support
 
-Live-verified 2026-08-31. Every release re-runs a model list, a bounded generation, a stream, a full tool round (streamed and not, including apply_patch, custom tools, and tool search), hosted code execution, an image, sound, and document read, embeddings, image generation, a speech generation with a listed voice, a video render, a batch of generations on every batch-capable provider, a file transcription on every prerecorded-STT provider, a prompt-caching round trip, an async round trip, a live streaming-transcription session, capability-drift probes against previously observed provider behavior, and a probe that each provider still reaches a working model well inside the attempt budget, against every provider that supports them, and blocks publishing if any of it fails:
+Live-verified 2026-09-08. Every release re-runs a model list, a bounded generation, a stream, a full tool round (streamed and not, including apply_patch, custom tools, and tool search), hosted code execution, an image, sound, and document read, embeddings, image generation, a speech generation with a listed voice, a video render, a batch of generations on every batch-capable provider, a file transcription on every prerecorded-STT provider, a prompt-caching round trip, an async round trip, a live streaming-transcription session, capability-drift probes against previously observed provider behavior, and a probe that each provider still reaches a working model well inside the attempt budget, against every provider that supports them, and blocks publishing if any of it fails:
 
 | Provider | Protocol | Listing | Generation |
 |---|---|---|---|

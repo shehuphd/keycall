@@ -1,6 +1,6 @@
 # Manifest
 
-Last updated: 2026-09-08 22:22:14 UTC
+Last updated: 2026-09-08 22:55:42 UTC
 
 Every current source file, with what it does and what it touches. A map for orienting in the codebase, not a second copy of the docstrings.
 

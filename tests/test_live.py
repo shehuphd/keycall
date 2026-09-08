@@ -2140,30 +2140,43 @@ def test_live_openai_transcribe_family_still_refuses_verbose_json():
     print("gpt-4o-mini-transcribe still refuses verbose_json (400)")
 
 
-def test_live_batch_generation_every_supporting_target():
-    """Five providers, five batch dialects; each release submits a tiny
-    two-request batch on every one and reads the results back in
-    submission order. All batches go out first and poll together, because
-    completion is provider-paced (Moonshot took ~12.5 minutes for two
-    requests when probed 2026-09-02; the others 13s-4min). The named
-    models double as drift probes: xAI validates batch eligibility at the
-    add call, so grok-4.3 losing its batch lane fails this test by name,
-    and each other id retiring fails as a create-time refusal."""
+BATCH_MODELS = {
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-haiku-4-5-20251001",
+    "gemini": "gemini-flash-latest",
+    "moonshot": "kimi-k2.6",
+    "xai": "grok-4.3",
+}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _batches_submitted_early(request):
+    """Submit the release's batch jobs before the rest of the live suite
+    runs, so the providers' queue time overlaps the other tests instead of
+    being waited out on its own.
+
+    Batch completion is provider-paced and swings by hours on one provider
+    between days: OpenAI answered in under four minutes on 2026-09-02 and
+    took 163 minutes on 2026-09-08, both well inside the 24 hours every
+    provider reserves. The suite's own runtime is the cheapest waiting
+    budget available, so spending it here costs nothing and verifies a lane
+    that otherwise skips.
+
+    Autouse so submission happens at session start rather than wherever the
+    batch test is ordered in a randomized run, but gated on that test
+    being selected: a targeted run must not submit five billable jobs that
+    nothing will read."""
     source = os.environ.get("KEYCALL_LIVE_SOURCE")
-    if not source:
-        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
-    import time
+    wanted = any(
+        "test_live_batch_generation_every_supporting_target" in item.nodeid
+        for item in request.session.items
+    )
+    if not source or not wanted:
+        yield None
+        return
 
     from keycall import BatchRequest, KeyCall, Message, TextInput
     from keycall._registry import providers_with
-
-    models = {
-        "openai": "gpt-4o-mini",
-        "anthropic": "claude-haiku-4-5-20251001",
-        "gemini": "gemini-flash-latest",
-        "moonshot": "kimi-k2.6",
-        "xai": "grok-4.3",
-    }
 
     targets, _ = load_targets(source)
     supporting = providers_with("batch_generation")
@@ -2176,9 +2189,8 @@ def test_live_batch_generation_every_supporting_target():
         named = [t for t in candidates if "batch" in (t.name or "")]
         return (named or candidates or [None])[0]
 
-    in_flight = []
+    entries: list[dict] = []
     opened = []
-    finished = []
     try:
         for provider in sorted(supporting):
             target = preferred(provider)
@@ -2190,82 +2202,107 @@ def test_live_batch_generation_every_supporting_target():
                 protocol=target.protocol,
                 base_url=target.base_url,
             )
+            opened.append(client)
             requests = [
                 BatchRequest(
-                    model=models[target.provider],
+                    model=BATCH_MODELS[target.provider],
                     messages=[Message(role="user", content=[TextInput(text=prompt)])],
                     max_output_tokens=200,
                 )
                 for prompt in ("Reply with the word one.", "Reply with the word two.")
             ]
-            opened.append(client)
             job = client.start_batch(requests)
             print(f"{target.display_name}: submitted {job.job_id} ({job.provider_status})")
-            in_flight.append({"target": target, "client": client, "job": job})
-
-        assert in_flight, "no batch-capable target in the live source"
-
-        deadline = time.monotonic() + 2400.0
-        while in_flight and time.monotonic() < deadline:
-            time.sleep(15.0)
-            still_running = []
-            for entry in in_flight:
-                entry["job"] = entry["client"].check_batch(entry["job"])
-                if entry["job"].status == "running":
-                    still_running.append(entry)
-                else:
-                    finished.append(entry)
-            in_flight = still_running
-
-        for entry in finished:
-            target, job = entry["target"], entry["job"]
-            assert job.status == "finished", (
-                f"{target.display_name}: batch ended {job.status} "
-                f"({job.provider_status}): {job.error_message}"
-            )
-            results = entry["client"].fetch_batch_results(job)
-            assert len(results) == 2, f"{target.display_name}: {len(results)} results for 2 requests"
-            assert [r.key for r in results] == ["kc-0", "kc-1"]
-            for result in results:
-                assert result.succeeded, (
-                    f"{target.display_name}: request {result.index} errored "
-                    f"({result.error_code}): {result.error_message}"
-                )
-                assert result.result.text, f"{target.display_name}: empty text in a result"
-            print(
-                f"{target.display_name}: 2/2 succeeded on {models[target.provider]}, "
-                f"texts {[r.result.text[:20] for r in results]}"
-            )
-
-        if in_flight:
-            # Completion is provider-paced (promised within 24h), so a
-            # straggler at the deadline is a verification-environment
-            # outcome, not a fault: the provider isn't implicated, and a
-            # release must not be held hostage to its batch-queue latency.
-            # The batches that did finish above are asserted in full, so a
-            # genuine dialect regression still fails; only an unfinished
-            # queue skips, leaving that lane unverified this run and named
-            # in the skip reason. Build the message by hand — a bare skip
-            # arg would let pytest render the entries, Target keys included.
-            pytest.skip(
-                "batch still processing at the deadline (provider-paced, provider "
-                "not implicated, release still unverified): "
-                + ", ".join(
-                    f"{e['target'].display_name} ({e['job'].job_id}, "
-                    f"{e['job'].provider_status})"
-                    for e in in_flight
-                )
-            )
+            entries.append({"target": target, "client": client, "job": job})
+        yield entries
     finally:
-        for entry in in_flight:
-            # Leftover running batches would bill on their own schedule;
-            # stop them before reporting.
-            try:
-                entry["client"].cancel_batch(entry["job"])
-            except KeyCallError:
-                pass
+        for entry in entries:
+            # Anything still running at session end would bill on its own
+            # schedule; stop it before the suite exits.
+            if entry["job"].status == "running":
+                try:
+                    entry["client"].cancel_batch(entry["job"])
+                except KeyCallError:
+                    pass
         for client in opened:
             client.close()
+
+
+def test_live_batch_generation_every_supporting_target(_batches_submitted_early):
+    """Five providers, five batch dialects. The jobs were submitted by the
+    session fixture before the rest of the suite ran, so by the time this
+    reads them they have had the whole suite's runtime to complete; this
+    only polls out whatever is left. Results are read back in submission
+    order regardless of the order the provider answered in.
+
+    The named models double as drift probes: xAI validates batch
+    eligibility at the add call, so grok-4.3 losing its batch lane fails
+    this test by name, and each other id retiring fails as a create-time
+    refusal."""
+    entries = _batches_submitted_early
+    if entries is None:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    assert entries, "no batch-capable target in the live source"
+    import time
+
+    # The jobs already spent the suite's runtime in their providers' queues,
+    # so this is the remainder of the waiting budget, not the whole of it.
+    deadline = time.monotonic() + 1200.0
+    in_flight = [entry for entry in entries if entry["job"].status == "running"]
+    finished = [entry for entry in entries if entry["job"].status != "running"]
+    if finished:
+        print(f"{len(finished)} of {len(entries)} batches already done before polling")
+    while in_flight and time.monotonic() < deadline:
+        time.sleep(15.0)
+        still_running = []
+        for entry in in_flight:
+            entry["job"] = entry["client"].check_batch(entry["job"])
+            if entry["job"].status == "running":
+                still_running.append(entry)
+            else:
+                finished.append(entry)
+        in_flight = still_running
+
+    for entry in finished:
+        target, job = entry["target"], entry["job"]
+        assert job.status == "finished", (
+            f"{target.display_name}: batch ended {job.status} "
+            f"({job.provider_status}): {job.error_message}"
+        )
+        results = entry["client"].fetch_batch_results(job)
+        assert len(results) == 2, f"{target.display_name}: {len(results)} results for 2 requests"
+        assert [r.key for r in results] == ["kc-0", "kc-1"]
+        for result in results:
+            assert result.succeeded, (
+                f"{target.display_name}: request {result.index} errored "
+                f"({result.error_code}): {result.error_message}"
+            )
+            assert result.result.text, f"{target.display_name}: empty text in a result"
+        print(
+            f"{target.display_name}: 2/2 succeeded on {BATCH_MODELS[target.provider]}, "
+            f"texts {[r.result.text[:20] for r in results]}"
+        )
+
+    if in_flight:
+        # Completion is provider-paced (promised within 24h), so a straggler
+        # even after the whole suite plus this budget is a verification
+        # -environment outcome, not a fault: the provider isn't implicated,
+        # and a release must not be held hostage to its batch-queue latency.
+        # The batches that did finish above are asserted in full, so a
+        # dialect regression still fails; only an unfinished queue
+        # skips, leaving that lane unverified this run and named in the skip
+        # reason. Build the message by hand — a bare skip arg would let
+        # pytest render the entries, Target keys included.
+        pytest.skip(
+            "batch still processing after the suite plus the poll budget "
+            "(provider-paced, provider not implicated, release still "
+            "unverified): "
+            + ", ".join(
+                f"{e['target'].display_name} ({e['job'].job_id}, "
+                f"{e['job'].provider_status})"
+                for e in in_flight
+            )
+        )
 
 
 def test_live_gemini_batch_cancel_path_still_exists():
