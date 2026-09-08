@@ -101,6 +101,36 @@ name = "claude-test"
     assert targets[0].name == "claude-test"
 
 
+def test_malformed_toml_reports_where_without_leaking_the_key(tmp_path):
+    """A source nobody can read back (a CI secret written to a file) is
+    diagnosable only if the error says where it broke, so the parser's
+    coordinates ride along. The key on the malformed line must not: the
+    message is the reason a reader sees, and this file is credentials."""
+    source = write(
+        tmp_path,
+        "keys.toml",
+        f'[[targets]]\nprovider "openai"\nkey = "{CANARY}"\n',  # missing '='
+    )
+    with pytest.raises(SourceError) as caught:
+        load_targets(source)
+    message = str(caught.value)
+    assert "invalid TOML" in message
+    assert "line 2" in message, f"no position in the message: {message}"
+    assert CANARY not in message
+
+
+def test_txt_content_in_a_toml_file_names_the_parse_failure(tmp_path):
+    """The shape a mis-pasted secret takes: TXT records in a .toml file.
+    It has to fail as a parse error that names a position, not a bare
+    refusal (2026-09-08)."""
+    source = write(tmp_path, "keys.toml", f"provider=openai key={CANARY}\n")
+    with pytest.raises(SourceError) as caught:
+        load_targets(source)
+    assert "invalid TOML" in str(caught.value)
+    assert "line 1" in str(caught.value)
+    assert CANARY not in str(caught.value)
+
+
 def test_unknown_field_rejected(tmp_path):
     source = write(tmp_path, "keys.txt", "provider=openai key=k model=gpt-4o\n")
     with pytest.raises(SourceError, match="unknown field"):

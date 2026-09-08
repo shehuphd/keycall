@@ -136,8 +136,15 @@ def _parse_toml(text: str) -> list[Target]:
         import tomli as tomllib
     try:
         payload = tomllib.loads(text)
-    except tomllib.TOMLDecodeError:
-        raise SourceError("invalid TOML") from None
+    except tomllib.TOMLDecodeError as exc:
+        # Carry the parser's reason and coordinates through, the way the
+        # JSON branch reports its line. A bare "invalid TOML" gives no way
+        # to find the bad line, which costs most on a source nobody can
+        # read back: a CI secret written to a file reported only that, 33
+        # times over, with no hint where (2026-09-08). tomllib's messages
+        # are fixed descriptions plus an "(at line N, column M)" suffix and
+        # never echo document text, so this cannot surface key material.
+        raise SourceError(f"invalid TOML: {exc}") from None
     entries = payload.get("targets")
     if not isinstance(entries, list):
         raise SourceError("TOML source must define [[targets]] tables")

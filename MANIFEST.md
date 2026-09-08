@@ -15,7 +15,7 @@ Every current source file, with what it does and what it touches. A map for orie
 | `_transport.py` | All HTTP and WebSocket execution: retries, response size cap, redirect refusal, header construction, multipart file upload (with file-less form-only variants), raw binary request bodies, JSONL/text success-body passthrough, download-plan enforcement. The only module that performs I/O. |
 | `_cli.py` | The `keycall` command: `verify` and `view`, the no-command welcome, plain-language usage errors with one confident suggestion, pasted-key hiding, category-only color gated on a terminal and `NO_COLOR`. |
 | `_verify_core.py` | The verify walk shared by the CLI and the viewer: candidate ordering, per-attempt reporting, outcome classification. |
-| `_sources.py` | Credential-source loading: TXT/JSON/TOML files, `env:` references, the hidden interactive prompt; git-exposure and permission warnings. Reads key files, never writes them. |
+| `_sources.py` | Credential-source loading: TXT/JSON/TOML files, `env:` references, the hidden interactive prompt; git-exposure and permission warnings. Malformed JSON and TOML report the parser's own position so an unreadable source can be placed. Reads key files, never writes them. |
 | `_credential.py` | Internal redacting wrapper the raw key enters at client construction; refuses pickle/copy and never prints the key. |
 | `_sanitize.py` | Credential scrubbing for every outbound string, request-id and display-name bounding. |
 | `_classify.py` | Conservative model classification and `alias_fact()` rolling-alias facts, both from catalog evidence; unknowns stay UNKNOWN. |

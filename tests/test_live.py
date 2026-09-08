@@ -1401,7 +1401,9 @@ def test_live_xai_schema_enforcement_still_holds():
 
     Either assertion failing means the enforcement moved: re-probe, revisit the
     catalog schema_enforcement flag and note, and the structured-output docs —
-    this test failing IS the notification."""
+    this test failing IS the notification. A transport failure is not that
+    signal and skips instead, since an unreachable host says nothing about how
+    xai handles a schema."""
     source = os.environ.get("KEYCALL_LIVE_SOURCE")
     if not source:
         pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
@@ -1415,68 +1417,92 @@ def test_live_xai_schema_enforcement_still_holds():
         pytest.skip("no xai target in the live source")
 
     headers = {"Authorization": f"Bearer {target.key}", "Content-Type": "application/json"}
-    with httpx.Client(headers=headers, timeout=60) as client:
-        listing = client.get("https://api.x.ai/v1/models")
-        listing.raise_for_status()
-        model = next(
-            m["id"]
-            for m in listing.json()["data"]
-            if m["id"].startswith("grok-") and "imagine" not in m["id"] and "build" not in m["id"]
-        )
-        schema = {
-            "type": "object",
-            "properties": {"answer": {"type": "string"}, "count": {"type": "integer"}},
-            "required": ["answer", "count"],
-            "additionalProperties": False,
-        }
-        prompt = "Reply in json: a one-word answer to 'capital of France' and a count of its letters."
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}, "count": {"type": "integer"}},
+        "required": ["answer", "count"],
+        "additionalProperties": False,
+    }
+    prompt = "Reply in json: a one-word answer to 'capital of France' and a count of its letters."
 
-        good = client.post(
-            "https://api.x.ai/v1/chat/completions",
-            json={
-                "model": model,
-                "max_tokens": 64,
-                "messages": [{"role": "user", "content": prompt}],
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {"name": "keycall_response", "schema": schema, "strict": True},
-                },
-            },
-        )
-        assert good.status_code == 200, (
-            f"capability drift: xai rejected a strict json_schema request "
-            f"(HTTP {good.status_code}: {good.text[:300]}) — revisit the catalog "
-            "schema_enforcement=json_schema flag"
-        )
-        parsed = json.loads(good.json()["choices"][0]["message"]["content"])
-        assert set(parsed) == {"answer", "count"}, (
-            f"capability drift: xai no longer conforms output to the schema (got {parsed})"
-        )
+    def probe() -> str:
+        with httpx.Client(headers=headers, timeout=60) as client:
+            listing = client.get("https://api.x.ai/v1/models")
+            listing.raise_for_status()
+            model = next(
+                m["id"]
+                for m in listing.json()["data"]
+                if m["id"].startswith("grok-")
+                and "imagine" not in m["id"]
+                and "build" not in m["id"]
+            )
 
-        bad = client.post(
-            "https://api.x.ai/v1/chat/completions",
-            json={
-                "model": model,
-                "max_tokens": 64,
-                "messages": [{"role": "user", "content": prompt}],
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "x",
-                        "schema": {
-                            "type": "object",
-                            "properties": {"answer": {"type": "nonsense_type"}},
-                            "required": ["answer"],
+            good = client.post(
+                "https://api.x.ai/v1/chat/completions",
+                json={
+                    "model": model,
+                    "max_tokens": 64,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "keycall_response",
+                            "schema": schema,
+                            "strict": True,
                         },
-                        "strict": True,
                     },
                 },
-            },
-        )
-        assert bad.status_code == 400, (
-            f"capability drift: xai no longer validates the schema — a malformed "
-            f"schema type answered HTTP {bad.status_code}, not 400 ({bad.text[:300]})"
-        )
+            )
+            assert good.status_code == 200, (
+                f"capability drift: xai rejected a strict json_schema request "
+                f"(HTTP {good.status_code}: {good.text[:300]}) — revisit the catalog "
+                "schema_enforcement=json_schema flag"
+            )
+            parsed = json.loads(good.json()["choices"][0]["message"]["content"])
+            assert set(parsed) == {"answer", "count"}, (
+                f"capability drift: xai no longer conforms output to the schema (got {parsed})"
+            )
+
+            bad = client.post(
+                "https://api.x.ai/v1/chat/completions",
+                json={
+                    "model": model,
+                    "max_tokens": 64,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "x",
+                            "schema": {
+                                "type": "object",
+                                "properties": {"answer": {"type": "nonsense_type"}},
+                                "required": ["answer"],
+                            },
+                            "strict": True,
+                        },
+                    },
+                },
+            )
+            assert bad.status_code == 400, (
+                f"capability drift: xai no longer validates the schema — a malformed "
+                f"schema type answered HTTP {bad.status_code}, not 400 ({bad.text[:300]})"
+            )
+            return model
+
+    # A TLS or socket failure says nothing about xai's schema handling, so it
+    # must not read as capability drift: a runner hit SSL WRONG_VERSION_NUMBER
+    # mid-read and failed a release on 2026-09-08. Retry once, then leave the
+    # lane unverified for the run, the way a provider-paced batch does.
+    for attempt in (1, 2):
+        try:
+            model = probe()
+            break
+        except httpx.TransportError as exc:
+            if attempt == 2:
+                pytest.skip(
+                    f"xai unreachable from this runner ({type(exc).__name__}: {exc}); "
+                    "schema enforcement unverified this run"
+                )
     print(f"xai: strict json_schema still accepted and enforced on {model} (evidence current)")
 
 
