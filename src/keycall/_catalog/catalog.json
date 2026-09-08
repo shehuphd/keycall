@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.09.08.2",
+  "catalog_version": "2026.09.08.3",
   "verified_at": "2026-08-10T00:00:00Z",
   "providers": {
     "openai": {
@@ -1721,7 +1721,9 @@
         "transcription": true,
         "transcription_note": "Job-shaped, live-verified 2026-09-02: raw-binary POST /v2/upload answers upload_url (readable only by AssemblyAI, same account), POST /v2/transcript takes audio_url plus speech_models as an array (the accepted spelling; the legacy singular speech_model echoes null) and speaker_labels, then GET /v2/transcript/{id} polls queued/processing/completed/error. Completed carries text, overall confidence, audio_duration (integer seconds), language_code (ISO-639-1), and words[] with millisecond start/end, confidence, and speaker letters under speaker_labels.",
         "transcription_url_input": true,
-        "transcription_diarization": true
+        "transcription_diarization": true,
+        "streaming_diarization": true,
+        "streaming_diarization_note": "Streaming diarization rides the v3 socket as speaker_labels=true (with an optional max_speakers, 1-10); each finalized word in a Turn frame carries a `speaker` string. Live-probed 2026-09-08 on two-voice audio: words came back labelled 'A' and 'B'."
       }
     },
     "deepgram": {
@@ -1781,7 +1783,9 @@
         "transcription": true,
         "transcription_note": "POST /v1/listen with a raw binary audio body (or JSON {url}), query params model/punctuate/language/diarize, live-verified 2026-09-02 on nova-3 (bytes path): metadata.duration + request_id, results.channels[].alternatives[] with punctuated transcript, overall confidence, words[] carrying start/end seconds, per-word confidence, punctuated_word, and speaker (int) + speaker_confidence under diarize=true. 2GB file limit, 10-minute processing cap per the docs. The JSON {url} path also live-verified 2026-09-02 against a public mp3.",
         "transcription_url_input": true,
-        "transcription_diarization": true
+        "transcription_diarization": true,
+        "streaming_diarization": true,
+        "streaming_diarization_note": "Streaming diarization rides the listen socket as diarize=true; each word inside a final Results frame carries an integer `speaker`. Live-probed 2026-09-08 on two-voice audio. diarize_model=v2 is prerecorded-only and 400s on this socket."
       }
     },
     "elevenlabs": {
@@ -1867,7 +1871,9 @@
         "transcription": true,
         "transcription_note": "Multipart POST /v1/speech-to-text with model_id and one of file/source_url (never both), live-verified 2026-09-02 on scribe_v2 (bytes path): text, language_code (ISO-639-3) + language_probability, audio_duration_secs, transcription_id, words[] mixing types word/spacing with start/end seconds, per-word logprob, and speaker_id under diarize=true. 5GB file limit, 100ms minimum, <=5 channels per the docs. The source_url path (a file-less multipart form) also live-verified 2026-09-02 against a public mp3.",
         "transcription_url_input": true,
-        "transcription_diarization": true
+        "transcription_diarization": true,
+        "streaming_diarization": false,
+        "streaming_diarization_note": "The realtime socket takes no diarization parameter and never fills the field: committed_transcript_with_timestamps words carry a speaker_id key that stayed null for every word, with and without a diarize param (live-probed 2026-09-08, 18 words, scribe_v2_realtime). Prerecorded diarization is unaffected and still reports speaker ids."
       }
     }
   }

@@ -153,6 +153,157 @@ def test_deepgram_plan_optional_model():
     assert "model=nova-3" in path
 
 
+# --- streaming diarization ---------------------------------------------------
+
+
+def test_assemblyai_asks_for_speaker_labels_under_diarize():
+    client = make_client("assemblyai")
+    path, _ = client._adapter.transcription_plan(TranscriptionConfig(diarize=True))
+    client.close()
+    assert "speaker_labels=true" in path
+
+
+def test_deepgram_asks_for_diarization_under_diarize():
+    client = make_client("deepgram")
+    path, _ = client._adapter.transcription_plan(TranscriptionConfig(diarize=True))
+    client.close()
+    assert "diarize=true" in path
+    # v2 is prerecorded-only and 400s on this socket, so the plan must not
+    # name a diarize_model at all.
+    assert "diarize_model" not in path
+
+
+@pytest.mark.parametrize("provider", ["assemblyai", "deepgram"])
+def test_no_diarization_parameter_when_it_was_not_asked_for(provider):
+    """The default session must be byte-identical to what it was before
+    diarization existed: a stray parameter changes billing and output."""
+    client = make_client(provider)
+    path, _ = client._adapter.transcription_plan(TranscriptionConfig())
+    client.close()
+    assert "speaker_labels" not in path
+    assert "diarize" not in path
+
+
+def test_elevenlabs_refuses_a_diarized_stream_before_the_socket():
+    """Its realtime wire sends speaker_id as null for every word
+    (live-probed 2026-09-08), so accepting the flag would hand back a
+    column of None instead of labels."""
+    client = make_client("elevenlabs")
+    with pytest.raises(KeyCallError) as caught:
+        client._adapter.transcription_plan(TranscriptionConfig(diarize=True))
+    client.close()
+    error = caught.value
+    assert error.code is ErrorCode.UNSUPPORTED_OPERATION
+    assert "assemblyai" in error.message and "deepgram" in error.message
+    # The refusal points at the surface that does diarize on this provider.
+    assert "transcribe(diarize=True)" in error.message
+
+
+def test_every_streaming_provider_either_diarizes_or_refuses():
+    """A provider whose plan forgets the guard would open a socket and
+    return unlabelled words, which reads as the provider losing the
+    feature. Sweeping every provider catches a missed call site."""
+    from keycall._capabilities import (
+        STREAMING_DIARIZATION_PROVIDERS,
+        STREAMING_TRANSCRIPTION_PROVIDERS,
+    )
+
+    for provider in sorted(STREAMING_TRANSCRIPTION_PROVIDERS):
+        client = make_client(provider)
+        try:
+            if provider in STREAMING_DIARIZATION_PROVIDERS:
+                path, _ = client._adapter.transcription_plan(TranscriptionConfig(diarize=True))
+                assert "speaker_labels=true" in path or "diarize=true" in path, (
+                    f"{provider}: diarize=True built a path that asks for nothing"
+                )
+            else:
+                with pytest.raises(KeyCallError) as caught:
+                    client._adapter.transcription_plan(TranscriptionConfig(diarize=True))
+                assert caught.value.code is ErrorCode.UNSUPPORTED_OPERATION
+        finally:
+            client.close()
+
+
+def test_assemblyai_final_carries_speaker_labels():
+    frame = json.dumps(
+        {
+            "type": "Turn",
+            "end_of_turn": True,
+            "transcript": "Hello there.",
+            "words": [
+                {"start": 0, "end": 451, "text": "Hello", "confidence": 0.95, "speaker": "A"},
+                {"start": 466, "end": 767, "text": "there.", "confidence": 0.99, "speaker": "B"},
+            ],
+        }
+    )
+    (event,) = AssemblyAITranslator().events_for_frame(frame)
+    assert [w.speaker for w in event.words] == ["A", "B"]
+
+
+def test_deepgram_final_carries_speaker_labels_as_strings():
+    """Deepgram numbers its speakers; the field converges on the string
+    spelling the other providers use so one reader handles both."""
+    frame = json.dumps(
+        {
+            "type": "Results",
+            "is_final": True,
+            "channel": {
+                "alternatives": [
+                    {
+                        "transcript": "Hello there.",
+                        "words": [
+                            {"word": "hello", "start": 0.0, "end": 0.4, "speaker": 0},
+                            {"word": "there", "start": 0.4, "end": 0.8, "speaker": 1},
+                        ],
+                    }
+                ]
+            },
+        }
+    )
+    (event,) = DeepgramTranslator().events_for_frame(frame)
+    assert [w.speaker for w in event.words] == ["0", "1"]
+
+
+@pytest.mark.parametrize(
+    "translator,frame",
+    [
+        (
+            AssemblyAITranslator,
+            json.dumps(
+                {
+                    "type": "Turn",
+                    "end_of_turn": True,
+                    "transcript": "Hello.",
+                    "words": [{"start": 0, "end": 451, "text": "Hello", "confidence": 0.95}],
+                }
+            ),
+        ),
+        (
+            DeepgramTranslator,
+            json.dumps(
+                {
+                    "type": "Results",
+                    "is_final": True,
+                    "channel": {
+                        "alternatives": [
+                            {
+                                "transcript": "Hello.",
+                                "words": [{"word": "hello", "start": 0.0, "end": 0.4}],
+                            }
+                        ]
+                    },
+                }
+            ),
+        ),
+    ],
+)
+def test_speaker_is_none_when_the_wire_omits_it(translator, frame):
+    """An undiarized session must report None, never a placeholder label
+    that a caller could mistake for a speaker."""
+    (event,) = translator().events_for_frame(frame)
+    assert all(word.speaker is None for word in event.words)
+
+
 # --- AssemblyAI frame translation -------------------------------------------
 
 

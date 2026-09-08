@@ -4,6 +4,12 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.1] — 2026-09-08
+
+### Added
+
+- **`diarize=True` on a streaming session labels each finalized word with its speaker.** `transcribe_stream(diarize=True)` asks in each provider's own dialect — AssemblyAI's `speaker_labels=true`, Deepgram's `diarize=true` — and both translators read the label back into `TranscriptWord.speaker`, stringified so a letter (`"A"`) and an integer index (`"0"`) are read the same way. The label is the provider's own and identifies a speaker within one session, never across providers or across a reconnect. ElevenLabs refuses the flag before the socket opens: its realtime words carry a `speaker_id` the provider leaves null on every word (live-probed 2026-09-08, 18 words on `scribe_v2_realtime`, with and without a diarize parameter), so taking the flag would hand back a column of `None` instead of labels; its stored-file diarization is unaffected. Diarization is now two capability flags rather than one, since the two wires disagree within a provider. A release probe re-verifies the labels on both supporting providers and ElevenLabs' absence, so the refusal can lift as soon as the provider fills the field.
+
 ## [1.10.0] — 2026-09-08
 
 ### Added

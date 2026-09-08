@@ -877,6 +877,26 @@ class ProviderAdapter(ABC):
             operation="realtime",
         )
 
+    def require_streaming_diarization(self, config: Any) -> None:
+        """Refuse a diarized session on a provider whose streaming wire
+        carries no speaker label. Called by each transcription_plan before
+        it builds a path, so the refusal arrives before the socket opens
+        rather than as a stream of unlabelled words."""
+        if not getattr(config, "diarize", False):
+            return
+        if self.resolved.capabilities.streaming_diarization:
+            return
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} does not diarize a "
+            "streaming session; diarize=True is supported on: "
+            + ", ".join(sorted(providers_with("streaming_diarization")))
+            + ". For a stored file, transcribe(diarize=True) covers: "
+            + ", ".join(sorted(providers_with("transcription_diarization"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.STREAMING_TRANSCRIPTION.value,
+        )
+
     def transcription_plan(self, config: Any) -> tuple[str, Any]:
         """The WebSocket path and frame translator for a streaming
         transcription session. Providers without one refuse here, before

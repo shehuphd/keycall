@@ -34,6 +34,7 @@ __all__ = [
     "PROMPT_CACHING_PROVIDERS",
     "SCHEMA_ENFORCING_PROVIDERS",
     "SEED_PROVIDERS",
+    "STREAMING_DIARIZATION_PROVIDERS",
     "STREAMING_TRANSCRIPTION_PROVIDERS",
     "TOOL_CALLING_PROVIDERS",
     "TOOL_SEARCH_PROVIDERS",
@@ -49,6 +50,7 @@ CUSTOM_TOOL_PROVIDERS = providers_with("custom_tool")
 TOOL_SEARCH_PROVIDERS = providers_with("tool_search")
 TOOL_CALLING_PROVIDERS = providers_with("tool_calling")
 STREAMING_TRANSCRIPTION_PROVIDERS = providers_with("streaming_transcription")
+STREAMING_DIARIZATION_PROVIDERS = providers_with("streaming_diarization")
 PROMPT_CACHING_PROVIDERS = providers_with("prompt_caching")
 SEED_PROVIDERS = providers_with("supports_seed")
 SCHEMA_ENFORCING_PROVIDERS = providers_enforcing_schema()

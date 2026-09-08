@@ -1506,6 +1506,146 @@ def test_live_xai_schema_enforcement_still_holds():
     print(f"xai: strict json_schema still accepted and enforced on {model} (evidence current)")
 
 
+@pytest.mark.live
+def test_live_streaming_diarization_still_holds():
+    """Capability-drift probe for streaming speaker labels (evidence
+    2026-09-08), spoken by two macOS voices so more than one speaker exists:
+
+    - AssemblyAI (speaker_labels=true) and Deepgram (diarize=true) label
+      each finalized word. Losing that means streaming_diarization and the
+      docs are stale.
+    - ElevenLabs is an absence claim: its realtime words carry a speaker_id
+      key that is always null, which is why diarize=True refuses there. If
+      it starts filling the field, the flag should be turned on rather than
+      left refusing a feature the provider now has.
+
+    This test failing IS the notification to re-probe and update the
+    catalog flags, _capabilities, and the transcription docs."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import base64
+    import json
+    import queue
+    import shutil
+    import subprocess
+    import tempfile
+    import threading
+    import time as _time
+
+    if not shutil.which("say") or not shutil.which("ffmpeg"):
+        pytest.skip("streaming diarization check needs `say` and `ffmpeg` to synthesize audio")
+    import httpx
+    from httpx_ws import WebSocketDisconnect, WebSocketNetworkError, connect_ws
+
+    from keycall import KeyCall
+    from keycall._capabilities import STREAMING_DIARIZATION_PROVIDERS
+
+    with tempfile.TemporaryDirectory() as tmp:
+        parts = []
+        for voice, line in (
+            ("Alex", "The quick brown fox jumps over the lazy dog."),
+            ("Samantha", "Then the cat curled up and watched it happen."),
+        ):
+            aiff = f"{tmp}/{voice}.aiff"
+            subprocess.run(["say", "-v", voice, "-o", aiff, line], check=True)
+            parts.append(aiff)
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", parts[0], "-i", parts[1], "-filter_complex",
+             "[0:a][1:a]concat=n=2:v=0:a=1", "-ar", "16000", "-ac", "1",
+             "-f", "s16le", f"{tmp}/out.pcm"],
+            check=True, capture_output=True,
+        )
+        with open(f"{tmp}/out.pcm", "rb") as handle:
+            pcm = handle.read()
+
+    targets, _ = load_targets(source)
+    by_provider = {t.provider: t for t in targets}
+    preferred_model = {"deepgram": "nova-3"}
+    failures: list[str] = []
+
+    for provider in sorted(STREAMING_DIARIZATION_PROVIDERS):
+        target = by_provider.get(provider)
+        if target is None:
+            continue
+        client = KeyCall(provider=provider, api_key=target.key)
+        try:
+            with client.transcribe_stream(
+                model=preferred_model.get(provider), sample_rate=16000, diarize=True
+            ) as session:
+
+                def feed(feed_session=session):
+                    for i in range(0, len(pcm), 3200):
+                        feed_session.send_audio(pcm[i : i + 3200])
+                        _time.sleep(0.05)
+                    _time.sleep(1.5)
+                    feed_session.finish()
+
+                feeder = threading.Thread(target=feed)
+                feeder.start()
+                labels = set()
+                for event in session.events(timeout=40):
+                    if event.kind == "final_transcript":
+                        labels |= {w.speaker for w in event.words if w.speaker is not None}
+                feeder.join()
+            if not labels:
+                failures.append(
+                    f"capability drift: {provider} returned no speaker label on a "
+                    "diarized stream — revisit streaming_diarization and the docs"
+                )
+            else:
+                print(f"{provider}: streaming diarization live, labels {sorted(labels)}")
+        finally:
+            client.close()
+
+    eleven = by_provider.get("elevenlabs")
+    if eleven is not None:
+        seen: set[str] = set()
+        http = httpx.Client(headers={"xi-api-key": eleven.key})
+        try:
+            url = (
+                "wss://api.elevenlabs.io/v1/speech-to-text/realtime?audio_format=pcm_16000"
+                "&commit_strategy=vad&include_timestamps=true&model_id=scribe_v2_realtime"
+            )
+            with connect_ws(url, http) as ws:
+                for i in range(0, len(pcm), 3200):
+                    ws.send_text(json.dumps({
+                        "message_type": "input_audio_chunk",
+                        "audio_base_64": base64.b64encode(pcm[i : i + 3200]).decode("ascii"),
+                        "sample_rate": 16000, "commit": False,
+                    }))
+                    _time.sleep(0.01)
+                ws.send_text(json.dumps({
+                    "message_type": "input_audio_chunk", "audio_base_64": "",
+                    "sample_rate": 16000, "commit": True,
+                }))
+                deadline = _time.time() + 30
+                while _time.time() < deadline:
+                    try:
+                        frame = json.loads(ws.receive_text(timeout=10))
+                    except (queue.Empty, WebSocketDisconnect, WebSocketNetworkError):
+                        break
+                    if frame.get("type") == "committed_transcript_with_timestamps":
+                        seen = {
+                            str(w["speaker_id"])
+                            for w in frame.get("words", [])
+                            if w.get("speaker_id") is not None
+                        }
+                        break
+        finally:
+            http.close()
+        if seen:
+            failures.append(
+                "capability drift: elevenlabs now fills speaker_id on the realtime "
+                f"wire ({sorted(seen)}) — turn streaming_diarization on for it, read "
+                "the id in ElevenLabsTranslator, and drop the refusal"
+            )
+        else:
+            print("elevenlabs: realtime speaker_id still always null (evidence current)")
+
+    assert not failures, "streaming diarization drift:\n" + "\n".join(failures)
+
+
 # Solid blue 8x8 PNG, built inline so the suite carries no binary fixture.
 def _blue_png() -> bytes:
     import struct

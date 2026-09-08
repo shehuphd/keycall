@@ -77,6 +77,7 @@ class ProviderCapabilities:
     transcription: bool = False
     transcription_url_input: bool = False
     transcription_diarization: bool = False
+    streaming_diarization: bool = False
     embeddings: bool = False
     image_generation: bool = False
     speech_generation: bool = False
@@ -208,6 +209,7 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
         transcription=bool(raw.get("transcription", False)),
         transcription_url_input=bool(raw.get("transcription_url_input", False)),
         transcription_diarization=bool(raw.get("transcription_diarization", False)),
+        streaming_diarization=bool(raw.get("streaming_diarization", False)),
         prompt_caching=bool(raw.get("prompt_caching", False)),
         schema_enforcement=raw.get("schema_enforcement"),
         sampling_constraints=tuple(

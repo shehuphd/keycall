@@ -141,6 +141,11 @@ class AssemblyAITranslator:
                     start_ms=float(word.get("start", 0)),
                     end_ms=float(word.get("end", 0)),
                     confidence=word.get("confidence"),
+                    # Present only under speaker_labels=true, and only on
+                    # finalized words; a letter ("A", "B") or "UNKNOWN".
+                    speaker=(
+                        str(word["speaker"]) if word.get("speaker") is not None else None
+                    ),
                 )
                 for word in frame.get("words", [])
                 if isinstance(word, dict)
@@ -206,6 +211,11 @@ class DeepgramTranslator:
                     start_ms=float(word.get("start", 0)) * 1000.0,
                     end_ms=float(word.get("end", 0)) * 1000.0,
                     confidence=word.get("confidence"),
+                    # Present only under diarize=true, as an integer index;
+                    # stringified to match the other providers' spellings.
+                    speaker=(
+                        str(word["speaker"]) if word.get("speaker") is not None else None
+                    ),
                 )
                 for word in alt.get("words", [])
                 if isinstance(word, dict)
@@ -233,10 +243,15 @@ class DeepgramTranslator:
 
 class AssemblyAIAdapter(_SttAdapter):
     def transcription_plan(self, config: TranscriptionConfig) -> tuple[str, Any]:
+        self.require_streaming_diarization(config)
         path = self.resolved.operations["streaming_transcription"]["path"]
         path += f"?sample_rate={config.sample_rate}"
         if config.model is not None:
             path += f"&speech_model={quote(config.model, safe='')}"
+        if config.diarize:
+            # Labels ride the same socket; each finalized word then carries
+            # a letter speaker ("A", "B"), live-verified 2026-09-08.
+            path += "&speaker_labels=true"
         return path, AssemblyAITranslator()
 
     # --- prerecorded transcription (job-shaped) ---
@@ -445,6 +460,7 @@ class DeepgramAdapter(_SttAdapter):
         )
 
     def transcription_plan(self, config: TranscriptionConfig) -> tuple[str, Any]:
+        self.require_streaming_diarization(config)
         path = self.resolved.operations["streaming_transcription"]["path"]
         path += (
             f"?encoding=linear16&sample_rate={config.sample_rate}&channels=1"
@@ -452,4 +468,9 @@ class DeepgramAdapter(_SttAdapter):
         )
         if config.model is not None:
             path += f"&model={quote(config.model, safe='')}"
+        if config.diarize:
+            # Each word in a final Results frame then carries an integer
+            # speaker, live-verified 2026-09-08. diarize_model is left
+            # unset: its v2 is prerecorded-only and 400s on this socket.
+            path += "&diarize=true"
         return path, DeepgramTranslator()

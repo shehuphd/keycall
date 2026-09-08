@@ -1,6 +1,6 @@
 # Manifest
 
-Last updated: 2026-09-08 15:40:44 UTC
+Last updated: 2026-09-08 21:14:43 UTC
 
 Every current source file, with what it does and what it touches. A map for orienting in the codebase, not a second copy of the docstrings.
 
@@ -43,8 +43,8 @@ Every current source file, with what it does and what it touches. A map for orie
 | `_perplexity.py` | Perplexity override: catalog-maintained Sonar models, per-request cost units. |
 | `_xai.py` | xAI override: `/v1/responses` routing for web search and reasoning effort, video generation, the container batch dialect with counter-derived status and paginated results. |
 | `_realtime.py` | Realtime wire adapters (OpenAI, xAI, Gemini) mapping session events to normalized types. |
-| `_stt.py` | AssemblyAI and Deepgram: credential-validating discovery, streaming transcription frames to normalized events, Deepgram's one-round-trip file transcription, and AssemblyAI's job-shaped one (upload, submit, poll). |
-| `_elevenlabs.py` | ElevenLabs: live speech-model discovery plus catalog STT entries, voice listing, speech generation, file transcription (multipart, or a source_url form), and a streaming-transcription translator over its JSON-message wire. |
+| `_stt.py` | AssemblyAI and Deepgram: credential-validating discovery, streaming transcription frames to normalized events (including each provider's own speaker-label dialect under `diarize=True`), Deepgram's one-round-trip file transcription, and AssemblyAI's job-shaped one (upload, submit, poll). |
+| `_elevenlabs.py` | ElevenLabs: live speech-model discovery plus catalog STT entries, voice listing, speech generation, file transcription (multipart, or a source_url form), and a streaming-transcription translator over its JSON-message wire; a diarized session refuses, since its realtime wire never fills the speaker field. |
 
 ## Viewer (`src/keycall/viewer/`)
 

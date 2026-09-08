@@ -352,6 +352,10 @@ class ElevenLabsAdapter(ProviderAdapter):
     # --- streaming transcription ---
 
     def transcription_plan(self, config: TranscriptionConfig) -> tuple[str, Any]:
+        # The realtime socket sends a speaker_id key that is always null
+        # (live-probed 2026-09-08); reading it would hand back a column of
+        # None rather than labels, so a diarized session refuses here.
+        self.require_streaming_diarization(config)
         if config.sample_rate not in _REALTIME_SAMPLE_RATES:
             supported = ", ".join(str(rate) for rate in sorted(_REALTIME_SAMPLE_RATES))
             raise KeyCallError(

@@ -988,10 +988,14 @@ class TranscriptionConfig:
     ``model`` None means the provider's default streaming model.
     ``sample_rate`` is the rate of the 16-bit mono PCM audio the caller
     will send — the only audio form this surface takes; encode conversion
-    is the caller's job."""
+    is the caller's job. ``diarize`` asks the provider to label each
+    finalized word with its speaker, on the providers whose streaming wire
+    reports one; a provider without it refuses before the socket opens
+    rather than returning unlabelled words."""
 
     model: str | None = None
     sample_rate: int = 16000
+    diarize: bool = False
 
     def __post_init__(self) -> None:
         if self.sample_rate < 8000:

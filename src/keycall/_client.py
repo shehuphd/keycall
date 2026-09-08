@@ -1692,15 +1692,21 @@ class KeyCall(_BaseClient):
         *,
         model: str | None = None,
         sample_rate: int = 16000,
+        diarize: bool = False,
     ) -> TranscriptionSession:
-        """A live speech-to-text session (AssemblyAI, Deepgram). Use as a
-        context manager; push raw 16-bit mono PCM with send_audio, call
-        finish() when the audio ends, and read normalized events from
-        events(). model None takes the provider's default streaming
-        model."""
+        """A live speech-to-text session (AssemblyAI, Deepgram,
+        ElevenLabs). Use as a context manager; push raw 16-bit mono PCM
+        with send_audio, call finish() when the audio ends, and read
+        normalized events from events(). model None takes the provider's
+        default streaming model. diarize=True labels each finalized word
+        with its speaker on the providers whose streaming wire reports
+        one (AssemblyAI, Deepgram); elsewhere it refuses before the
+        socket opens rather than returning unlabelled words."""
         self._require_open()
         self._require_model_not_retired(model)
-        config = TranscriptionConfig(model=model, sample_rate=sample_rate)
+        config = TranscriptionConfig(
+            model=model, sample_rate=sample_rate, diarize=diarize
+        )
         path, translator = self._adapter.transcription_plan(config)
         from ._transcription import TranscriptionSession
 
@@ -2505,11 +2511,14 @@ class AsyncKeyCall(_BaseClient):
         *,
         model: str | None = None,
         sample_rate: int = 16000,
+        diarize: bool = False,
     ) -> AsyncTranscriptionSession:
         """Async twin of KeyCall.transcribe_stream."""
         self._require_open()
         self._require_model_not_retired(model)
-        config = TranscriptionConfig(model=model, sample_rate=sample_rate)
+        config = TranscriptionConfig(
+            model=model, sample_rate=sample_rate, diarize=diarize
+        )
         path, translator = self._adapter.transcription_plan(config)
         from ._transcription import AsyncTranscriptionSession
 
