@@ -1,6 +1,6 @@
 # Manifest
 
-Last updated: 2026-09-08 21:14:43 UTC
+Last updated: 2026-09-08 22:22:14 UTC
 
 Every current source file, with what it does and what it touches. A map for orienting in the codebase, not a second copy of the docstrings.
 
@@ -37,7 +37,7 @@ Every current source file, with what it does and what it touches. A map for orie
 | `_base.py` | The adapter contract: request building, response parsing, error translation, the pre-flight generation checks (`validate_generation_request`, including the sampling-constraint and seed gates), the batch hook set (prelude/submit/status/results/cancel) and the prerecorded-transcription hook set (sync build/parse plus job upload/submit/status/result) with their refusal gates. No I/O, never sees the credential. |
 | `_openai.py` | OpenAI Responses API: text, streaming, tools, apply_patch, code interpreter, images, speech, embeddings; `FileBatchDialect`, the upload-a-JSONL batch flow shared with Moonshot; prerecorded transcription (multipart, whisper-1-only word timings). |
 | `_anthropic.py` | Anthropic Messages API, including prompt-caching breakpoints, paginated listing, and the inline batch dialect with mixed models and a host-pinned results download. |
-| `_gemini.py` | Google Gemini: text, streaming, embeddings, image and video generation, the inline batch dialect (model in the URL, results on the operation object), schema pre-flight gate. |
+| `_gemini.py` | Google Gemini: text, streaming, embeddings, image and video generation, the inline batch dialect (model in the URL, results on the operation object), schema pre-flight gate. A bare refusal repeats the provider's own finishReason rather than reporting a missing image. |
 | `_openai_compat.py` | The shared chat-completions adapter (DeepSeek, Moonshot, xAI, Perplexity, custom targets): usage normalization including reasoning tokens, streaming assembly, tool calls. |
 | `_moonshot.py` | Moonshot override: the `$web_search` builtin's echo-back handshake; batch rides the shared file dialect against chat completions. |
 | `_perplexity.py` | Perplexity override: catalog-maintained Sonar models, per-request cost units. |

@@ -369,6 +369,27 @@ class GeminiAdapter(ProviderAdapter):
             elif part.get("text"):
                 commentary.append(str(part["text"]))
         usage_raw = payload.get("usageMetadata") or {} if isinstance(payload, dict) else {}
+        finish = str(candidate.get("finishReason") or "") if isinstance(candidate, dict) else ""
+        if not images and not commentary and finish:
+            # The model answered with a bare refusal: no picture, no words,
+            # only a finishReason. Repeating it verbatim is the difference
+            # between "the provider misbehaved" and a reason the caller can
+            # act on. IMAGE_RECITATION fires intermittently on a prompt that
+            # otherwise succeeds (measured 1 in 10 on a fixed prompt,
+            # 2026-09-08), so the retry advice is the accurate advice.
+            detail = (
+                "gemini's recitation filter blocked this generation "
+                "(finishReason IMAGE_RECITATION); the same prompt often "
+                "succeeds on a retry, and rephrasing it clears the check"
+                if finish == "IMAGE_RECITATION"
+                else f"the model returned no image and no text (finishReason {finish})"
+            )
+            raise KeyCallError(
+                detail,
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.IMAGE_GENERATION.value,
+            )
         if not images and commentary:
             # The model answered in words instead of drawing, which is how a
             # refusal or a clarifying question arrives. Repeat what it said

@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [1.11.0] — 2026-09-08
 
+### Fixed
+
+- **A Gemini image refusal now names the provider's own reason.** A generation the recitation filter blocks comes back as a valid 200 with no image part, no text, and a `finishReason` of `IMAGE_RECITATION`; KeyCall dropped that field and reported "provider returned no image for an image-generation request", which reads as a malformed response rather than a refusal the caller can act on. The error now repeats the reason and says that the same prompt often succeeds on a retry, since the check runs per generation (measured refusing 1 in 10 runs of one fixed prompt, raw, 2026-09-08). Any other bare refusal carries its finishReason through the same way.
+
 ### Added
 
 - **`diarize=True` on a streaming session labels each finalized word with its speaker.** `transcribe_stream(diarize=True)` asks in each provider's own dialect — AssemblyAI's `speaker_labels=true`, Deepgram's `diarize=true` — and both translators read the label back into `TranscriptWord.speaker`, stringified so a letter (`"A"`) and an integer index (`"0"`) are read the same way. The label is the provider's own and identifies a speaker within one session, never across providers or across a reconnect. ElevenLabs refuses the flag before the socket opens: its realtime words carry a `speaker_id` the provider leaves null on every word (live-probed 2026-09-08, 18 words on `scribe_v2_realtime`, with and without a diarize parameter), so taking the flag would hand back a column of `None` instead of labels; its stored-file diarization is unaffected. Diarization is now two capability flags rather than one, since the two wires disagree within a provider. A release probe re-verifies the labels on both supporting providers and ElevenLabs' absence, so the refusal can lift as soon as the provider fills the field.

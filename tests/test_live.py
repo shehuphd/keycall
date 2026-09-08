@@ -1907,10 +1907,31 @@ def test_live_image_generation():
             read_timeout=180.0,
         )
         try:
-            result = client.generate_image(
-                model=models[target.provider],
-                prompt="A simple flat illustration of a blue circle on a white background",
-            )
+            # A provider's own content filter firing is not a KeyCall
+            # regression: Gemini's recitation check refuses roughly one in
+            # ten runs of this very prompt (measured raw, 2026-09-08), and
+            # failing a release on it blocks publishing for a reason no
+            # code change can fix. Retry once, then leave this provider
+            # unverified for the run rather than calling it a fault.
+            for attempt in (1, 2):
+                try:
+                    result = client.generate_image(
+                        model=models[target.provider],
+                        prompt=(
+                            "A simple flat illustration of a blue circle "
+                            "on a white background"
+                        ),
+                    )
+                    break
+                except KeyCallError as exc:
+                    if "recitation" not in exc.message.lower() or attempt == 2:
+                        if "recitation" in exc.message.lower():
+                            pytest.skip(
+                                f"{target.display_name}: {models[target.provider]} hit the "
+                                "provider's recitation filter twice; image generation "
+                                "unverified this run"
+                            )
+                        raise
             assert result.parts, "no image part returned"
             part = result.parts[0]
             raw = base64.b64decode(part.base64_data or "")
