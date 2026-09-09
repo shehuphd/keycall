@@ -2175,6 +2175,8 @@ def _batches_submitted_early(request):
         yield None
         return
 
+    import time
+
     from keycall import BatchRequest, KeyCall, Message, TextInput
     from keycall._registry import providers_with
 
@@ -2214,7 +2216,10 @@ def _batches_submitted_early(request):
             job = client.start_batch(requests)
             print(f"{target.display_name}: submitted {job.job_id} ({job.provider_status})")
             entries.append({"target": target, "client": client, "job": job})
-        yield entries
+        # The waiting budget is measured from here, not from whenever the
+        # test is ordered, so the overlap with the rest of the suite can
+        # only shorten the wait and never shorten the budget.
+        yield {"entries": entries, "submitted_at": time.monotonic()}
     finally:
         for entry in entries:
             # Anything still running at session end would bill on its own
@@ -2239,15 +2244,18 @@ def test_live_batch_generation_every_supporting_target(_batches_submitted_early)
     eligibility at the add call, so grok-4.3 losing its batch lane fails
     this test by name, and each other id retiring fails as a create-time
     refusal."""
-    entries = _batches_submitted_early
-    if entries is None:
+    submitted = _batches_submitted_early
+    if submitted is None:
         pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    entries = submitted["entries"]
     assert entries, "no batch-capable target in the live source"
     import time
 
-    # The jobs already spent the suite's runtime in their providers' queues,
-    # so this is the remainder of the waiting budget, not the whole of it.
-    deadline = time.monotonic() + 1200.0
+    # The budget runs from submission, not from here, so whatever the suite
+    # already spent is deducted rather than added: a batch test ordered late
+    # waits out only the remainder, and one ordered early still gets the
+    # whole budget instead of a shortened one.
+    deadline = submitted["submitted_at"] + 2400.0
     in_flight = [entry for entry in entries if entry["job"].status == "running"]
     finished = [entry for entry in entries if entry["job"].status != "running"]
     if finished:
