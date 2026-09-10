@@ -121,6 +121,10 @@ def list_targets(registry: Registry) -> dict[str, Any]:
                 "image_generation": caps.image_generation,
                 "video_generation": caps.video_generation,
                 "reasoning_effort": caps.reasoning_effort,
+                # Whether the provider accepts the narrower "minimal" level,
+                # a subset of reasoning_effort that not every reasoning
+                # provider takes (OpenAI and DeepSeek do).
+                "reasoning_effort_minimal": caps.reasoning_effort_minimal,
                 "prompt_caching": caps.prompt_caching,
                 "realtime": caps.realtime,
                 "speech_generation": caps.speech_generation,

@@ -1598,6 +1598,12 @@ def test_targets_tell_the_browser_what_each_key_can_accept():
     assert caps["perplexity"]["tool_calling"] is False
     assert caps["anthropic"]["image_generation"] is False
     assert caps["openai"]["image_generation"] is True
+    # "minimal" reasoning effort is narrower than reasoning_effort itself:
+    # served per provider so the Playground greys it out on a key that
+    # would refuse it. OpenAI and DeepSeek take it; Anthropic does not.
+    assert caps["openai"]["reasoning_effort_minimal"] is True
+    assert caps["deepseek"]["reasoning_effort_minimal"] is True
+    assert caps["anthropic"]["reasoning_effort_minimal"] is False
     assert caps["gemini"]["video_generation"] is True
     assert caps["xai"]["video_generation"] is True
     assert caps["openai"]["video_generation"] is False

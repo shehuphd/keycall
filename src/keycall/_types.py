@@ -114,7 +114,7 @@ class TextInput:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ImageInput:
     """A picture for the model to look at, as bytes or a URL. Support is
-    per-provider and per-form: OpenAI, Anthropic, and Perplexity take
+    per-provider and per-form: OpenAI, Anthropic, Perplexity, and xAI take
     either, Gemini and Moonshot take bytes only, and DeepSeek takes
     neither. A form the provider can't accept is refused with
     UNSUPPORTED_OPERATION before any network call, so an unsupported
@@ -155,7 +155,7 @@ class AudioInput:
 class FileInput:
     """A document for the model to read, typically a PDF. OpenAI,
     Anthropic, and Gemini accept one as bytes; no provider accepts a URL,
-    and DeepSeek, Perplexity, and Moonshot accept neither, so those are
+    and DeepSeek, Perplexity, Moonshot, and xAI accept neither, so those are
     refused with UNSUPPORTED_OPERATION before any network call. `filename`
     is passed through where the provider shows it to the model, which is
     why a document keeps the name it had on disk.
@@ -396,7 +396,7 @@ class TextGenerationRequest:
     supports this takes it as one on/off switch, and adding configurable
     tool schemas is a bigger primitive KeyCall doesn't need until a
     caller needs more than search. Providers without a native search tool
-    (DeepSeek, Moonshot, custom targets) raise UNSUPPORTED_OPERATION rather
+    (DeepSeek, custom targets) raise UNSUPPORTED_OPERATION rather
     than silently ignoring the request. Perplexity's Sonar always searches
     regardless of this flag; setting it False there is a no-op, warned."""
     apply_patch: bool = False
@@ -435,7 +435,7 @@ class TextGenerationRequest:
     response_schema: Mapping[str, Any] | None = None
     """A JSON Schema object the response must conform to. Enforced
     provider-side where the provider supports it (OpenAI, Anthropic,
-    Gemini, Moonshot, Perplexity — see _capabilities.SCHEMA_ENFORCING_PROVIDERS);
+    Gemini, Moonshot, Perplexity, and xAI; see _capabilities.SCHEMA_ENFORCING_PROVIDERS);
     elsewhere KeyCall requests generic valid-JSON mode instead and adds a
     result warning, rather than claiming enforcement it can't deliver.
     result.text carries the JSON as a string on every provider, so callers
@@ -1246,7 +1246,7 @@ class Citation:
 
     ``url`` is the provider's, with campaign-tracking parameters removed.
     OpenAI appends ``?utm_source=openai`` to every cited URL (verified
-    2026-08-10; Anthropic, Gemini, and Perplexity append nothing), which
+    2026-08-10; Anthropic, Gemini, Perplexity, and xAI append nothing), which
     attributes the click to OpenAI in the destination site's analytics and
     follows the link into whatever a caller renders, logs, or stores.
     Nothing about it identifies the source, so it is stripped here rather

@@ -3492,11 +3492,11 @@ function gateCapabilities(off) {
   }
 
   // A capability gate only says whether reasoning_effort exists at all;
-  // "minimal" is narrower than that; OpenAI is the only provider that
-  // accepts it, so it stays selectable there and greys out everywhere
-  // else instead of being sent to a provider that will refuse it.
+  // "minimal" is narrower than that, a subset only some reasoning providers
+  // accept, so it gates on its own catalog flag and greys out on a key
+  // whose provider would refuse it rather than being sent there.
   const minimalOption = [...reasoningSelect.options].find((o) => o.value === "minimal");
-  const minimalOk = reasoningOk && (!target || target.provider === "openai");
+  const minimalOk = reasoningOk && (!target || Boolean(caps && caps.reasoning_effort_minimal));
   minimalOption.disabled = !minimalOk;
   if (!minimalOk && reasoningSelect.value === "minimal") {
     reasoningSelect.value = "";
