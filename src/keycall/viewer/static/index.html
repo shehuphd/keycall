@@ -38,6 +38,14 @@
              credential the tool deliberately doesn't persist. -->
         <input id="key-value" type="password" autocomplete="off"
                spellcheck="false" placeholder="Paste your API key">
+        <!-- Shown only for a service provider whose credential needs them
+             (LiveKit's key/secret pair on its per-project host); hidden for
+             every single-key provider. -->
+        <input id="key-secret" type="password" autocomplete="off"
+               spellcheck="false" placeholder="API secret" aria-label="API secret" hidden>
+        <input id="key-base-url" type="text" autocomplete="off"
+               spellcheck="false" placeholder="Project URL, e.g. https://name.livekit.cloud"
+               aria-label="Project URL" hidden>
         <button id="key-add">Add key</button>
       </div>
       <div id="key-status" class="muted"></div>
@@ -92,6 +100,11 @@
             <select id="dash-key-provider" aria-label="Provider"></select>
             <input id="dash-key-value" type="password" autocomplete="off"
                    spellcheck="false" placeholder="Paste your API key">
+            <input id="dash-key-secret" type="password" autocomplete="off"
+                   spellcheck="false" placeholder="API secret" aria-label="API secret" hidden>
+            <input id="dash-key-base-url" type="text" autocomplete="off"
+                   spellcheck="false" placeholder="Project URL, e.g. https://name.livekit.cloud"
+                   aria-label="Project URL" hidden>
             <button id="dash-key-add" type="button">Test key</button>
           </div>
           <div id="dash-key-status" class="meta"></div>

@@ -26,6 +26,7 @@ __all__ = [
     "SamplingConstraint",
     "ToolChoiceConstraint",
     "resolve_provider",
+    "service_provider_requirements",
     "supported_service_providers",
 ]
 
@@ -297,6 +298,24 @@ def supported_service_providers() -> tuple[str, ...]:
         for name, profile in _load_catalog()["providers"].items()
         if profile.get("kind", "model") == "service"
     )
+
+
+def service_provider_requirements() -> dict[str, dict[str, Any]]:
+    """What each service provider's credential needs, read straight from the
+    catalog so a caller (the viewer's add-key form) can render the right
+    inputs without constructing a client. A requires_base_url provider
+    (livekit) can't be resolved without the base URL it's asking for, so
+    resolution is the wrong place to read this from."""
+    catalog = _load_catalog()["providers"]
+    return {
+        name: {
+            "credential_fields": list(
+                catalog[name].get("credential_fields", ("api_key",))
+            ),
+            "requires_base_url": bool(catalog[name].get("requires_base_url", False)),
+        }
+        for name in supported_service_providers()
+    }
 
 
 def providers_with(capability: str) -> frozenset[str]:

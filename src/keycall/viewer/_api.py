@@ -17,7 +17,12 @@ from typing import Any
 
 from .._enums import ModelCategory
 from .._errors import KeyCallError
-from .._registry import providers_with, resolve_provider, supported_providers
+from .._registry import (
+    providers_with,
+    resolve_provider,
+    service_provider_requirements,
+    supported_providers,
+)
 from .._sources import SourceError, _target_from_mapping, load_targets
 from .._types import (
     AudioInput,
@@ -180,6 +185,11 @@ def list_targets(registry: Registry) -> dict[str, Any]:
         # Every provider a key can be added for, straight from the catalog,
         # so the form's dropdown can't drift from what the library accepts.
         "providers": list(supported_providers()),
+        # Service providers belong in the same form, but each declares what
+        # its credential needs: google_maps takes one pasted key, livekit a
+        # key/secret pair plus its per-project base URL. The add-key form
+        # reads this to show the right inputs per selected provider.
+        "service_providers": service_provider_requirements(),
         # The current provider read timeout, so the settings control shows
         # what the server is holding rather than assuming its own default.
         "read_timeout": registry.read_timeout,
@@ -939,7 +949,7 @@ def add_key(registry: Registry, body: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(key, str) or not key.strip():
         return {"error": {"code": "bad_request", "message": "a key is required"}}
     fields = {"provider": provider, "key": key}
-    for optional in ("name", "protocol", "base_url"):
+    for optional in ("name", "protocol", "base_url", "secret"):
         value = body.get(optional)
         if isinstance(value, str) and value.strip():
             fields[optional] = value.strip()

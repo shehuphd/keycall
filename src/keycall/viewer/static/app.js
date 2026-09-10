@@ -156,6 +156,10 @@ let PROVIDER_CAPABILITIES = {};
 let TRANSCRIPTION_WIRES = {};
 let SAMPLING_CONSTRAINTS = {};
 let TOOL_CHOICE_CONSTRAINTS = {};
+// {provider: {credential_fields: [...], requires_base_url: bool}} for the
+// service providers, so the add-key form shows the secret and project-URL
+// inputs only for a provider whose credential needs them.
+let SERVICE_PROVIDERS = {};
 
 // --- sortable tables --------------------------------------------------------
 
@@ -272,6 +276,7 @@ async function refreshTargets() {
   TRANSCRIPTION_WIRES = data.transcription_wires || {};
   SAMPLING_CONSTRAINTS = data.sampling_constraints || {};
   TOOL_CHOICE_CONSTRAINTS = data.tool_choice_constraints || {};
+  SERVICE_PROVIDERS = data.service_providers || {};
   // Only overwrite the control when the server names a value: an older
   // server process without the field must not blank or reset it.
   if (Number.isInteger(data.read_timeout)) {
@@ -308,6 +313,9 @@ function wireKeyForm(prefix) {
   const field = el(`${prefix}-value`);
   const status = el(`${prefix}-status`);
   const button = el(`${prefix}-add`);
+  const providerSelect = el(`${prefix}-provider`);
+  const secret = el(`${prefix}-secret`);
+  const baseUrl = el(`${prefix}-base-url`);
 
   const submit = async () => {
     const key = field.value.trim();
@@ -315,31 +323,50 @@ function wireKeyForm(prefix) {
       status.textContent = "paste a key first";
       return;
     }
+    const body = { provider: providerSelect.value, key };
+    // A shown field is one the selected provider needs, so it's required;
+    // a hidden one is cleared already and never sent.
+    if (!secret.hidden) {
+      if (!secret.value.trim()) {
+        status.textContent = "this provider needs an API secret too";
+        return;
+      }
+      body.secret = secret.value.trim();
+    }
+    if (!baseUrl.hidden) {
+      if (!baseUrl.value.trim()) {
+        status.textContent = "this provider needs its project URL";
+        return;
+      }
+      body.base_url = baseUrl.value.trim();
+    }
     working(button, "Adding…");
     status.textContent = "";
-    const data = await api("/api/key", {
-      method: "POST",
-      body: { provider: el(`${prefix}-provider`).value, key },
-    });
+    const data = await api("/api/key", { method: "POST", body });
     done(button);
     if (data.error) {
       status.textContent = `${data.error.code}: ${data.error.message}`;
       return;
     }
-    // Clear the field the moment the server has it: the key is in the local
-    // process now, and leaving it on screen is the one copy anyone can read.
+    // Clear the credential fields the moment the server has them: they're in
+    // the local process now, and leaving them on screen is the one copy
+    // anyone can read. The project URL isn't a secret, so it can stay.
     field.value = "";
+    secret.value = "";
     status.textContent = "";
     await refreshTargets();
   };
 
+  providerSelect.addEventListener("change", () => updateServiceFields(prefix));
   button.addEventListener("click", submit);
-  field.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      submit();
-    }
-  });
+  for (const input of [field, secret, baseUrl]) {
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submit();
+      }
+    });
+  }
 }
 
 wireKeyForm("key");
@@ -376,21 +403,54 @@ function fillProviderOptions(providers) {
     perplexity: "Perplexity",
     moonshot: "Moonshot / Kimi",
     xai: "xAI / Grok",
+    google_maps: "Google Maps",
+    livekit: "LiveKit",
+  };
+  // Service providers (no models, validated by a live probe) go in their own
+  // group so it's clear the ones above list models and these don't.
+  const serviceNames = Object.keys(SERVICE_PROVIDERS);
+  const addOption = (parent, name) => {
+    const option = document.createElement("option");
+    option.value = name;
+    // An unlabelled provider still appears, under its catalog id, rather
+    // than being dropped because this map wasn't updated.
+    option.textContent = labels[name] || name;
+    parent.appendChild(option);
   };
   ["key-provider", "dash-key-provider"].forEach((id) => {
     const sel = el(id);
     const previous = sel.value;
     clear(sel);
-    names.forEach((name) => {
-      const option = document.createElement("option");
-      option.value = name;
-      // An unlabelled provider still appears, under its catalog id, rather
-      // than being dropped because this map wasn't updated.
-      option.textContent = labels[name] || name;
-      sel.appendChild(option);
-    });
+    names.forEach((name) => addOption(sel, name));
+    if (serviceNames.length) {
+      const group = document.createElement("optgroup");
+      group.label = "Service providers";
+      serviceNames.forEach((name) => addOption(group, name));
+      sel.appendChild(group);
+    }
     if (previous) sel.value = previous;
   });
+  // The field set depends on the selected provider, so re-run it here and
+  // whenever the selection changes (wired in wireKeyForm).
+  updateServiceFields("key");
+  updateServiceFields("dash-key");
+}
+
+/** Show the secret and project-URL inputs only for the selected provider's
+ *  needs: a single-key provider (every model provider, and google_maps)
+ *  shows neither, livekit shows both. A hidden field is also cleared, so a
+ *  value typed for one provider can't ride along to another. */
+function updateServiceFields(prefix) {
+  const provider = el(`${prefix}-provider`).value;
+  const spec = SERVICE_PROVIDERS[provider];
+  const needsSecret = !!spec && (spec.credential_fields || []).length > 1;
+  const needsBaseUrl = !!spec && spec.requires_base_url;
+  const secret = el(`${prefix}-secret`);
+  const baseUrl = el(`${prefix}-base-url`);
+  secret.hidden = !needsSecret;
+  baseUrl.hidden = !needsBaseUrl;
+  if (!needsSecret) secret.value = "";
+  if (!needsBaseUrl) baseUrl.value = "";
 }
 
 el("source-load").addEventListener("click", async () => {

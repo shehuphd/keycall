@@ -282,6 +282,18 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 #dashboard-table th:nth-child(4),
 #models-table th:nth-child(4) { text-align: right; }
 
+/* Fixed column widths so a row's own content can't resize the table. A
+   service key's status is a sentence in the last column ("geocoding
+   enabled, places enabled, directions enabled"), and under the default
+   auto layout that widened the column and pushed every other one leftward
+   the moment such a row was checked. The widths hold; a long value wraps
+   inside its own cell instead. */
+#dashboard-table { table-layout: fixed; }
+#dashboard-table th:nth-child(1), #dashboard-table td:nth-child(1) { width: 26%; }
+#dashboard-table th:nth-child(2), #dashboard-table td:nth-child(2) { width: 22%; }
+#dashboard-table th:nth-child(3), #dashboard-table td:nth-child(3) { width: 14%; }
+#dashboard-table td:nth-child(4) { overflow-wrap: anywhere; }
+
 /* Sortable headers. */
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { color: var(--fg); }

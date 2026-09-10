@@ -1759,6 +1759,57 @@ def test_a_typed_key_joins_the_targets_already_loaded():
         reg.close()
 
 
+def test_list_targets_reports_service_provider_requirements():
+    """The add-key form reads these to show the right inputs per provider:
+    google_maps takes one key, livekit a pair plus its project host."""
+    from keycall.viewer._api import list_targets
+
+    reg = Registry([], httpx_transport=httpx.MockTransport(openai_handler))
+    try:
+        svc = list_targets(reg)["service_providers"]
+        assert svc["google_maps"] == {
+            "credential_fields": ["api_key"],
+            "requires_base_url": False,
+        }
+        assert svc["livekit"] == {
+            "credential_fields": ["api_key", "api_secret"],
+            "requires_base_url": True,
+        }
+    finally:
+        reg.close()
+
+
+def test_a_typed_livekit_pair_becomes_a_service_target():
+    """The form now carries a service provider's extra inputs: a livekit
+    key/secret pair on its per-project host. The pair joins the same
+    in-memory registry as a service target, and neither secret is echoed."""
+    from keycall.viewer._api import add_key
+
+    reg = Registry([], httpx_transport=httpx.MockTransport(openai_handler))
+    secret = CANARY + "-lk-secret"
+    try:
+        body = add_key(
+            reg,
+            {
+                "provider": "livekit",
+                "key": CANARY + "-lk-key",
+                "secret": secret,
+                "base_url": "https://demo-abc.livekit.cloud",
+                "name": "lk",
+            },
+        )
+        assert "error" not in body, body
+        added = body["targets"][-1]
+        assert added["provider"] == "livekit"
+        assert added["kind"] == "service"
+        assert added["name"] == "lk"
+        assert added["base_url"] == "https://demo-abc.livekit.cloud"
+        assert secret not in json.dumps(body)
+        assert CANARY not in json.dumps(body)
+    finally:
+        reg.close()
+
+
 def test_a_bad_typed_key_is_refused_with_a_readable_reason():
     from keycall.viewer._api import add_key
 
