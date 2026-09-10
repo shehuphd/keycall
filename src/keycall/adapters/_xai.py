@@ -16,6 +16,8 @@ compat assembler already handles for DeepSeek). What needs an override:
   takes the same detour: chat completions answers 200 to the field but
   reasoning token counts do not follow the value, while the responses
   route's ``reasoning.effort`` binds (both measured live 2026-08-14).
+  ``code_interpreter`` routes the same way, to the Agent Tools API on the
+  responses path.
 - Model listing appends Grok Voice from the catalog: GET /v1/models
   doesn't list it (checked live 2026-08-15), so a key with realtime
   access would otherwise show none.

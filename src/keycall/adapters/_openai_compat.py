@@ -2,7 +2,7 @@
 
 Serves DeepSeek, Perplexity, Moonshot, and explicit custom targets. Only
 the conventional Chat Completions surface is assumed; provider-specific
-extensions aren't (registry research section 9).
+extensions aren't.
 """
 
 from __future__ import annotations

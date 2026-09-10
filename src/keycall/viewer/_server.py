@@ -20,6 +20,7 @@ Routes (all under the base "/"):
   POST /api/transcribe/file      {target, model, audio_base64|url, diarize?}
                                   -> transcript with word timings and billing
   GET  /api/voices?target=       the target's voices for the speech task's picker
+  GET  /api/traces               every request outcome this run has logged
   GET  /api/realtime?target=&model=&voice=&instructions=   WebSocket upgrade;
                                   bridges the browser to a realtime session
   GET  /api/transcribe?target=&model=&sample_rate=   WebSocket upgrade;
@@ -29,6 +30,8 @@ Routes (all under the base "/"):
   POST /api/conversations        {id?, title, mode, target, model, history,
                                    transcript_html} -> create or overwrite one
   POST /api/conversations/clear  drop every saved conversation
+  POST /api/traces/clear         drop the trace log
+  POST /api/settings             {read_timeout} -> rebuild loaded clients
 
 Auth: a token is required on every /api/* request. Unlike TraceAct's opt-in
 token, it is mandatory here: this server holds live credentials and can make

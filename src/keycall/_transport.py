@@ -524,7 +524,7 @@ class _TransportCore:
 
         if status_code < 400:
             # Redirects are never followed: a cross-origin redirect must not
-            # carry the credential (registry research section 9).
+            # carry the credential.
             return KeyCallError(
                 "provider attempted a redirect; KeyCall refuses to follow redirects "
                 "while carrying a credential",
