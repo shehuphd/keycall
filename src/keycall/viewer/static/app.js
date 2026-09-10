@@ -648,6 +648,19 @@ let PG_TARGET_RENDER = 0;
 // that work, so a key that can't serve what's already set doesn't belong
 // in it; the alternative is picking one and being told afterwards what it
 // won't do.
+// Whether a control belongs to the task on screen. A control the current
+// task hides (a seed left set on "Write text", say) keeps its value but
+// isn't part of this task, so it must not constrain anything here — that
+// was filtering every transcription key out because the STT keys have no
+// seed. offsetParent is null for an element inside a hidden subtree, which
+// applyMode sets before this runs.
+function controlActive(id) {
+  const control = el(id);
+  return !!control && control.offsetParent !== null;
+}
+
+// Every capability the current setup asks a key for: the task's own, plus
+// each extra the user has switched on and that this task actually shows.
 function requestedCapabilities() {
   const needed = [];
   const capability = modeCapability(currentMode());
@@ -659,18 +672,21 @@ function requestedCapabilities() {
     ["pg-stt-diarize", "transcription_diarization"],
   ];
   whenOn.forEach(([id, flag]) => {
-    const control = el(id);
-    if (control && control.checked) needed.push(flag);
+    if (controlActive(id) && el(id).checked) needed.push(flag);
   });
-  if (el("pg-reasoning").value) needed.push("reasoning_effort");
-  if (el("pg-seed").value) needed.push("supports_seed");
+  if (controlActive("pg-reasoning") && el("pg-reasoning").value) {
+    needed.push("reasoning_effort");
+  }
+  if (controlActive("pg-seed") && el("pg-seed").value) needed.push("supports_seed");
   return needed;
 }
 
 // The attachment kinds switched on, which gate on the key's own accepts
-// map rather than a provider capability flag.
+// map rather than a provider capability flag. Only the current task's own
+// attachments count, the same way capabilities do above.
 function requestedAttachments() {
-  return ATTACHMENTS.filter(({ id }) => el(`pg-${id}-on`).checked).map(({ id }) => id);
+  return ATTACHMENTS.filter(({ id }) => controlActive(`pg-${id}-on`) && el(`pg-${id}-on`).checked)
+    .map(({ id }) => id);
 }
 
 function keyServes(target, needed, attachments) {
