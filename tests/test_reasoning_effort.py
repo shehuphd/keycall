@@ -1,9 +1,9 @@
 """reasoning_effort mapping and gating, per provider.
 
 The field is only offered where a native control was live-verified to
-bind (2026-08-14): reasoning-token counts follow the requested level.
-Providers that accept the parameter without honoring it (DeepSeek) are
-refused rather than silently ignored.
+bind: reasoning-token counts follow the requested level. Providers that
+accept the parameter without honoring it (Moonshot, measured 2026-09-10)
+are refused rather than silently ignored.
 """
 
 import json
@@ -29,7 +29,7 @@ def simple_messages():
 # --- request-side gating ----------------------------------------------------
 
 
-@pytest.mark.parametrize("provider", ["deepseek", "moonshot"])
+@pytest.mark.parametrize("provider", ["moonshot"])
 def test_reasoning_effort_refused_where_no_binding_control_exists(provider):
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("must fail before any network call")
@@ -42,17 +42,17 @@ def test_reasoning_effort_refused_where_no_binding_control_exists(provider):
     assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
     assert "reasoning" in excinfo.value.message
     # The error names every provider where the knob does work.
-    for supported in ("openai", "anthropic", "gemini", "perplexity", "xai"):
+    for supported in ("openai", "anthropic", "deepseek", "gemini", "perplexity", "xai"):
         assert supported in excinfo.value.message
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "gemini", "perplexity", "xai"])
-def test_minimal_effort_refused_on_every_provider_but_openai(provider):
+def test_minimal_effort_refused_where_the_control_has_no_such_level(provider):
     """'minimal' is narrower than the reasoning_effort capability flag:
-    OpenAI's Responses API is the only place it's live-verified. A
-    provider that supports 'low'/'medium'/'high' must still refuse
-    'minimal' rather than mapping it to a level its own control doesn't
-    define."""
+    only some native controls name that level (OpenAI's Responses API,
+    DeepSeek's own enum). A provider that supports 'low'/'medium'/'high'
+    must still refuse 'minimal' rather than mapping it to a level its own
+    control does not define."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("must fail before any network call")
@@ -64,7 +64,9 @@ def test_minimal_effort_refused_on_every_provider_but_openai(provider):
         )
     assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
     assert "minimal" in excinfo.value.message
+    # The refusal names where it does work, from the catalog.
     assert "openai" in excinfo.value.message
+    assert "deepseek" in excinfo.value.message
 
 
 def test_minimal_effort_accepted_on_openai():
@@ -90,6 +92,30 @@ def test_minimal_effort_accepted_on_openai():
     )
     assert result.text == "ok"
     assert seen[0]["reasoning"] == {"effort": "minimal"}
+
+
+def test_deepseek_sends_the_effort_on_the_chat_completions_body():
+    """DeepSeek made reasoning_effort a binding control (none spends zero
+    reasoning tokens, any level spends some; measured 2026-09-10), so the
+    value now rides its ordinary chat-completions body instead of being
+    refused pre-flight. 'minimal' is one of the levels its enum names."""
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "model": "deepseek-v4-pro",
+            "choices": [{"message": {"role": "assistant", "content": "ok"},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+        })
+
+    client = make_client("deepseek", handler)
+    for level in ("high", "minimal"):
+        client.generate_text(
+            model="deepseek-v4-pro", messages=simple_messages(), reasoning_effort=level
+        )
+    assert [body["reasoning_effort"] for body in seen] == ["high", "minimal"]
 
 
 def test_reasoning_effort_refused_for_custom_targets():

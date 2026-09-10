@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.09.10.2",
+  "catalog_version": "2026.09.10.3",
   "verified_at": "2026-08-10T00:00:00Z",
   "providers": {
     "openai": {
@@ -124,7 +124,9 @@
         "transcription": true,
         "transcription_note": "Multipart POST /v1/audio/transcriptions, live-verified 2026-09-02. whisper-1 takes response_format=verbose_json + timestamp_granularities[]=word and returns duration/language/words (seconds, no per-word confidence); the gpt-4o transcribe family refuses verbose_json with a 400 naming json/text, so it returns text only, with token-billed usage. gpt-4o-transcribe-diarize has its own diarized_json format returning speaker-labelled segments, not words - not wired; diarize=True refuses on this provider. 25MB file limit per the docs.",
         "transcription_url_input": false,
-        "transcription_diarization": false
+        "transcription_diarization": false,
+        "reasoning_effort_minimal": true,
+        "reasoning_effort_minimal_note": "The Responses API defines a 'minimal' effort level (verified live 2026-08-14)."
       },
       "voices": {
         "verified": "2026-08-31",
@@ -1162,8 +1164,8 @@
       "capabilities": {
         "tool_calling": true,
         "web_search": false,
-        "reasoning_effort": false,
-        "reasoning_effort_note": "reasoning_effort is accepted with HTTP 200 but reasoning token counts do not follow the value (measured 2026-08-14), so the request is refused rather than silently ignored.",
+        "reasoning_effort": true,
+        "reasoning_effort_note": "Top-level reasoning_effort on chat completions, and it binds: on deepseek-chat, reasoning token counts over three runs per level ran none=[0,0,0], low=[650,603,744], high=[1164,942,698], max=[1402,1441,741], and both listed models answered none with 0 reasoning tokens in every run against nonzero at any level (deepseek-flash, deepseek-v4-pro; measured 2026-09-10). The provider also validates the value, refusing an unknown level with 400 and naming its enum: none, minimal, low, medium, high, xhigh, max. Supersedes the 2026-08-14 note recording the field as accepted and ignored; DeepSeek has since made it a control.",
         "schema_enforcement": null,
         "sampling_constraints": [],
         "verified": "2026-08-09",
@@ -1186,7 +1188,9 @@
         "realtime": false,
         "batch_generation": false,
         "batch_embeddings": false,
-        "supports_seed": true
+        "supports_seed": true,
+        "reasoning_effort_minimal": true,
+        "reasoning_effort_minimal_note": "'minimal' is one of the levels the provider's own enum names, and a request at that level spends reasoning tokens (measured 2026-09-10)."
       },
       "retired_models_note": "No retired ids as of 2026-09-04: the announced 2026-07-24 retirement of deepseek-chat/deepseek-reasoner took effect as silent redirects to deepseek-v4-flash \u2014 all three legacy names (deepseek-coder too) still answer 200, verified live that day, so refusing them would block working calls."
     },
@@ -1404,7 +1408,7 @@
         "tool_calling": true,
         "web_search": true,
         "reasoning_effort": false,
-        "reasoning_effort_note": "No effort control could be verified: kimi-thinking-preview answered 404 on the test account (2026-08-14).",
+        "reasoning_effort_note": "reasoning_effort is accepted with HTTP 200 on the chat-completions wire but does not bind: on kimi-k3, reasoning token counts over three runs per level ran none=[881,1914,166], low=[354,181,42], medium=[105,399,47], high=[615,268,706], so the run-to-run spread dwarfs the level and medium fell below low; an invalid value (\"zzz\") also answered 200 rather than 400, so the field is not parsed as a control (measured 2026-09-10). The request is refused rather than silently ignored. Supersedes the 2026-08-14 note, whose evidence was kimi-thinking-preview answering 404; that model has since been retired.",
         "schema_enforcement": "json_schema",
         "sampling_constraints": [
           {

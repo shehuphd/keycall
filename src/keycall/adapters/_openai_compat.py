@@ -300,8 +300,8 @@ class OpenAICompatibleAdapter(ProviderAdapter):
         if request.reasoning_effort is not None:
             # Only providers whose catalog entry records a live-verified
             # binding control reach this line; the gate refuses the rest
-            # (DeepSeek answers 200 to this field but its reasoning token
-            # counts do not follow the value, measured 2026-08-14).
+            # (Moonshot answers 200 to this field without its reasoning
+            # token counts following the value, measured 2026-09-10).
             body["reasoning_effort"] = request.reasoning_effort
         if request.tools:
             body["tools"] = [

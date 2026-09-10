@@ -275,11 +275,11 @@ def test_generate_sends_reasoning_effort_to_the_provider():
 
 
 def test_generate_refuses_reasoning_effort_on_an_unsupporting_provider():
-    targets = [Target(provider="deepseek", key=CANARY, name="my-deepseek")]
+    targets = [Target(provider="moonshot", key=CANARY, name="my-kimi")]
     reg = Registry(
         targets,
         httpx_transport=httpx.MockTransport(
-            lambda request: httpx.Response(200, json={"data": [{"id": "deepseek-chat"}]})
+            lambda request: httpx.Response(200, json={"data": [{"id": "kimi-k3"}]})
         ),
     )
     try:
@@ -288,7 +288,7 @@ def test_generate_refuses_reasoning_effort_on_an_unsupporting_provider():
             0,
             {
                 "target": 0,
-                "model": "deepseek-chat",
+                "model": "kimi-k3",
                 "prompt": "hi",
                 "reasoning_effort": "low",
             },
@@ -1602,7 +1602,8 @@ def test_targets_tell_the_browser_what_each_key_can_accept():
     assert caps["xai"]["video_generation"] is True
     assert caps["openai"]["video_generation"] is False
     assert caps["openai"]["reasoning_effort"] is True
-    assert caps["deepseek"]["reasoning_effort"] is False
+    assert caps["deepseek"]["reasoning_effort"] is True
+    assert caps["moonshot"]["reasoning_effort"] is False
     assert caps["assemblyai"]["transcription"] is True
     assert caps["deepgram"]["transcription"] is True
     assert caps["openai"]["transcription"] is False

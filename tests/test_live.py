@@ -1634,6 +1634,175 @@ def test_live_anthropic_structured_output_still_holds():
     )
 
 
+def test_live_compat_reasoning_effort_still_unbound():
+    """Capability-drift probe for the providers whose catalog
+    `reasoning_effort` is false because the field is accepted and ignored
+    (deepseek, moonshot; evidence remeasured on moonshot 2026-09-10).
+    KeyCall refuses `reasoning_effort` there rather than letting a caller
+    believe a level took effect, so the refusal rests on that evidence.
+
+    Measuring binding every release would mean many samples per level per
+    provider, since reasoning token counts swing hugely run to run. The
+    cheap discriminator is validation: a provider that parses the field as
+    a control validates its values, so an invalid level answering HTTP 200
+    means the field is still being ignored. A 400 means the provider began
+    parsing it, which is the moment to re-measure whether it now binds and
+    to revisit the catalog flag.
+
+    A transport failure says nothing either way and skips."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import httpx
+
+    from keycall._registry import resolve_provider
+
+    targets, _ = load_targets(source)
+    checked = []
+
+    def probe(target) -> None:
+        resolved = resolve_provider(target.provider)
+        base = resolved.base_url.rstrip("/")
+        headers = {
+            "Authorization": f"Bearer {target.key}",
+            "Content-Type": "application/json",
+        }
+        with httpx.Client(headers=headers, timeout=120) as client:
+            listing = client.get(f"{base}/models")
+            listing.raise_for_status()
+            model = next(
+                m["id"]
+                for m in listing.json()["data"]
+                if "vision" not in m["id"] and "embed" not in m["id"]
+            )
+            answer = client.post(
+                f"{base}/chat/completions",
+                json={
+                    "model": model,
+                    "max_tokens": 32,
+                    "messages": [{"role": "user", "content": "Reply with the single word: ok"}],
+                    "reasoning_effort": "zzz-not-a-level",
+                },
+            )
+            assert answer.status_code == 200, (
+                f"capability drift: {target.provider} now rejects an invalid "
+                f"reasoning_effort (HTTP {answer.status_code}: {answer.text[:300]}), so it "
+                "parses the field. Re-measure whether a level binds reasoning token counts "
+                "and revisit the catalog reasoning_effort flag and its note"
+            )
+            checked.append(f"{target.provider}/{model}")
+
+    for provider in ("moonshot",):
+        target = next((t for t in targets if t.provider == provider), None)
+        if target is None:
+            continue
+        if resolve_provider(provider).capabilities.reasoning_effort:
+            pytest.fail(
+                f"{provider} now records reasoning_effort=true; this probe covers the "
+                "providers that ignore the field and needs updating alongside that flag"
+            )
+        for attempt in (1, 2):
+            try:
+                probe(target)
+                break
+            except httpx.TransportError as exc:
+                if attempt == 2:
+                    print(f"{provider} unreachable ({type(exc).__name__}: {exc}); unverified")
+    if not checked:
+        pytest.skip("no moonshot target in the live source")
+    print(f"reasoning_effort still ignored (invalid level accepted) on: {', '.join(checked)}")
+
+
+def test_live_deepseek_reasoning_effort_still_binds():
+    """Capability-drift probe for DeepSeek's reasoning-effort control
+    (evidence 2026-09-10, which replaced a 2026-08-14 note recording the
+    field as accepted and ignored). Two claims, both cheap:
+
+    1. The provider validates the level, refusing an unknown one with 400.
+       A field parsed as an enum is a field being read.
+    2. It binds at the boundary that needs no statistics: effort "none"
+       spends zero reasoning tokens and a level spends some. Comparing
+       levels against each other would need many samples, since the counts
+       swing widely run to run; zero against nonzero does not.
+
+    Failing either means the catalog's `reasoning_effort` flag for deepseek
+    has drifted and its note needs re-measuring. A transport failure says
+    nothing and skips."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import httpx
+
+    from keycall._registry import resolve_provider
+
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider == "deepseek"), None)
+    if target is None:
+        pytest.skip("no deepseek target in the live source")
+    assert resolve_provider("deepseek").capabilities.reasoning_effort, (
+        "deepseek no longer records reasoning_effort=true; this probe and that flag "
+        "move together"
+    )
+    base = resolve_provider("deepseek").base_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {target.key}", "Content-Type": "application/json"}
+    ask = "A rope burns unevenly in 60 minutes. Measure 45 minutes with two ropes. Explain."
+
+    def probe() -> str:
+        with httpx.Client(headers=headers, timeout=300) as client:
+            listing = client.get(f"{base}/models")
+            listing.raise_for_status()
+            model = listing.json()["data"][0]["id"]
+
+            rejected = client.post(
+                f"{base}/chat/completions",
+                json={
+                    "model": model,
+                    "max_tokens": 32,
+                    "messages": [{"role": "user", "content": "Say ok."}],
+                    "reasoning_effort": "zzz-not-a-level",
+                },
+            )
+            assert rejected.status_code == 400, (
+                f"capability drift: deepseek accepted an invalid reasoning_effort "
+                f"(HTTP {rejected.status_code}), so it may have stopped parsing the field. "
+                "Re-measure whether a level still binds and revisit the catalog flag"
+            )
+
+            def spend(effort: str) -> int:
+                answer = client.post(
+                    f"{base}/chat/completions",
+                    json={
+                        "model": model,
+                        "max_tokens": 2000,
+                        "messages": [{"role": "user", "content": ask}],
+                        "reasoning_effort": effort,
+                    },
+                )
+                answer.raise_for_status()
+                usage = answer.json()["usage"]
+                return int(usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0))
+
+            none_spend, high_spend = spend("none"), spend("high")
+            assert none_spend == 0 and high_spend > 0, (
+                f"capability drift: deepseek's effort levels no longer move reasoning spend "
+                f"on {model} (none={none_spend}, high={high_spend}) — re-measure and revisit "
+                "the catalog reasoning_effort flag and its note"
+            )
+            return f"{model} (none={none_spend}, high={high_spend})"
+
+    for attempt in (1, 2):
+        try:
+            observed = probe()
+            break
+        except httpx.TransportError as exc:
+            if attempt == 2:
+                pytest.skip(
+                    f"deepseek unreachable from this runner ({type(exc).__name__}: {exc}); "
+                    "reasoning-effort binding unverified this run"
+                )
+    print(f"deepseek: reasoning_effort still validated and still binding on {observed}")
+
+
 def test_live_google_maps_service_probes_still_hold():
     """Capability-drift probe for the Google Maps service adapter (evidence
     2026-09-10). Probed raw, not through KeyCall, so it verifies the provider:

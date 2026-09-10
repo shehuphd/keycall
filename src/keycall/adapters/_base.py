@@ -1282,16 +1282,21 @@ class ProviderAdapter(ABC):
                     operation=Operation.TEXT_GENERATION.value,
                 )
             # "minimal" is narrower than the reasoning_effort capability
-            # flag above: OpenAI's Responses API is the only place it's
-            # live-verified. Every other reasoning-capable provider maps
-            # the value straight through to its own native control, so
-            # "minimal" would reach the wire as a level that control does
-            # not define, refused live rather than caught here.
-            if request.reasoning_effort == "minimal" and self.resolved.provider != "openai":
+            # flag above: only some native controls define that level, and
+            # the value is mapped straight through, so on a provider whose
+            # control has no such level it would reach the wire and be
+            # refused there. Which providers define it is catalog evidence
+            # (OpenAI's Responses API, and DeepSeek's own enum), not a name
+            # written into this gate.
+            if request.reasoning_effort == "minimal" and not (
+                self.resolved.capabilities.reasoning_effort_minimal
+            ):
+                supported = sorted(providers_with("reasoning_effort_minimal"))
                 raise KeyCallError(
                     f"provider {self.resolved.provider!r} does not support the "
-                    "'minimal' reasoning effort; only openai does. Use 'low', "
-                    "'medium', or 'high' instead",
+                    "'minimal' reasoning effort; it is supported on: "
+                    + ", ".join(supported)
+                    + ". Use 'low', 'medium', or 'high' instead",
                     code=ErrorCode.UNSUPPORTED_OPERATION,
                     provider=self.resolved.provider,
                     operation=Operation.TEXT_GENERATION.value,

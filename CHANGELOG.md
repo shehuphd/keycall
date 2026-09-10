@@ -18,6 +18,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- **`reasoning_effort` now works on DeepSeek.** DeepSeek used to accept the field and ignore it, so KeyCall refused it rather than shipping a control that did nothing. The provider has since made it a control: it validates the level against its own enum (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), and reasoning spend follows it, with `none` costing zero reasoning tokens and any level costing some on both listed models (measured 2026-09-10). The parameter is now forwarded there, `"minimal"` included, and which providers accept `"minimal"` is read from the catalog rather than named in the gate. A release probe re-verifies both halves.
+- **Moonshot's reasoning-effort evidence was re-measured.** Its refusal rested on `kimi-thinking-preview` answering 404 in August, a model since retired. Re-probed on `kimi-k3`: the field is accepted, an invalid level is accepted just as readily, and reasoning-token counts don't follow the value across three runs per level, so the refusal stands on current evidence and a release probe now holds it there.
 - **The project description generalizes beyond AI keys.** With service providers in the catalog, KeyCall validates keys and normalizes calls for providers with no models at all, and the package description and README now say so.
 
 ### Fixed

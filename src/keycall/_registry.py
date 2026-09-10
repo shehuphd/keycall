@@ -98,6 +98,10 @@ class ProviderCapabilities:
     speech_generation: bool = False
     video_generation: bool = False
     reasoning_effort: bool = False
+    # Whether the provider's own effort enum names a 'minimal' level.
+    # Narrower than reasoning_effort: a provider can have a binding
+    # control whose levels start at 'low'.
+    reasoning_effort_minimal: bool = False
     realtime: bool = False
     # Whether TextInput(cacheable=True) sets a breakpoint here at all.
     # False doesn't mean "no caching" — every provider without this flag
@@ -230,6 +234,7 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
         speech_generation=bool(raw.get("speech_generation", False)),
         video_generation=bool(raw.get("video_generation", False)),
         reasoning_effort=bool(raw.get("reasoning_effort", False)),
+        reasoning_effort_minimal=bool(raw.get("reasoning_effort_minimal", False)),
         realtime=bool(raw.get("realtime", False)),
         web_search=bool(raw.get("web_search", False)),
         apply_patch=bool(raw.get("apply_patch", False)),

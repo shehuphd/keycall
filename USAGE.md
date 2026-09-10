@@ -525,7 +525,7 @@ result = client.generate_text(
 )
 ```
 
-The value is passed in the provider's own vocabulary (commonly `"low"` / `"medium"` / `"high"`) and is never converted, so a value the provider itself rejects surfaces as that provider's own typed error. `"minimal"` is the one exception: it's live-verified on OpenAI's Responses API alone, so KeyCall refuses it with `UNSUPPORTED_OPERATION` before any network call on every other provider, rather than letting it reach a native control that doesn't define that level. Each supported mapping was verified live to bind: reasoning-token counts follow the requested level.
+The value is passed in the provider's own vocabulary (commonly `"low"` / `"medium"` / `"high"`) and is never converted, so a value the provider itself rejects surfaces as that provider's own typed error. `"minimal"` is the exception: only some native controls name that level (OpenAI's Responses API, and DeepSeek's own enum), so KeyCall refuses it with `UNSUPPORTED_OPERATION` before any network call on the providers whose control doesn't define it, rather than letting it reach the wire to be refused there. Each supported mapping was verified live to bind: reasoning-token counts follow the requested level.
 
 | Provider | Native control |
 |---|---|
@@ -533,11 +533,12 @@ The value is passed in the provider's own vocabulary (commonly `"low"` / `"mediu
 | Anthropic | `output_config.effort` |
 | Gemini | `thinkingConfig.thinkingLevel` (KeyCall uppercases the value) |
 | Perplexity | `reasoning_effort` |
+| DeepSeek | `reasoning_effort` (levels `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) |
 | xAI | `reasoning.effort`, on the `/v1/responses` route |
 
 On xAI, naming an effort switches the request to `/v1/responses` the same way `web_search=True` does: Grok's chat completions accepts a `reasoning_effort` field with HTTP 200 but measured reasoning-token counts don't follow it, while the responses route honors the level.
 
-DeepSeek accepts the parameter and ignores it the same way (HTTP 200, unmoved token counts), and Moonshot's thinking model wasn't available to verify — so on DeepSeek, Moonshot, and custom targets, `reasoning_effort` raises `UNSUPPORTED_OPERATION` before any network call rather than shipping a knob that does nothing.
+Moonshot accepts the parameter and ignores it (HTTP 200, and an invalid level accepted just as readily, with reasoning-token counts that don't follow the value; measured 2026-09-10), so there and on custom targets `reasoning_effort` raises `UNSUPPORTED_OPERATION` before any network call rather than shipping a control that does nothing. DeepSeek was in that group until 2026-09-10, when it began validating the level and moving reasoning spend with it, so the parameter is now supported there.
 
 ### Reasoning-token counts
 
