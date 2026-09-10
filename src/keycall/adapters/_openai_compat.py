@@ -1,6 +1,6 @@
 """OpenAI-compatible adapter: GET /models, POST /chat/completions.
 
-Serves DeepSeek, Perplexity, Moonshot, and explicit custom targets. Only
+Serves DeepSeek, Perplexity, Moonshot, xAI, and explicit custom targets. Only
 the conventional Chat Completions surface is assumed; provider-specific
 extensions aren't.
 """

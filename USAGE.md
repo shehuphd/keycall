@@ -116,7 +116,7 @@ both = client.list_models(
 
 Categories: `TEXT_GENERATION`, `IMAGE_GENERATION`, `EMBEDDING`, `TRANSCRIPTION`, `SPEECH_GENERATION`, `VIDEO_GENERATION`, `REALTIME`, `UNKNOWN`. Models KeyCall can't classify are `UNKNOWN` and appear only when you request that category explicitly, never in the default text picker.
 
-`ModelDiscovery` fields: `models`, `provider`, `categories`, `fetched_at`, `from_cache`, `catalog_version`, `warnings`, `withheld`. Each `Model` carries `id`, `provider`, `categories`, `display_name`, `released_at`, `classification_source`, and `warnings`.
+`ModelDiscovery` fields: `provider`, `models`, `categories`, `fetched_at`, `from_cache`, `catalog_version`, `catalog_stale`, `warnings`, `withheld`. Each `Model` carries `id`, `provider`, `categories`, `display_name`, `lifecycle`, `released_at`, `context_limit`, `capabilities`, `classification_source`, `warnings`, and `alias`.
 
 `released_at` is when the provider says the model appeared, and is `None` where the provider doesn't say. OpenAI and Moonshot report a unix timestamp, Anthropic an ISO date; Gemini and DeepSeek report nothing, and Perplexity has no list endpoint. It exists because `verify` orders its candidates by it, newest first, on the providers that publish it.
 
@@ -922,7 +922,7 @@ job = client.cancel_batch(job)         # stop a running batch; done work stays b
 - **Cancel is best-effort by design.** Requests already processed stay billed and readable from the results; Gemini acknowledges the ask with an empty body, so the cancelled state appears on a later `check_batch()` rather than in the cancel response.
 - **Anthropic's results download is pinned** to the provider's own API host; a `results_url` pointing anywhere else is refused rather than followed with the credential.
 
-`AsyncKeyCall` carries the same five methods as awaitables.
+`AsyncKeyCall` carries the same batch methods as awaitables.
 
 ## Service providers
 
@@ -1015,12 +1015,13 @@ Retry behavior: model listing gets a small bounded retry budget for transient fa
 A model a provider's listing endpoint returns isn't a guarantee it will accept a request from your account: some providers advertise retired or entitlement-gated models with no lifecycle field to filter on ahead of time (see [Listing and filtering models](#listing-and-filtering-models) above). `MODEL_NOT_AVAILABLE` is how KeyCall reports that after the fact, and it's not retryable on the same model for that reason, so the useful response is to drop it and move to the next discovered candidate rather than retry it:
 
 ```python
-from keycall import ErrorCode, KeyCallError
+from keycall import ErrorCode, KeyCallError, Message, TextInput
 
 def generate_with_fallback(client, model_ids, prompt):
+    messages = [Message(role="user", content=[TextInput(text=prompt)])]
     for model_id in model_ids:
         try:
-            return client.generate_text(model=model_id, prompt=prompt)
+            return client.generate_text(model=model_id, messages=messages)
         except KeyCallError as error:
             if error.code is not ErrorCode.MODEL_NOT_AVAILABLE:
                 raise
