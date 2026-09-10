@@ -41,6 +41,7 @@ __all__ = [
     "WEB_SEARCH_PROVIDERS",
     "mentions_json",
     "sampling_violation",
+    "tool_choice_violation",
 ]
 
 WEB_SEARCH_PROVIDERS = providers_with("web_search")
@@ -91,6 +92,29 @@ def sampling_violation(
                 )
             return (
                 f"model {model!r} accepts only {name}={permitted:g}, not {value:g}"
+            )
+    return None
+
+
+def tool_choice_violation(
+    resolved: ResolvedProvider,
+    model: str,
+    tool_choice: str,
+) -> str | None:
+    """The reason this model won't accept this tool_choice, or None.
+    claude-fable-5-1 refuses forced tool selection: tool_choice types
+    "tool" and "any" return 400 on it while every sibling model accepts
+    them (live-verified 2026-09-10), so the family constraint lives in the
+    catalog next to the sampling constraints rather than in code."""
+    lowered = model.lower()
+    for constraint in resolved.capabilities.tool_choice_constraints:
+        if not re.match(constraint.pattern, lowered):
+            continue
+        if tool_choice in constraint.refused:
+            return (
+                f"model {model!r} refuses tool_choice={tool_choice!r}; "
+                "use 'auto' and let the model decide, or pick a model "
+                "that accepts a forced tool call"
             )
     return None
 

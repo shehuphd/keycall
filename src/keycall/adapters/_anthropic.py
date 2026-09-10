@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import dataclasses
-import json
 from collections.abc import Mapping
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
@@ -58,15 +57,6 @@ from ._base import (
 # caller didn't specify one.
 _DEFAULT_MAX_OUTPUT_TOKENS = 4096
 _PAGE_LIMIT = "1000"
-
-# Structured output has no native response-format API on Anthropic: it's
-# implemented by forcing a single synthetic tool whose input_schema is the
-# caller's response_schema, then reading that tool call's input back as
-# the answer (live-verified 2026-08-06). This name only needs to be
-# distinguishable from a caller-defined tool the caller might add once general tool
-# calling exists — it's never sent to or interpreted by the model as
-# anything but an arbitrary tool name.
-_STRUCTURED_OUTPUT_TOOL_NAME = "keycall_response"
 
 # Beta feature flag code_interpreter needs (live-verified 2026-08-22); sent
 # only on a request that asks for it, never on every Anthropic request.
@@ -146,13 +136,11 @@ class _AnthropicStreamAssembler(StreamAssembler):
                 name = str(block.get("name", ""))
                 block_type = f"tool_use:{name}"
                 self._blocks[index] = block_type
-                if name != _STRUCTURED_OUTPUT_TOOL_NAME:
-                    return [
-                        self.begin_tool_call(
-                            index, call_id=str(block.get("id", "")), name=name
-                        )
-                    ]
-                return []
+                return [
+                    self.begin_tool_call(
+                        index, call_id=str(block.get("id", "")), name=name
+                    )
+                ]
             self._blocks[index] = block_type
             return []
         if kind == "content_block_delta":
@@ -167,13 +155,6 @@ class _AnthropicStreamAssembler(StreamAssembler):
                 return [TextDelta(text=text)]
             if delta_type == "input_json_delta":
                 fragment = str(delta.get("partial_json", ""))
-                if self._blocks.get(index) == f"tool_use:{_STRUCTURED_OUTPUT_TOOL_NAME}":
-                    # The forced structured-output tool: its input is the
-                    # answer, streamed as JSON fragments, matching the
-                    # non-streaming contract that result.text carries the
-                    # JSON string.
-                    self.append_text(fragment)
-                    return [TextDelta(text=fragment)]
                 return self.append_tool_arguments(index, fragment)
             if delta_type == "citations_delta":
                 note = delta.get("citation")
@@ -383,16 +364,18 @@ class AnthropicAdapter(ProviderAdapter):
                 else {"type": request.tool_choice}
             )
         if request.response_schema is not None:
-            # validate_generation_request already rejects this combined
-            # with web_search or caller tools, so overwriting is safe.
-            body["tools"] = [
-                {
-                    "name": _STRUCTURED_OUTPUT_TOOL_NAME,
-                    "description": "Return the structured response.",
-                    "input_schema": dict(request.response_schema),
-                }
-            ]
-            body["tool_choice"] = {"type": "tool", "name": _STRUCTURED_OUTPUT_TOOL_NAME}
+            # Anthropic's native structured output, rather than forcing a
+            # synthetic tool: claude-fable-5-1 refuses tool_choice types
+            # "tool" and "any" outright, while the native format holds on
+            # every currently listed model down to the 4.5 snapshots,
+            # streaming included, and composes with caller tools and
+            # web_search where a forced tool cannot (all live-verified
+            # 2026-09-10). setdefault: reasoning_effort may already have
+            # opened output_config above.
+            body.setdefault("output_config", {})["format"] = {
+                "type": "json_schema",
+                "schema": dict(request.response_schema),
+            }
         headers = (
             {"anthropic-beta": _CODE_EXECUTION_BETA_HEADER} if request.code_interpreter else {}
         )
@@ -442,7 +425,7 @@ class AnthropicAdapter(ProviderAdapter):
                                 cited_text=note.get("cited_text"),
                             )
                         )
-            elif block_type == "tool_use" and block.get("name") != _STRUCTURED_OUTPUT_TOOL_NAME:
+            elif block_type == "tool_use":
                 parts.append(
                     ToolCall(
                         id=str(block.get("id", "")),
@@ -450,12 +433,6 @@ class AnthropicAdapter(ProviderAdapter):
                         arguments=self.parse_tool_arguments(block.get("input", {})),
                     )
                 )
-            elif block_type == "tool_use" and block.get("name") == _STRUCTURED_OUTPUT_TOOL_NAME:
-                # The forced structured-output tool: its input *is* the
-                # answer. Serialize back to a JSON string so result.text
-                # carries JSON-as-a-string uniformly across every provider,
-                # regardless of which mechanism produced it.
-                parts.append(TextOutput(text=json.dumps(block.get("input", {}))))
             elif block_type in (
                 "thinking",
                 "web_search_tool_result",

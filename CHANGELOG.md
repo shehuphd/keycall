@@ -4,6 +4,18 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.2] — 2026-09-10
+
+### Fixed
+
+- **`nano-banana-pro-preview` no longer classifies as a text model.** Google's nano-banana family is image generation whose alias ids carry no "image" substring, and the model advertises `generateContent`, so provider metadata read it as text and it entered every default text picker (observed live on a Gemini catalog, 2026-09-10). The identifier rules now know the family, and the distinctive-modality override does the rest.
+- **Structured output works on `claude-fable-5-1`.** Anthropic's newest model refuses forced tool selection (`tool_choice` types `"tool"` and `"any"` return 400), which was the mechanism KeyCall used to enforce a `response_schema` there, so every structured-output call on that model failed. The adapter now uses Anthropic's native `output_config.format` with the caller's JSON schema, live-verified 2026-09-10 on every model the API lists, streaming included: the JSON answer arrives as ordinary text on both paths.
+
+### Changed
+
+- **`response_schema` now combines with `web_search` and with caller tools on Anthropic.** The native format leaves the tools array to the caller, so both combinations that the forced-tool mechanism had to reject before the network call now build and run (live-verified 2026-09-10). Other providers are unchanged.
+- **`tool_choice="required"` on `claude-fable-5-1` is refused before the network call** with `MODEL_NOT_SUITABLE` naming the model and the fix, instead of surfacing the provider's 400 after a billable round trip. The constraint is catalog data with dated evidence, scoped to that one model — every sibling still accepts a forced tool call — and the live suite carries a drift probe that fails if Anthropic lifts the restriction.
+
 ## [1.11.1] — 2026-09-08
 
 ### Changed

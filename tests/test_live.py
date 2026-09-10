@@ -1507,6 +1507,121 @@ def test_live_xai_schema_enforcement_still_holds():
 
 
 @pytest.mark.live
+def test_live_anthropic_structured_output_still_holds():
+    """Capability-drift probe for Anthropic structured output (evidence
+    2026-09-10), both halves of the fable-5-1 switch:
+
+    1. output_config.format {type: json_schema} returns schema-conforming
+       JSON on the newest listed model. Losing that means the native
+       mechanism drifted: re-probe and revisit the adapter, the catalog
+       schema_enforcement note, and the structured-output docs.
+    2. An absence claim: claude-fable-5-1 refuses tool_choice type "any"
+       with a 400, the evidence behind its catalog tool_choice_constraints
+       entry. If it starts accepting, the constraint should come out and
+       tool_choice='required' work there again.
+
+    This test failing IS the notification. A transport failure says
+    nothing about either claim and skips instead."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import json
+
+    import httpx
+
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider == "anthropic"), None)
+    if target is None:
+        pytest.skip("no anthropic target in the live source")
+
+    headers = {
+        "x-api-key": target.key,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+
+    def probe() -> str:
+        with httpx.Client(headers=headers, timeout=60) as client:
+            listing = client.get("https://api.anthropic.com/v1/models?limit=100")
+            listing.raise_for_status()
+            ids = [m["id"] for m in listing.json()["data"]]
+            model = ids[0]
+
+            good = client.post(
+                "https://api.anthropic.com/v1/messages",
+                json={
+                    "model": model,
+                    "max_tokens": 64,
+                    "messages": [{"role": "user", "content": "Say hi in one word."}],
+                    "output_config": {
+                        "format": {"type": "json_schema", "schema": schema}
+                    },
+                },
+            )
+            assert good.status_code == 200, (
+                f"capability drift: anthropic rejected output_config.format on {model} "
+                f"(HTTP {good.status_code}: {good.text[:300]}) — revisit the adapter and "
+                "the catalog schema_enforcement note"
+            )
+            blocks = good.json()["content"]
+            text = next(b["text"] for b in blocks if b["type"] == "text")
+            assert set(json.loads(text)) == {"answer"}, (
+                f"capability drift: anthropic no longer conforms output to the schema "
+                f"(got {text[:200]})"
+            )
+
+            if "claude-fable-5-1" not in ids:
+                print(
+                    "anthropic: claude-fable-5-1 no longer listed; its tool_choice "
+                    "constraint checks nothing this run"
+                )
+                return model
+            forced = client.post(
+                "https://api.anthropic.com/v1/messages",
+                json={
+                    "model": "claude-fable-5-1",
+                    "max_tokens": 64,
+                    "messages": [{"role": "user", "content": "Say hi."}],
+                    "tools": [
+                        {
+                            "name": "t",
+                            "description": "d",
+                            "input_schema": {"type": "object"},
+                        }
+                    ],
+                    "tool_choice": {"type": "any"},
+                },
+            )
+            assert forced.status_code == 400, (
+                f"capability drift: claude-fable-5-1 answered a forced tool_choice with "
+                f"HTTP {forced.status_code}, not 400 — drop its tool_choice_constraints "
+                "entry from the catalog"
+            )
+            return model
+
+    for attempt in (1, 2):
+        try:
+            model = probe()
+            break
+        except httpx.TransportError as exc:
+            if attempt == 2:
+                pytest.skip(
+                    f"anthropic unreachable from this runner ({type(exc).__name__}: {exc}); "
+                    "structured output unverified this run"
+                )
+    print(
+        f"anthropic: output_config.format enforced on {model}, fable-5-1 still refuses "
+        "forced tool_choice (evidence current)"
+    )
+
+
+@pytest.mark.live
 def test_live_streaming_diarization_still_holds():
     """Capability-drift probe for streaming speaker labels (evidence
     2026-09-08), spoken by two macOS voices so more than one speaker exists:

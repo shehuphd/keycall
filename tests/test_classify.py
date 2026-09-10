@@ -23,6 +23,7 @@ CASES = [
     ("dall-e-3", ModelCategory.IMAGE_GENERATION),
     ("gpt-image-1", ModelCategory.IMAGE_GENERATION),
     ("imagen-3.0-generate-002", ModelCategory.IMAGE_GENERATION),
+    ("nano-banana-pro-preview", ModelCategory.IMAGE_GENERATION),
     ("sora-2", ModelCategory.VIDEO_GENERATION),
     ("veo-3.0-generate-preview", ModelCategory.VIDEO_GENERATION),
     # Conservative unknowns: never guessed into the text picker.

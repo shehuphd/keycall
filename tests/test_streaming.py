@@ -183,28 +183,39 @@ def test_anthropic_stream_usage_split_across_events():
     assert not any("no usage" in w for w in result.warnings)
 
 
-def test_anthropic_forced_tool_schema_streams_json_fragments():
+def test_anthropic_schema_streams_as_text_deltas():
+    """Native structured output (output_config.format) streams the JSON
+    answer as ordinary text_delta events (live-verified 2026-09-10 on
+    claude-fable-5-1); the request must carry the format, not a tool."""
+    captured = {}
+
     def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
         return stream_response(
             sse(
-                ("message_start", {"type": "message_start", "message": {"model": "claude-opus-5", "usage": {"input_tokens": 4}}}),
+                ("message_start", {"type": "message_start", "message": {"model": "claude-fable-5-1", "usage": {"input_tokens": 4}}}),
                 ("content_block_start", {"type": "content_block_start", "index": 0,
-                                          "content_block": {"type": "tool_use", "name": "keycall_response"}}),
+                                          "content_block": {"type": "text"}}),
                 ("content_block_delta", {"type": "content_block_delta", "index": 0,
-                                          "delta": {"type": "input_json_delta", "partial_json": '{"word":'}}),
+                                          "delta": {"type": "text_delta", "text": '{"word":'}}),
                 ("content_block_delta", {"type": "content_block_delta", "index": 0,
-                                          "delta": {"type": "input_json_delta", "partial_json": ' "ok"}'}}),
-                ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 5}}),
+                                          "delta": {"type": "text_delta", "text": ' "ok"}'}}),
+                ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 5}}),
                 ("message_stop", {"type": "message_stop"}),
             )
         )
 
     schema = {"type": "object", "properties": {"word": {"type": "string"}}}
     with make_client("anthropic", handler).stream_text(
-        model="claude-opus-5", messages=messages(), response_schema=schema
+        model="claude-fable-5-1", messages=messages(), response_schema=schema
     ) as stream:
         list(stream)
         result = stream.result()
+    assert captured["body"]["output_config"]["format"] == {
+        "type": "json_schema",
+        "schema": schema,
+    }
+    assert "tool_choice" not in captured["body"]
     assert json.loads(result.text) == {"word": "ok"}
 
 
@@ -518,16 +529,24 @@ def test_unknown_event_type_surfaces_bounded():
     assert "z" not in unknown[0].provider_kind
 
 
-def test_anthropic_web_search_with_schema_still_blocked_streaming():
-    client = KeyCall(provider="anthropic", api_key=CANARY, httpx_transport=httpx.MockTransport(lambda r: httpx.Response(500)))
-    with pytest.raises(KeyCallError) as excinfo:
-        client.stream_text(
-            model="claude-opus-5",
-            messages=messages(),
-            web_search=True,
-            response_schema={"type": "object"},
-        )
-    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+def test_anthropic_web_search_with_schema_builds_streaming():
+    """web_search and response_schema ride one streaming request: the
+    schema in output_config.format, the server tool in tools."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return stream_response(sse(*anthropic_events()))
+
+    with make_client("anthropic", handler).stream_text(
+        model="claude-opus-5",
+        messages=messages(),
+        web_search=True,
+        response_schema={"type": "object"},
+    ) as stream:
+        list(stream)
+    assert captured["body"]["output_config"]["format"]["schema"] == {"type": "object"}
+    assert any(t.get("name") == "web_search" for t in captured["body"]["tools"])
 
 
 # --- async parity -----------------------------------------------------------

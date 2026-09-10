@@ -1091,7 +1091,11 @@ class ProviderAdapter(ABC):
         """Pre-flight checks that mirror what the provider would reject:
         part types and placement, capability gates, and sampling params
         against models with maintained evidence that they reject them."""
-        from .._capabilities import TOOL_CALLING_PROVIDERS, sampling_violation
+        from .._capabilities import (
+            TOOL_CALLING_PROVIDERS,
+            sampling_violation,
+            tool_choice_violation,
+        )
         from .._types import AudioInput, FileInput, ImageInput, TextInput, ToolCall, ToolResult
 
         for message in request.messages:
@@ -1166,18 +1170,6 @@ class ProviderAdapter(ABC):
                         provider=self.resolved.provider,
                         operation=Operation.TEXT_GENERATION.value,
                     )
-            if request.response_schema is not None and self.resolved.provider == "anthropic":
-                # Schema enforcement on Anthropic is itself a forced tool
-                # call; combining it with caller tools is mechanically
-                # impossible in one turn.
-                raise KeyCallError(
-                    "anthropic cannot combine tools with response_schema: "
-                    "schema enforcement forces its own tool call, excluding "
-                    "the caller's tools in the same turn",
-                    code=ErrorCode.UNSUPPORTED_OPERATION,
-                    provider=self.resolved.provider,
-                    operation=Operation.TEXT_GENERATION.value,
-                )
         if self.resolved.provider == "anthropic":
             for message in request.messages:
                 for part in message.content:
@@ -1207,6 +1199,17 @@ class ProviderAdapter(ABC):
                 provider=self.resolved.provider,
                 operation=Operation.TEXT_GENERATION.value,
             )
+        if request.tool_choice is not None:
+            choice_violation = tool_choice_violation(
+                self.resolved, request.model, request.tool_choice
+            )
+            if choice_violation is not None:
+                raise KeyCallError(
+                    choice_violation,
+                    code=ErrorCode.MODEL_NOT_SUITABLE,
+                    provider=self.resolved.provider,
+                    operation=Operation.TEXT_GENERATION.value,
+                )
         if request.seed is not None and not self.resolved.capabilities.supports_seed:
             from .._capabilities import SEED_PROVIDERS
 
@@ -1292,25 +1295,6 @@ class ProviderAdapter(ABC):
                     provider=self.resolved.provider,
                     operation=Operation.TEXT_GENERATION.value,
                 )
-        if (
-            request.web_search
-            and request.response_schema is not None
-            and self.resolved.provider == "anthropic"
-        ):
-            # Not a guess: Anthropic's tool_choice={"type":"tool",...}, the
-            # only mechanism KeyCall has for schema enforcement here, forces
-            # the model to call only that tool and nothing else in the
-            # same turn — mechanically incompatible with also invoking the
-            # server-side web_search tool. This is an API constraint,
-            # not a live-probed guess.
-            raise KeyCallError(
-                "anthropic cannot combine web_search with response_schema: "
-                "forcing the structured-output tool prevents the model "
-                "from also calling web_search in the same turn",
-                code=ErrorCode.UNSUPPORTED_OPERATION,
-                provider=self.resolved.provider,
-                operation=Operation.TEXT_GENERATION.value,
-            )
         if (
             request.response_schema is not None
             and self.resolved.provider == "gemini"

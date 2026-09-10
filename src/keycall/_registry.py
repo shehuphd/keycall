@@ -24,6 +24,7 @@ __all__ = [
     "ProviderCapabilities",
     "ResolvedProvider",
     "SamplingConstraint",
+    "ToolChoiceConstraint",
     "resolve_provider",
 ]
 
@@ -44,6 +45,18 @@ class SamplingConstraint:
 
     def accepts(self, name: str, value: float) -> bool:
         return name in self.allowed and self.allowed[name] == value
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolChoiceConstraint:
+    """A model family that refuses some tool_choice values. ``refused``
+    holds KeyCall's own spellings ('required', 'auto', 'none'); the note
+    records the provider's wire-level behavior and the date it was
+    observed."""
+
+    pattern: str
+    refused: tuple[str, ...]
+    note: str = ""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -91,6 +104,7 @@ class ProviderCapabilities:
     # None: no provider-side enforcement, KeyCall falls back to JSON mode.
     schema_enforcement: str | None = None
     sampling_constraints: tuple[SamplingConstraint, ...] = ()
+    tool_choice_constraints: tuple[ToolChoiceConstraint, ...] = ()
     # Whether the provider's generation API defines a seed field at all.
     # Provider-level, not per-model: seed is an API-wide parameter where it
     # exists (Gemini, DeepSeek, Moonshot, xAI), absent where it doesn't
@@ -219,6 +233,14 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
                 note=str(entry.get("note", "")),
             )
             for entry in raw.get("sampling_constraints", ())
+        ),
+        tool_choice_constraints=tuple(
+            ToolChoiceConstraint(
+                pattern=str(entry["pattern"]),
+                refused=tuple(str(v) for v in entry.get("refused", ())),
+                note=str(entry.get("note", "")),
+            )
+            for entry in raw.get("tool_choice_constraints", ())
         ),
         supports_seed=bool(raw.get("supports_seed", False)),
         non_text_model_families=tuple(raw.get("non_text_model_families", ())),

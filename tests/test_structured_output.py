@@ -11,7 +11,7 @@ import json
 import httpx
 import pytest
 
-from keycall import ErrorCode, KeyCall, KeyCallError, Message, TextInput
+from keycall import ErrorCode, KeyCall, KeyCallError, Message, TextInput, Tool
 
 CANARY = "sk-canary-structured-key"
 
@@ -79,10 +79,12 @@ def test_openai_sends_json_schema_format():
     assert "not enforce" not in " ".join(result.warnings)
 
 
-# --- Anthropic: forced tool_choice --------------------------------------------
+# --- Anthropic: native output_config.format -----------------------------------
 
 
-def test_anthropic_forces_structured_output_tool():
+def test_anthropic_sends_native_output_format():
+    """The schema rides output_config.format; no synthetic tool, no
+    tool_choice. The answer comes back as an ordinary text block."""
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -90,47 +92,97 @@ def test_anthropic_forces_structured_output_tool():
         return httpx.Response(
             200,
             json={
-                "model": "claude-opus-5",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "name": "keycall_response",
-                        "input": {"name": "x", "version": "1"},
-                    }
-                ],
-                "stop_reason": "tool_use",
+                "model": "claude-fable-5-1",
+                "content": [{"type": "text", "text": '{"name":"x","version":"1"}'}],
+                "stop_reason": "end_turn",
                 "usage": {},
             },
         )
 
     client = make_client("anthropic", handler)
     result = client.generate_text(
-        model="claude-opus-5", messages=simple_messages(), response_schema=SCHEMA
+        model="claude-fable-5-1", messages=simple_messages(), response_schema=SCHEMA
     )
-    assert captured["body"]["tool_choice"] == {"type": "tool", "name": "keycall_response"}
-    assert captured["body"]["tools"][0]["input_schema"] == SCHEMA
+    assert captured["body"]["output_config"]["format"] == {
+        "type": "json_schema",
+        "schema": SCHEMA,
+    }
+    assert "tools" not in captured["body"]
+    assert "tool_choice" not in captured["body"]
     assert json.loads(result.text) == {"name": "x", "version": "1"}
 
 
-def test_anthropic_rejects_web_search_with_response_schema():
+def test_anthropic_output_format_merges_with_reasoning_effort():
+    """reasoning_effort opens output_config first; the schema must join it
+    in the same object rather than overwrite it."""
+    captured = {}
+
     def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("must fail before any network call")
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "{}"}], "usage": {}},
+        )
 
     client = make_client("anthropic", handler)
-    with pytest.raises(KeyCallError) as excinfo:
-        client.generate_text(
-            model="claude-opus-5",
-            messages=simple_messages(),
-            web_search=True,
-            response_schema=SCHEMA,
+    client.generate_text(
+        model="claude-fable-5-1",
+        messages=simple_messages(),
+        response_schema=SCHEMA,
+        reasoning_effort="low",
+    )
+    assert captured["body"]["output_config"]["effort"] == "low"
+    assert captured["body"]["output_config"]["format"]["schema"] == SCHEMA
+
+
+def test_anthropic_schema_composes_with_web_search():
+    """Native structured output leaves the tools array alone, so the
+    web_search server tool and a response_schema ride one request
+    (live-verified 2026-09-10 on claude-fable-5-1)."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "{}"}], "usage": {}},
         )
-    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+
+    client = make_client("anthropic", handler)
+    client.generate_text(
+        model="claude-fable-5-1",
+        messages=simple_messages(),
+        web_search=True,
+        response_schema=SCHEMA,
+    )
+    assert captured["body"]["output_config"]["format"]["schema"] == SCHEMA
+    assert any(t.get("name") == "web_search" for t in captured["body"]["tools"])
+
+
+def test_anthropic_schema_composes_with_caller_tools():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "{}"}], "usage": {}},
+        )
+
+    client = make_client("anthropic", handler)
+    client.generate_text(
+        model="claude-fable-5-1",
+        messages=simple_messages(),
+        tools=[Tool(name="get_time", description="UTC time", input_schema={"type": "object"})],
+        response_schema=SCHEMA,
+    )
+    assert captured["body"]["output_config"]["format"]["schema"] == SCHEMA
+    assert [t["name"] for t in captured["body"]["tools"]] == ["get_time"]
 
 
 def test_anthropic_unrelated_tool_use_is_a_tool_call_not_schema_output():
-    """A tool_use block that ISN'T the structured-output tool must not be
-    mistaken for one — only the exact synthetic name is special-cased. It
-    surfaces as a ToolCall part, and its input never enters result.text."""
+    """Every tool_use block surfaces as a ToolCall part; none is mistaken
+    for structured output, whose answer arrives as a text block."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -408,43 +460,48 @@ def test_schema_with_quotes_backslashes_and_unicode_round_trips_safely():
     assert captured["body"]["text"]["format"]["schema"] == hostile_schema
 
 
-def test_anthropic_malformed_tool_input_does_not_crash():
-    """A provider that returns a broken/missing tool_use.input must not
-    crash the adapter — pass through what it actually said."""
+def test_fable_5_1_refuses_forced_tool_choice_before_the_network():
+    """claude-fable-5-1 400s tool_choice types "tool" and "any"
+    (live-verified 2026-09-10); the catalog constraint turns KeyCall's
+    tool_choice='required' into a pre-flight refusal naming the fix."""
 
-    for bad_input in (None, [1, 2, 3], "not-an-object", 42):
-        def handler(request: httpx.Request, _payload=bad_input) -> httpx.Response:
-            return httpx.Response(
-                200,
-                json={
-                    "content": [
-                        {"type": "tool_use", "name": "keycall_response", "input": _payload}
-                    ],
-                    "usage": {},
-                },
-            )
-
-        client = make_client("anthropic", handler)
-        result = client.generate_text(
-            model="claude-opus-5", messages=simple_messages(), response_schema=SCHEMA
-        )
-        # Must produce some non-empty, valid JSON text, never raise.
-        assert result.text
-        json.loads(result.text)
-
-
-def test_anthropic_tool_use_missing_input_key_entirely():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={"content": [{"type": "tool_use", "name": "keycall_response"}], "usage": {}},
-        )
+        raise AssertionError("must fail before any network call")
 
     client = make_client("anthropic", handler)
-    result = client.generate_text(
-        model="claude-opus-5", messages=simple_messages(), response_schema=SCHEMA
-    )
-    assert result.text == "{}"
+    with pytest.raises(KeyCallError) as excinfo:
+        client.generate_text(
+            model="claude-fable-5-1",
+            messages=simple_messages(),
+            tools=[Tool(name="t", description="d", input_schema={"type": "object"})],
+            tool_choice="required",
+        )
+    assert excinfo.value.code is ErrorCode.MODEL_NOT_SUITABLE
+    assert "claude-fable-5-1" in str(excinfo.value)
+    assert "auto" in str(excinfo.value)
+
+
+def test_sibling_models_still_accept_forced_tool_choice():
+    """The constraint is scoped to claude-fable-5-1; every sibling model
+    still takes tool_choice='required', mapped to Anthropic's type any."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "ok"}], "usage": {}},
+        )
+
+    for model in ("claude-fable-5", "claude-opus-5", "claude-sonnet-5"):
+        client = make_client("anthropic", handler)
+        client.generate_text(
+            model=model,
+            messages=simple_messages(),
+            tools=[Tool(name="t", description="d", input_schema={"type": "object"})],
+            tool_choice="required",
+        )
+        assert captured["body"]["tool_choice"] == {"type": "any"}
 
 
 def test_provider_returns_truncated_or_non_json_content_with_schema_requested():

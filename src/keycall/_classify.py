@@ -51,7 +51,10 @@ _RULES: tuple[tuple[tuple[str, ...], ModelCategory], ...] = (
     # and no provider metadata to fall back on (its /v1/models lists bare
     # ids), so the identifier is the only signal available for it.
     (("realtime", "voice"), ModelCategory.REALTIME),
-    (("dall-e", "image", "imagen", "flux"), ModelCategory.IMAGE_GENERATION),
+    # "banana" is google's nano-banana image family, whose alias ids carry
+    # no "image" substring while the model advertises generateContent, so
+    # neither the generic marker nor provider metadata catches it.
+    (("dall-e", "image", "imagen", "banana", "flux"), ModelCategory.IMAGE_GENERATION),
     (("sora", "veo", "imagine-video"), ModelCategory.VIDEO_GENERATION),
     # Ambiguous or out-of-taxonomy families stay unknown rather than
     # guessing: moderation/reranking/guard models, audio-hybrid previews.

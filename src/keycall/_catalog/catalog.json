@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.09.08.3",
+  "catalog_version": "2026.09.10.1",
   "verified_at": "2026-08-10T00:00:00Z",
   "providers": {
     "openai": {
@@ -477,6 +477,7 @@
         "prompt_caching": true,
         "prompt_caching_note": "TextInput(cacheable=True) sets a cache_control: {type: ephemeral, ttl} block on that content block; a system TextInput switches the system field from a joined string to a block array only when a cache marker is present. Anthropic is the one provider where caching doesn't happen at all without this marker. cache_ttl_seconds must be 300 (\"5m\", default, no extra cost) or 3600 (\"1h\", billed at double the base input rate) \u2014 any other value is refused before the network call rather than rounded.",
         "schema_enforcement": "native",
+        "schema_enforcement_note": "output_config.format {type: json_schema, schema} on /v1/messages; the answer arrives as an ordinary text block (text_delta when streaming) and composes with caller tools and web_search. Live-verified 2026-09-10 on every model the test key lists, claude-fable-5-1 down to the dated 4.5 snapshots. The forced-tool alternative (a synthetic tool plus tool_choice type tool) is refused by claude-fable-5-1 with a 400.",
         "sampling_constraints": [
           {
             "pattern": "^claude-opus-4-(?:[7-9]|\\d\\d+)",
@@ -512,6 +513,15 @@
               "temperature": 1.0
             },
             "note": "temperature and top_p are deprecated on this generation: only temperature=1.0 is accepted (backwards compatibility) and any other temperature, or any explicit top_p, returns 400 (not individually probed: Mythos is not on the test key, and it is the same generation as Fable, which Anthropic deprecated sampling on)"
+          }
+        ],
+        "tool_choice_constraints": [
+          {
+            "pattern": "^claude-fable-5-1",
+            "refused": [
+              "required"
+            ],
+            "note": "tool_choice types \"tool\" and \"any\" return 400 on this model while every sibling accepts them (live-verified 2026-09-10); KeyCall's tool_choice=\"required\" maps to type \"any\", so it is refused before the network call"
           }
         ],
         "verified": "2026-08-09",

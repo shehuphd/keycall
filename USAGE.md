@@ -300,10 +300,10 @@ Rules and behavior:
 
 - `to_assistant_message()` replays the model's turn, including provider echo data some providers require back verbatim (`ToolCall.opaque`, e.g. Gemini's thought signature — never modify or interpret it).
 - `ToolResult.content` may be a string or a JSON-serializable mapping; adapters convert to each provider's required form.
-- `tool_choice` accepts `"auto"`, `"required"`, or `"none"`. Forcing one named tool isn't yet supported. Some provider/model pairs reject `"required"` (DeepSeek thinking models return 400); the provider's typed error is surfaced.
+- `tool_choice` accepts `"auto"`, `"required"`, or `"none"`. Forcing one named tool isn't yet supported. Some provider/model pairs reject `"required"`: claude-fable-5-1 refuses forced tool selection outright (live-verified 2026-09-10), which KeyCall catches before the network call as `MODEL_NOT_SUITABLE`; DeepSeek thinking models return 400 and the provider's typed error is surfaced.
 - `web_search` combines with tools on OpenAI, Anthropic, and Gemini (where KeyCall sets the required `toolConfig` flag automatically).
 - Perplexity has no tool calling and raises `UNSUPPORTED_OPERATION` before any network call; the live suite carries a drift probe that fails if that ever changes. Custom OpenAI-compatible targets pass through with a result warning that support is unverified.
-- Not combinable: Anthropic tools + `response_schema`, because schema enforcement is itself a forced tool call.
+- Tools combine with `response_schema` on Anthropic: the schema rides `output_config.format` and leaves the tools array alone, so the model can call tools mid-round and still return schema-conforming JSON (live-verified 2026-09-10).
 
 ### Streaming tool calls
 
@@ -714,7 +714,7 @@ parsed = json.loads(result.text)   # result.text is the JSON string on every pro
 | Provider | Mechanism | Enforced? |
 |---|---|---|
 | OpenAI | `text.format={"type":"json_schema",...,"strict":true}` (Responses API) | yes |
-| Anthropic | forces a single synthetic tool call, reads its input back | yes |
+| Anthropic | `output_config.format={"type":"json_schema",...}` | yes |
 | Gemini | `generationConfig.responseSchema` | yes |
 | Moonshot | `response_format={"type":"json_schema",...}` | yes |
 | Perplexity | `response_format={"type":"json_schema",...}` | yes |
@@ -730,7 +730,7 @@ Three provider requirements to know before writing a schema:
 - **Gemini rejects any `additionalProperties` key** in the schema, at any nesting depth, with a 400 (live-verified 2026-08-08) — the direct opposite of OpenAI's requirement. One schema can't satisfy both providers; strip or add the key per provider before the call. KeyCall checks for the key before calling Gemini and raises `UNSUPPORTED_OPERATION` if it finds one, rather than letting the provider's raw 400 through — a schema generator that includes it by default (Pydantic's `model_json_schema()`, for one) will trip this on every nested object until it's stripped for Gemini specifically.
 - **DeepSeek requires the word "json" somewhere in the prompt** for its fallback mode, or it 400s. KeyCall detects this and inserts a short system instruction automatically when needed — you'll see it noted in `result.warnings`, not applied silently.
 
-`response_schema` and `web_search` can't be combined on Anthropic (forcing the structured-output tool prevents the model calling a different one in the same turn); combining them raises `UNSUPPORTED_OPERATION` before any network call. The same combination on Gemini is untested and not gated — KeyCall passes it through rather than guessing at behavior it hasn't verified.
+`response_schema` combines with `web_search` and with caller tools on Anthropic (live-verified 2026-09-10): the schema rides `output_config.format`, so the tools array stays the caller's. The same combination on Gemini is untested and not gated — KeyCall passes it through rather than guessing at behavior it hasn't verified.
 
 ## Embeddings
 

@@ -166,18 +166,21 @@ def test_perplexity_tools_gated_before_network():
     assert "count" not in captured
 
 
-def test_anthropic_tools_with_schema_gated():
-    handler, captured = capture({})
+def test_anthropic_tools_with_schema_build_together():
+    """Caller tools and response_schema ride one request: the schema in
+    output_config.format, the tools untouched (native structured output,
+    live-verified 2026-09-10)."""
+    handler, captured = capture({"content": [{"type": "text", "text": "{}"}], "usage": {}})
     client = make_client("anthropic", handler)
-    with pytest.raises(KeyCallError) as excinfo:
-        client.generate_text(
-            model="claude-opus-5",
-            messages=[user()],
-            tools=[WEATHER],
-            response_schema={"type": "object"},
-        )
-    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
-    assert "count" not in captured
+    client.generate_text(
+        model="claude-opus-5",
+        messages=[user()],
+        tools=[WEATHER],
+        response_schema={"type": "object"},
+    )
+    body = captured["body"]
+    assert body["output_config"]["format"]["schema"] == {"type": "object"}
+    assert [t["name"] for t in body["tools"]] == [WEATHER.name]
 
 
 # --- provider payload parsing (hostile first) -------------------------------

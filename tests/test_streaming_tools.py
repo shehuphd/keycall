@@ -594,19 +594,23 @@ def test_perplexity_tools_still_gated_before_streaming():
     assert "count" not in captured, "gate must fire before the network call"
 
 
-def test_anthropic_tools_with_schema_still_gated_streaming():
+def test_anthropic_tools_with_schema_stream_together():
+    """Caller tools and response_schema ride one streaming request: the
+    schema in output_config.format, the tools untouched (native structured
+    output, live-verified 2026-09-10)."""
     handler, captured = serve(anthropic_tool_stream())
     client = make_client("anthropic", handler)
 
-    with pytest.raises(KeyCallError) as excinfo:
-        client.stream_text(
-            model="claude-opus-5",
-            messages=messages(),
-            tools=[WEATHER],
-            response_schema={"type": "object"},
-        ).__enter__()
-    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
-    assert "count" not in captured
+    with client.stream_text(
+        model="claude-opus-5",
+        messages=messages(),
+        tools=[WEATHER],
+        response_schema={"type": "object"},
+    ) as stream:
+        list(stream)
+    body = captured["body"]
+    assert body["output_config"]["format"]["schema"] == {"type": "object"}
+    assert [t["name"] for t in body["tools"]] == [WEATHER.name]
 
 
 def test_malformed_streamed_arguments_is_typed_error():
