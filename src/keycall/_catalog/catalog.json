@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.09.10.3",
+  "catalog_version": "2026.09.10.4",
   "verified_at": "2026-08-10T00:00:00Z",
   "providers": {
     "openai": {
@@ -126,7 +126,12 @@
         "transcription_url_input": false,
         "transcription_diarization": false,
         "reasoning_effort_minimal": true,
-        "reasoning_effort_minimal_note": "The Responses API defines a 'minimal' effort level (verified live 2026-08-14)."
+        "reasoning_effort_minimal_note": "The Responses API defines a 'minimal' effort level (verified live 2026-08-14).",
+        "streaming_only_transcription_families": [
+          "live",
+          "realtime"
+        ],
+        "streaming_only_transcription_families_note": "OpenAI's model list mixes transcription models that serve only the realtime socket in with the ones the stored-file endpoint takes, and nothing in the listing tells them apart. POST /v1/audio/transcriptions answers 404 'Invalid URL' for gpt-live-transcribe and gpt-realtime-whisper, while gpt-transcribe, whisper-1, and the whole gpt-4o transcribe family (gpt-4o-transcribe, gpt-4o-mini-transcribe, their dated snapshots, and gpt-4o-transcribe-diarize) answer 200 (all nine live-probed 2026-09-10). Matched as substrings of the lowercased id so a later snapshot of the same family is covered; a release probe checks both directions, so a family wrongly listed here fails loudly rather than hiding a model that works."
       },
       "voices": {
         "verified": "2026-08-31",

@@ -1713,6 +1713,102 @@ def test_live_compat_reasoning_effort_still_unbound():
     print(f"reasoning_effort still ignored (invalid level accepted) on: {', '.join(checked)}")
 
 
+def test_live_openai_transcription_wires_still_split_the_same_way():
+    """Capability-drift probe for the streaming-only transcription families
+    (evidence 2026-09-10). OpenAI's listing mixes models only its realtime
+    socket serves in with the ones the stored-file endpoint takes, and
+    carries nothing to tell them apart, so KeyCall splits them on the id.
+
+    Checked in both directions against every transcription model the key
+    lists, because each failure hurts differently: a family recorded here
+    that the endpoint does serve hides a working model, and one missing
+    from it reaches a user as a bare 404 from the provider.
+
+    A transport failure says nothing and skips."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import io
+    import math
+    import struct
+    import wave
+
+    import httpx
+
+    from keycall import KeyCall, ModelCategory
+    from keycall._registry import resolve_provider
+
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider == "openai"), None)
+    if target is None:
+        pytest.skip("no openai target in the live source")
+    families = resolve_provider("openai").capabilities.streaming_only_transcription_families
+    assert families, "openai records no streaming-only transcription families; probe and data move together"
+
+    client = KeyCall(provider="openai", api_key=target.key, read_timeout=120)
+    try:
+        discovery = client.list_models(categories={ModelCategory.TRANSCRIPTION}, refresh=True)
+    finally:
+        client.close()
+    model_ids = [m.id for m in discovery.models]
+    assert model_ids, "openai listed no transcription models at all"
+
+    # One second of a tone: valid audio, so a refusal is about the model.
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(
+            b"".join(
+                struct.pack("<h", int(3000 * math.sin(2 * math.pi * 440 * i / 16000)))
+                for i in range(16000)
+            )
+        )
+    audio = buffer.getvalue()
+
+    def probe() -> list[str]:
+        seen = []
+        with httpx.Client(
+            headers={"Authorization": f"Bearer {target.key}"}, timeout=120
+        ) as http:
+            for model_id in model_ids:
+                answer = http.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    files={"file": ("probe.wav", audio, "audio/wav")},
+                    data={"model": model_id},
+                )
+                recorded = any(family in model_id.lower() for family in families)
+                if recorded:
+                    assert answer.status_code == 404, (
+                        f"capability drift: {model_id} matches a recorded realtime-only "
+                        f"family but the stored-file endpoint answered HTTP "
+                        f"{answer.status_code}; KeyCall is hiding a model that works. "
+                        "Revisit openai's streaming_only_transcription_families"
+                    )
+                else:
+                    assert answer.status_code == 200, (
+                        f"capability drift: {model_id} is offered on the stored-file "
+                        f"surface but the endpoint answered HTTP {answer.status_code} "
+                        f"({answer.text[:200]}); it may need adding to openai's "
+                        "streaming_only_transcription_families"
+                    )
+                seen.append(f"{model_id}{' (realtime-only)' if recorded else ''}")
+        return seen
+
+    for attempt in (1, 2):
+        try:
+            checked = probe()
+            break
+        except httpx.TransportError as exc:
+            if attempt == 2:
+                pytest.skip(
+                    f"openai unreachable from this runner ({type(exc).__name__}: {exc}); "
+                    "transcription wire split unverified this run"
+                )
+    print(f"openai transcription wire split holds across {len(checked)}: {', '.join(checked)}")
+
+
 def test_live_deepseek_reasoning_effort_still_binds():
     """Capability-drift probe for DeepSeek's reasoning-effort control
     (evidence 2026-09-10, which replaced a 2026-08-14 note recording the

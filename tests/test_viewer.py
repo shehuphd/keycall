@@ -1602,6 +1602,9 @@ def test_targets_tell_the_browser_what_each_key_can_accept():
     assert caps["xai"]["video_generation"] is True
     assert caps["openai"]["video_generation"] is False
     assert caps["openai"]["reasoning_effort"] is True
+    # The stored-file model picker needs this to drop the realtime-only
+    # families from a live-discovered listing.
+    assert body["streaming_only_transcription_families"]["openai"] == ["live", "realtime"]
     assert caps["deepseek"]["reasoning_effort"] is True
     assert caps["moonshot"]["reasoning_effort"] is False
     assert caps["assemblyai"]["transcription"] is True

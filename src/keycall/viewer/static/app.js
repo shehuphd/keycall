@@ -154,6 +154,10 @@ let PROVIDER_CAPABILITIES = {};
 // category alone can't split a streaming-only model from a
 // prerecorded-only one on the same key.
 let TRANSCRIPTION_WIRES = {};
+// {provider: [family, ...]} for providers whose transcription models are
+// live-discovered: these families carry the transcription category but
+// only the realtime socket serves them.
+let STREAMING_ONLY_TRANSCRIPTION = {};
 let SAMPLING_CONSTRAINTS = {};
 let TOOL_CHOICE_CONSTRAINTS = {};
 // {provider: {credential_fields: [...], requires_base_url: bool}} for the
@@ -274,6 +278,7 @@ async function refreshTargets() {
   PROVIDERS_ACCEPTING = data.providers_accepting || {};
   PROVIDER_CAPABILITIES = data.provider_capabilities || {};
   TRANSCRIPTION_WIRES = data.transcription_wires || {};
+  STREAMING_ONLY_TRANSCRIPTION = data.streaming_only_transcription_families || {};
   SAMPLING_CONSTRAINTS = data.sampling_constraints || {};
   TOOL_CHOICE_CONSTRAINTS = data.tool_choice_constraints || {};
   SERVICE_PROVIDERS = data.service_providers || {};
@@ -922,6 +927,17 @@ async function loadPlaygroundModels() {
       const wanted = currentMode() === "transcribe-file" ? "prerecorded" : "streaming";
       const allowed = new Set(wires[wanted] || []);
       data.models = data.models.filter((m) => allowed.has(m.id));
+    } else if (currentMode() === "transcribe-file" && target) {
+      // No catalog wire facts, so the id is the only signal: drop the
+      // families whose models only the realtime socket serves, which the
+      // library refuses on this surface anyway. Without this the stored-file
+      // picker offered OpenAI's gpt-live-transcribe, and offered it first.
+      const families = STREAMING_ONLY_TRANSCRIPTION[target.provider] || [];
+      if (families.length) {
+        data.models = data.models.filter(
+          (m) => !families.some((family) => m.id.toLowerCase().includes(family))
+        );
+      }
     }
   }
   if (!data.models.length) {

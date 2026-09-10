@@ -118,6 +118,10 @@ class ProviderCapabilities:
     supports_seed: bool = False
     # Families that advertise a text method and then refuse a text call.
     non_text_model_families: tuple[str, ...] = ()
+    # Transcription-model families that serve only the realtime socket:
+    # they carry the transcription category but the stored-file endpoint
+    # refuses them. Matched as substrings of the lowercased model id.
+    streaming_only_transcription_families: tuple[str, ...] = ()
     # Image input differs by *form*: several providers read raw bytes but
     # refuse to fetch a URL, so one boolean would be wrong either way.
     image_input_bytes: bool = False
@@ -266,6 +270,9 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
         ),
         supports_seed=bool(raw.get("supports_seed", False)),
         non_text_model_families=tuple(raw.get("non_text_model_families", ())),
+        streaming_only_transcription_families=tuple(
+            raw.get("streaming_only_transcription_families", ())
+        ),
         image_input_bytes=bool((raw.get("image_input") or {}).get("bytes", False)),
         image_input_url=bool((raw.get("image_input") or {}).get("url", False)),
         audio_input_bytes=bool((raw.get("audio_input") or {}).get("bytes", False)),

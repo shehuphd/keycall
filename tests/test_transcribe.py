@@ -517,3 +517,34 @@ async def test_async_job_provider_transcription():
     )
     await client.close()
     assert result.text == "The quick brown fox."
+
+
+def test_realtime_only_transcription_model_refused_before_the_network():
+    """OpenAI lists models only its realtime socket serves (gpt-live-transcribe,
+    gpt-realtime-whisper) beside the ones the stored-file endpoint takes, with
+    nothing in the listing to tell them apart, and answers the first kind with
+    a bare 404. KeyCall splits them on the id and refuses here, naming the
+    surface that does serve them."""
+    client = make_client("openai", refuse_network)
+    for model in ("gpt-live-transcribe", "gpt-realtime-whisper"):
+        with pytest.raises(KeyCallError) as excinfo:
+            client.transcribe(model=model, audio=WAV)
+        assert excinfo.value.code is ErrorCode.MODEL_NOT_SUITABLE
+        assert "transcribe_stream()" in excinfo.value.message
+    client.close()
+
+
+def test_a_stored_file_transcription_model_is_not_caught_by_the_family_rule():
+    """The families are substrings, so the rule has to leave every model the
+    stored-file endpoint does serve alone — including the dated snapshots."""
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"text": "ok"})
+
+    client = make_client("openai", handler)
+    for model in ("whisper-1", "gpt-transcribe", "gpt-4o-mini-transcribe-2025-12-15"):
+        assert client.transcribe(model=model, audio=WAV).text == "ok"
+    assert len(seen) == 3
+    client.close()

@@ -954,6 +954,24 @@ class ProviderAdapter(ABC):
                 provider=self.resolved.provider,
                 operation=Operation.TRANSCRIPTION.value,
             )
+        # A provider can advertise a transcription model that only its
+        # realtime socket serves, with nothing in the listing to tell it
+        # apart (OpenAI lists gpt-live-transcribe beside whisper-1, and the
+        # stored-file endpoint answers the first with a bare 404). Refuse
+        # here, naming the surface that does serve it.
+        if any(
+            family in request.model.lower()
+            for family in caps.streaming_only_transcription_families
+        ):
+            raise KeyCallError(
+                f"{request.model!r} is one of {self.resolved.provider}'s "
+                "realtime-only transcription models; the stored-file endpoint "
+                "refuses it. Use transcribe_stream() for a live session, or "
+                "name a model this surface serves",
+                code=ErrorCode.MODEL_NOT_SUITABLE,
+                provider=self.resolved.provider,
+                operation=Operation.TRANSCRIPTION.value,
+            )
 
     def transcription_media_type(self, request: TranscriptionRequest) -> str:
         """The audio's media type, read from the content (the same

@@ -155,6 +155,21 @@ def list_targets(registry: Registry) -> dict[str, Any]:
             for wires in (_transcription_wires(name),)
             if wires
         },
+        # For a provider whose transcription models come from live
+        # discovery rather than the catalog, the wires above are empty and
+        # the model id is the only signal. These families carry the
+        # transcription category but only the realtime socket serves them
+        # (OpenAI's gpt-live-transcribe, gpt-realtime-whisper), so the
+        # stored-file task's picker drops them the way the library's
+        # pre-flight gate refuses them.
+        "streaming_only_transcription_families": {
+            name: list(families)
+            for name in supported_providers()
+            for families in (
+                resolve_provider(name).capabilities.streaming_only_transcription_families,
+            )
+            if families
+        },
         # Per-provider temperature/top_p constraints, so the Playground can
         # gate its temperature control against the selected model (a family
         # that pins or refuses an explicit value) instead of finding out
