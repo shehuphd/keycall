@@ -712,6 +712,51 @@ async function loadModels(refresh = false) {
   }
 }
 
+/** A closed disclosure summarising the models withheld as retired, opening
+ *  onto a table of the three values that vary per model. The prose form was
+ *  one paragraph each, which repeated the same sentence frame a dozen times
+ *  and pushed the model table itself below the fold. */
+function withheldDisclosure(withheld) {
+  const box = document.createElement("details");
+  box.className = "withheld";
+  const summary = document.createElement("summary");
+  summary.textContent =
+    `${withheld.length} model${withheld.length === 1 ? "" : "s"} withheld as retired`;
+  box.appendChild(summary);
+
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent =
+    "The provider still advertises these, but they refuse when called, so " +
+    "KeyCall keeps them out of the list above. Use the replacement instead.";
+  box.appendChild(note);
+
+  const table = document.createElement("table");
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  ["Model", "Retired", "Replacement"].forEach((label) => {
+    const cell = document.createElement("th");
+    cell.textContent = label;
+    headRow.appendChild(cell);
+  });
+  head.appendChild(headRow);
+  table.appendChild(head);
+
+  const body = document.createElement("tbody");
+  withheld.forEach((model) => {
+    const row = document.createElement("tr");
+    row.appendChild(td(model.id));
+    // An em dash where the provider published no date or no replacement:
+    // absent, rather than a guess dressed as a fact.
+    row.appendChild(td(model.retired_on || "—"));
+    row.appendChild(td(model.replacement || "—"));
+    body.appendChild(row);
+  });
+  table.appendChild(body);
+  box.appendChild(table);
+  return box;
+}
+
 async function loadModelsInner(refresh) {
   const id = el("models-target").value;
   const category = el("models-category").value;
@@ -751,15 +796,22 @@ async function loadModelsInner(refresh) {
   el("models-status").textContent =
     `${data.models.length} model${data.models.length === 1 ? "" : "s"}` +
     `${data.from_cache ? ", from a saved copy" : ""} · model list ${data.catalog_version}`;
-  // Listing-level warnings, chief among them retired models withheld from
-  // the table with the provider's recommended replacement: a model that
-  // silently vanished would read as the key losing access.
+  // Listing-level warnings a reader can only act on as prose: a truncated
+  // listing, a stale catalog.
   (data.warnings || []).forEach((warning) => {
     const note = document.createElement("div");
     note.className = "hint";
     note.textContent = warning;
     el("models-status").appendChild(note);
   });
+  // Retired models the catalog withheld: one line that opens a table,
+  // rather than one sentence per model. A model that silently vanished
+  // would read as the key losing access, so the count is always on screen;
+  // the ids, dates, and replacements are one click away. An older server
+  // sends no `withheld` and its prose warnings render above instead.
+  if ((data.withheld || []).length) {
+    el("models-status").appendChild(withheldDisclosure(data.withheld));
+  }
   // Source only earns its column when it varies (e.g. Gemini mixes
   // provider_metadata with keycall_rule); a constant column is noise.
   const sources = new Set(data.models.map((m) => m.classification_source));

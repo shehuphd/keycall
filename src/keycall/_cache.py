@@ -14,7 +14,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 
-from ._types import Model
+from ._types import Model, WithheldModel
 
 __all__ = ["AvailabilityCache", "CachedModels"]
 
@@ -29,6 +29,8 @@ class CachedModels:
     # Carried into every ModelDiscovery built from this entry, so a
     # truncated fetch stays visible on cache hits too.
     warnings: tuple[str, ...] = ()
+    # Same reason, for the structured form of the retirement warnings.
+    withheld: tuple[WithheldModel, ...] = ()
 
 
 class AvailabilityCache:

@@ -79,6 +79,7 @@ __all__ = [
     "VideoJobStatus",
     "VideoOutput",
     "Voice",
+    "WithheldModel",
 ]
 
 MessageRole = Literal["system", "user", "assistant"]
@@ -1163,6 +1164,19 @@ class Model:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class WithheldModel:
+    """One model the provider advertised and the catalog records as shut
+    down, kept out of `ModelDiscovery.models`. `retired_on` is the date the
+    provider published, and `replacement` the id it names instead; both are
+    None where the provider says nothing, never a guess."""
+
+    id: str
+    provider: str
+    retired_on: str | None = None
+    replacement: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ModelDiscovery:
     provider: str
     models: tuple[Model, ...]
@@ -1172,6 +1186,11 @@ class ModelDiscovery:
     catalog_version: str
     catalog_stale: bool = False
     warnings: tuple[str, ...] = ()
+    # The same withholdings the retirement warnings describe, as data. A
+    # reader that wants to lay them out (the viewer tabulates them) would
+    # otherwise have to parse the sentences back apart, which breaks the
+    # first time the wording changes.
+    withheld: tuple[WithheldModel, ...] = ()
 
 
 def _without_tracking(url: str) -> str:

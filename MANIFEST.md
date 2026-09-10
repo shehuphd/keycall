@@ -1,6 +1,6 @@
 # Manifest
 
-Last updated: 2026-09-10 17:17:41 UTC
+Last updated: 2026-09-10 17:40:11 UTC
 
 Every current source file, with what it does and what it touches. A map for orienting in the codebase, not a second copy of the docstrings.
 
@@ -25,7 +25,7 @@ Every current source file, with what it does and what it touches. A map for orie
 | `_realtime.py` | Sync/async realtime voice session sequencing over the transport's WebSocket wire. |
 | `_transcription.py` | Sync/async streaming speech-to-text session sequencing over the same wire. |
 | `_tracing.py` | Optional TraceAct spans with capture off and both redaction layers pinned on. |
-| `_types.py` | Public frozen records: content parts, messages, requests, results, `Usage`, `AliasFact`, `Model`, `Voice`, the batch records (`BatchRequest`, `BatchJob`, `BatchCounts`, `BatchResult`), the prerecorded-transcription records (`TranscriptionRequest`, `TranscriptionJob`, `TranscriptionResult`), and the service-probe records (`ServiceReport`, `ServiceStatus`). |
+| `_types.py` | Public frozen records: content parts, messages, requests, results, `Usage`, `AliasFact`, `Model`, `Voice`, the batch records (`BatchRequest`, `BatchJob`, `BatchCounts`, `BatchResult`), the prerecorded-transcription records (`TranscriptionRequest`, `TranscriptionJob`, `TranscriptionResult`), the service-probe records (`ServiceReport`, `ServiceStatus`), and `WithheldModel` for a listing's filtered-out retired models. |
 | `_enums.py` | Public closed enums: model categories, wire protocols, operations. |
 | `_errors.py` | `KeyCallError` with the typed `ErrorCode` discriminator, plus `VideoJobTimeout`, `BatchJobTimeout`, and `TranscriptionJobTimeout`, each carrying the still-valid job handle. |
 

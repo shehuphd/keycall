@@ -69,6 +69,7 @@ from ._types import (
     VideoGenerationRequest,
     VideoJob,
     Voice,
+    WithheldModel,
 )
 from .adapters import ProviderAdapter, adapter_for
 from .adapters._base import BatchSubmission, InbandStreamError, StreamAssembler
@@ -240,6 +241,7 @@ def _build_discovery(
         catalog_version=catalog_version(),
         catalog_stale=stale,
         warnings=tuple(warnings),
+        withheld=cached.withheld,
     )
 
 
@@ -464,9 +466,10 @@ class _BaseClient:
         # Models the catalog records as retired are withheld: some
         # providers keep shut-down models in their listing while requests
         # to them fail (OpenAI does), so offering one is offering a dead
-        # end. Each withheld id is named in a warning, never dropped
-        # silently. One site for both clients, before caching, so cached
-        # reads carry the same filtered view.
+        # end. Each withheld id is reported both as a warning and as a
+        # record, never dropped silently. One site for both clients, before
+        # caching, so cached reads carry the same filtered view.
+        withheld: tuple[WithheldModel, ...] = ()
         if self._resolved.retired_models:
             kept: list[Model] = []
             for model in models:
@@ -482,6 +485,16 @@ class _BaseClient:
                     + (f"; the provider recommends {replacement}" if replacement else "")
                     + "; withheld from this listing",
                 )
+                # The same fact as data, for a reader that lays these out
+                # rather than printing the sentence.
+                withheld += (
+                    WithheldModel(
+                        id=model.id,
+                        provider=self.provider,
+                        retired_on=when,
+                        replacement=replacement,
+                    ),
+                )
             models = kept
         # One annotation site for both clients, before caching, so cached
         # reads carry the fact too. Only ids matching a recorded convention
@@ -492,7 +505,10 @@ class _BaseClient:
                 for model in models
             ]
         cached = CachedModels(
-            models=tuple(models), fetched_at=datetime.now(timezone.utc), warnings=warnings
+            models=tuple(models),
+            fetched_at=datetime.now(timezone.utc),
+            warnings=warnings,
+            withheld=withheld,
         )
         _cache.shared_cache.put(self.provider, self.base_url, fingerprint, cached)
         discovery = _build_discovery(

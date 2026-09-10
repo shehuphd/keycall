@@ -116,13 +116,13 @@ both = client.list_models(
 
 Categories: `TEXT_GENERATION`, `IMAGE_GENERATION`, `EMBEDDING`, `TRANSCRIPTION`, `SPEECH_GENERATION`, `VIDEO_GENERATION`, `REALTIME`, `UNKNOWN`. Models KeyCall can't classify are `UNKNOWN` and appear only when you request that category explicitly, never in the default text picker.
 
-`ModelDiscovery` fields: `models`, `provider`, `categories`, `fetched_at`, `from_cache`, `catalog_version`, `warnings`. Each `Model` carries `id`, `provider`, `categories`, `display_name`, `released_at`, `classification_source`, and `warnings`.
+`ModelDiscovery` fields: `models`, `provider`, `categories`, `fetched_at`, `from_cache`, `catalog_version`, `warnings`, `withheld`. Each `Model` carries `id`, `provider`, `categories`, `display_name`, `released_at`, `classification_source`, and `warnings`.
 
 `released_at` is when the provider says the model appeared, and is `None` where the provider doesn't say. OpenAI and Moonshot report a unix timestamp, Anthropic an ISO date; Gemini and DeepSeek report nothing, and Perplexity has no list endpoint. It exists because `verify` orders its candidates by it, newest first, on the providers that publish it.
 
 Results are cached in-process for 5 minutes, keyed by an HMAC fingerprint of the credential. Force a live call with `client.list_models(refresh=True)`, always do this when verifying a newly entered key.
 
-A successful listing proves the credential works for discovery. It doesn't prove every listed model can be invoked; some providers advertise retired or quota-walled models with no lifecycle field to filter on. KeyCall withholds the ones its catalog records as shut down, with one warning per withheld model in `ModelDiscovery.warnings` (see [Retired models](#retired-models)); a listed model can still be quota-walled, entitlement-gated, or retired more recently than the catalog's evidence.
+A successful listing proves the credential works for discovery. It doesn't prove every listed model can be invoked; some providers advertise retired or quota-walled models with no lifecycle field to filter on. KeyCall withholds the ones its catalog records as shut down, reporting each one twice: as a sentence in `ModelDiscovery.warnings`, and as a `WithheldModel` record in `ModelDiscovery.withheld` carrying `id`, `provider`, `retired_on`, and `replacement` (see [Retired models](#retired-models)). Read the records when you mean to lay the withholdings out yourself, the prose when a ready-made line is what you want. A listed model can still be quota-walled, entitlement-gated, or retired more recently than the catalog's evidence.
 
 ## Model aliases
 
@@ -166,7 +166,7 @@ client.generate_text(model="claude-3-5-haiku-latest", messages=messages)
 
 Where a provider publishes no dates (xAI), the message omits the date; where it names no replacement, the message says so instead of guessing one. A named replacement is always itself a live model — chains through intermediate retired models are resolved in the catalog data.
 
-**`list_models()` withholds retired models the provider still advertises.** Some providers keep shut-down models in their list endpoint indefinitely (OpenAI listed 13 such ids on 2026-09-04, including the whole `-chat-latest` family), so a picker built from the raw listing offers models that fail on use. Each withheld model adds one warning to `ModelDiscovery.warnings` naming the model, the retirement date, and the replacement, so the filtering is visible, never silent. The viewer's Models tab prints the same warnings under the model count.
+**`list_models()` withholds retired models the provider still advertises.** Some providers keep shut-down models in their list endpoint indefinitely (OpenAI listed 13 such ids on 2026-09-04, including the whole `-chat-latest` family), so a picker built from the raw listing offers models that fail on use. Each withheld model is reported both as a warning in `ModelDiscovery.warnings` and as a `WithheldModel` record in `ModelDiscovery.withheld`, naming the model, the retirement date, and the replacement, so the filtering is visible, never silent. The viewer's Models tab summarises them under the model count as one line that opens a table of the same records.
 
 The registry is dated evidence, and two release probes re-verify it: one sends each recorded id and alias to its provider raw and fails if any now answers, the other confirms every recorded replacement still appears in its provider's listing. A stale entry is a failing release test, never a silent false refusal.
 

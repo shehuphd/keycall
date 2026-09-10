@@ -328,7 +328,22 @@ def _discovery_dict(discovery: Any) -> dict[str, Any]:
         "categories": sorted(c.value for c in discovery.categories),
         "from_cache": discovery.from_cache,
         "catalog_version": discovery.catalog_version,
-        "warnings": list(discovery.warnings),
+        # Retirement notices are served as data below, and the page lays
+        # them out as a table, so the prose copy of each would be a second
+        # rendering of the same fact. Every other warning (a truncated
+        # listing, a stale catalog) has no structured form and stays here.
+        # `_store_discovery` writes both halves together, and a test holds
+        # this prefix to the sentence it builds.
+        "warnings": [
+            warning
+            for warning in discovery.warnings
+            if not any(
+                warning.startswith(f"{w.id} was retired by ") for w in discovery.withheld
+            )
+        ],
+        # The withheld models as data, so the page can tabulate them
+        # instead of printing one near-identical sentence each.
+        "withheld": [dataclasses.asdict(w) for w in discovery.withheld],
     }
 
 

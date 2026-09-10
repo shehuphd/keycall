@@ -86,6 +86,7 @@ from ._types import (
     VideoJobStatus,
     VideoOutput,
     Voice,
+    WithheldModel,
 )
 
 __version__ = "1.12.0"
@@ -179,6 +180,7 @@ __all__ = [
     "VideoJobTimeout",
     "VideoOutput",
     "Voice",
+    "WithheldModel",
     "__version__",
     "alias_fact",
 ]

@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import urllib.request
+from unittest import mock
 
 import httpx
 import pytest
@@ -154,6 +155,59 @@ def test_check_target_lists_all_categories():
         ids = [m["id"] for m in body["models"]]
         assert "gpt-4o-mini" in ids
         assert "text-embedding-3-small" in ids  # all categories, not just text
+    finally:
+        reg.close()
+
+
+def test_withheld_models_are_served_as_data_not_as_repeated_prose():
+    """The page tabulates the withheld models, so it needs them as records.
+    Sending the sentence form as well would render the same fact twice, once
+    as a table row and once as a paragraph, which is what the table replaced."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [
+                {"id": "gpt-4o-mini"}, {"id": "dall-e-3"},
+            ]})
+        return openai_handler(request)
+
+    reg = Registry(
+        [Target(provider="openai", key=CANARY, name="my-openai")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        body = check_target(reg, 0)
+        assert [m["id"] for m in body["models"]] == ["gpt-4o-mini"]
+        assert body["withheld"] == [
+            {
+                "id": "dall-e-3",
+                "provider": "openai",
+                "retired_on": "2026-05-12",
+                "replacement": "gpt-image-2",
+            }
+        ]
+        assert not any("was retired by" in w for w in body["warnings"]), body["warnings"]
+    finally:
+        reg.close()
+
+
+def test_a_warning_without_a_structured_form_still_reaches_the_page():
+    """Only the retirement notices move to the table. A warning with no
+    record behind it (a stale catalog, a truncated listing) has nowhere else
+    to go, so dropping it would lose it."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+        return openai_handler(request)
+
+    reg = Registry(
+        [Target(provider="openai", key=CANARY, name="my-openai")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        with mock.patch("keycall._client.catalog_is_stale", return_value=True):
+            body = check_target(reg, 0)
+        assert body["withheld"] == []
+        assert any("catalog" in w for w in body["warnings"]), body["warnings"]
     finally:
         reg.close()
 

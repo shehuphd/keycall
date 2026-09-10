@@ -294,6 +294,28 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 #dashboard-table th:nth-child(3), #dashboard-table td:nth-child(3) { width: 14%; }
 #dashboard-table td:nth-child(4) { overflow-wrap: anywhere; }
 
+/* Models withheld as retired: a closed disclosure carrying a compact table,
+   so the count stays visible while the detail costs one click and no
+   vertical space until asked for. */
+details.withheld { margin-top: 0.6rem; }
+details.withheld > summary {
+  cursor: pointer;
+  width: fit-content;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+details.withheld > summary:hover { color: var(--fg); }
+details.withheld > .hint { margin-top: 0.5rem; }
+details.withheld table {
+  table-layout: fixed;
+  max-width: 44rem;
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+details.withheld th, details.withheld td { padding: 0.35rem 0.6rem; overflow-wrap: anywhere; }
+details.withheld th:nth-child(2), details.withheld td:nth-child(2) { width: 8rem; }
+details.withheld th:nth-child(3), details.withheld td:nth-child(3) { width: 14rem; }
+
 /* Sortable headers. */
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { color: var(--fg); }

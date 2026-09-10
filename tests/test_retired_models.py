@@ -185,6 +185,43 @@ def test_listing_withholds_retired_models_with_a_warning():
     assert any("computer-use-preview-2025-03-11" in w for w in discovery.warnings)
 
 
+def test_withheld_carries_the_same_facts_as_the_warnings_do():
+    """Every withholding is reported twice, as a sentence and as data. A
+    reader laying them out reads the data rather than parsing the prose,
+    so the two must describe the same set."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [
+            {"id": "gpt-4o-mini"}, {"id": "dall-e-3"}, {"id": "gpt-5-chat-latest"},
+        ]})
+
+    client = KeyCall(
+        provider="openai", api_key="sk-test",
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    discovery = client.list_models(refresh=True)
+    try:
+        assert len(discovery.withheld) == len(discovery.warnings) == 2
+        by_id = {w.id: w for w in discovery.withheld}
+        assert set(by_id) == {"dall-e-3", "gpt-5-chat-latest"}
+        assert by_id["dall-e-3"].provider == "openai"
+        assert by_id["dall-e-3"].retired_on == "2026-05-12"
+        assert by_id["dall-e-3"].replacement == "gpt-image-2"
+        # The viewer drops the prose copy by this prefix, so the sentence
+        # and the record have to keep agreeing on it.
+        for record in discovery.withheld:
+            assert any(
+                warning.startswith(f"{record.id} was retired by ")
+                for warning in discovery.warnings
+            )
+        # A cache hit carries the records too, the way it already does the
+        # warnings — otherwise the table would empty on the second read.
+        cached = client.list_models()
+        assert cached.from_cache
+        assert len(cached.withheld) == 2
+    finally:
+        client.close()
+
+
 def test_listing_without_retired_models_carries_no_new_warning():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
