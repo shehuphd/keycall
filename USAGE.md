@@ -21,7 +21,7 @@ keycall verify
 ```
 
 ```
-Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram, elevenlabs): openai
+Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram, elevenlabs, google_maps): openai
 API key:
 ✓ openai (openai): key accepted, 79 text model(s), list digest 6d356bc3f4c24389, selection rule v4
 ```

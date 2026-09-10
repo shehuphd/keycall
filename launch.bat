@@ -44,7 +44,7 @@ if "%SOURCE%"=="" (
     if exist keycall-test-keys.toml set "SOURCE=keycall-test-keys.toml"
 )
 if "%SOURCE%"=="" (
-    if exist internal\keycall-test-keys.toml set "SOURCE=internal\keycall-test-keys.toml"
+    if exist project\keycall-test-keys.toml set "SOURCE=project\keycall-test-keys.toml"
 )
 if "%SOURCE%"=="" (
     rem No key file found - the viewer opens with a prompt to load one.

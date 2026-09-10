@@ -1,9 +1,10 @@
 """Normalized error codes and the public exception types.
 
-One exception class with a typed ``ErrorCode`` discriminator, plus one
-subclass, ``VideoJobTimeout``, which exists because it carries something a
-flat error can't: the still-valid job handle, so a caller whose waiting
-budget ran out never loses a render they already paid to start.
+One exception class with a typed ``ErrorCode`` discriminator, plus three
+job-timeout subclasses, ``BatchJobTimeout``, ``TranscriptionJobTimeout``,
+and ``VideoJobTimeout``, each of which carries something a flat error can't:
+the still-valid job handle, so a caller whose waiting budget ran out never
+loses work they already paid to start.
 """
 
 from __future__ import annotations

@@ -520,6 +520,12 @@ First release. Key validation, model discovery and filtering, and text generatio
 - Perplexity's Sonar models aren't API-discoverable and are maintained in the bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
+[1.12.0]: https://github.com/shehuphd/keycall/compare/v1.11.2...v1.12.0
+[1.11.2]: https://github.com/shehuphd/keycall/compare/v1.11.1...v1.11.2
+[1.11.1]: https://github.com/shehuphd/keycall/compare/v1.11.0...v1.11.1
+[1.11.0]: https://github.com/shehuphd/keycall/compare/v1.10.0...v1.11.0
+[1.10.0]: https://github.com/shehuphd/keycall/compare/v1.9.0...v1.10.0
+[1.9.0]: https://github.com/shehuphd/keycall/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/shehuphd/keycall/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/shehuphd/keycall/compare/v1.6.1...v1.7.0
 [1.6.1]: https://github.com/shehuphd/keycall/compare/v1.6.0...v1.6.1

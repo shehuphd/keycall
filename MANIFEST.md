@@ -75,6 +75,9 @@ One file per surface, adversarial-first. `test_live.py` (deselected by default, 
 | File | What it does |
 |---|---|
 | `pyproject.toml` | Package metadata, dependencies, the `keycall` entry point, pytest config. |
+| `launch.sh` | Double-click launcher for Linux/macOS: finds a key file (argument, then conventional locations), then runs the viewer. |
+| `launch.command` | macOS double-click launcher: delegates to `launch.sh` in its own directory. |
+| `launch.bat` | Windows double-click launcher: the `launch.sh` equivalent for `cmd`. |
 | `keycall-test-keys.example.toml`, `keycall-test-keys.example.txt` | Placeholder-only examples of the verify/viewer key-file format, one per accepted syntax, service targets included. |
 | `.github/workflows/ci.yml` | Push/PR gate: tests, lint, JS tests; live smoke on manual dispatch only. |
 | `.github/workflows/release.yml` | Tag-driven release: build, tests, live-strict verification, PyPI publish, GitHub release. |
