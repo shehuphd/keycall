@@ -14,7 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Changed
 
 - **`response_schema` now combines with `web_search` and with caller tools on Anthropic.** The native format leaves the tools array to the caller, so both combinations that the forced-tool mechanism had to reject before the network call now build and run (live-verified 2026-09-10). Other providers are unchanged.
-- **`tool_choice="required"` on `claude-fable-5-1` is refused before the network call** with `MODEL_NOT_SUITABLE` naming the model and the fix, instead of surfacing the provider's 400 after a billable round trip. The constraint is catalog data with dated evidence, scoped to that one model — every sibling still accepts a forced tool call — and the live suite carries a drift probe that fails if Anthropic lifts the restriction.
+- **`tool_choice="required"` on `claude-fable-5-1` is refused before the network call** with `MODEL_NOT_SUITABLE` naming the model and the fix, instead of surfacing the provider's 400 after a billable round trip. The constraint is catalog data with dated evidence, scoped to that one model — every sibling still accepts a forced tool call — and the live suite carries a drift probe that fails if Anthropic lifts the restriction. The Playground reads the same constraint: its tools panel's "Always" option disables on a model that refuses forced selection, and a selection in place when the model switches falls back to "Model decides" with the shared notice, the same way the temperature control already gates per model.
 
 ## [1.11.1] — 2026-09-08
 

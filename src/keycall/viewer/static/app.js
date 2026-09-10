@@ -155,6 +155,7 @@ let PROVIDER_CAPABILITIES = {};
 // prerecorded-only one on the same key.
 let TRANSCRIPTION_WIRES = {};
 let SAMPLING_CONSTRAINTS = {};
+let TOOL_CHOICE_CONSTRAINTS = {};
 
 // --- sortable tables --------------------------------------------------------
 
@@ -270,6 +271,7 @@ async function refreshTargets() {
   PROVIDER_CAPABILITIES = data.provider_capabilities || {};
   TRANSCRIPTION_WIRES = data.transcription_wires || {};
   SAMPLING_CONSTRAINTS = data.sampling_constraints || {};
+  TOOL_CHOICE_CONSTRAINTS = data.tool_choice_constraints || {};
   // Only overwrite the control when the server names a value: an older
   // server process without the field must not blank or reset it.
   if (Number.isInteger(data.read_timeout)) {
@@ -3205,6 +3207,24 @@ function temperatureConstraint(provider, model) {
   return null;
 }
 
+// The first recorded tool_choice constraint whose pattern matches this
+// model, or null. Same contract as temperatureConstraint above, against
+// the tool_choice constraints the same catalog entries carry.
+function toolChoiceConstraint(provider, model) {
+  const list = TOOL_CHOICE_CONSTRAINTS[provider] || [];
+  const id = (model || "").toLowerCase();
+  for (const c of list) {
+    let re;
+    try {
+      re = new RegExp(c.pattern);
+    } catch (err) {
+      continue;
+    }
+    if (re.test(id)) return c;
+  }
+  return null;
+}
+
 // Same contract as gateAttachments, for the capability toggles: a key
 // switch mid-conversation must not leave anything switched on that the
 // new provider will refuse after a billable round trip. Controls the new
@@ -3320,6 +3340,26 @@ function gateCapabilities(off) {
       : `${tempModel} fixes temperature at ${pinned}; it can't be changed for this model.`;
     if (tempWasSet) off.push("set temperature");
   }
+  // Forced tool selection is model-level the same way: claude-fable-5-1
+  // refuses tool_choice "required" where every sibling takes it, so the
+  // "Always" option gates against the selected model. A selection that
+  // loses its footing falls back to "Model decides" with the shared toast
+  // rather than waiting to fail after a billable round trip.
+  const choiceSel = el("pg-tool-choice");
+  const choiceConstraint = target
+    ? toolChoiceConstraint(target.provider, el("pg-model").value)
+    : null;
+  [...choiceSel.options].forEach((o) => {
+    if (!o.value) return; // "Model decides" is always valid
+    const refusedHere = Boolean(
+      choiceConstraint && (choiceConstraint.refused || []).includes(o.value)
+    );
+    o.disabled = refusedHere;
+    if (refusedHere && choiceSel.value === o.value) {
+      choiceSel.value = "";
+      off.push("force a tool call");
+    }
+  });
   updateSuggestedBudget();
 
   // The task picker: picking a task rebuilds the Key list down to keys

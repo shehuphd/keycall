@@ -164,6 +164,19 @@ def list_targets(registry: Registry) -> dict[str, Any]:
             for name in supported_providers()
             if resolve_provider(name).capabilities.sampling_constraints
         },
+        # Per-model tool_choice constraints, same contract as
+        # sampling_constraints: a family that refuses a forced tool call
+        # (claude-fable-5-1 400s tool_choice "required") gates the
+        # Playground's "When to use" options against the selected model
+        # instead of failing after a billable round trip.
+        "tool_choice_constraints": {
+            name: [
+                {"pattern": c.pattern, "refused": list(c.refused)}
+                for c in resolve_provider(name).capabilities.tool_choice_constraints
+            ]
+            for name in supported_providers()
+            if resolve_provider(name).capabilities.tool_choice_constraints
+        },
         # Every provider a key can be added for, straight from the catalog,
         # so the form's dropdown can't drift from what the library accepts.
         "providers": list(supported_providers()),
