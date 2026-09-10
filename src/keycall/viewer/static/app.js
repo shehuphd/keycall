@@ -643,6 +643,51 @@ async function keyHasModels(id, category) {
 // previous task is still in flight.
 let PG_TARGET_RENDER = 0;
 
+// Every capability the current setup asks a key for: the task's own, plus
+// each extra the user has switched on. A list is read as a list of things
+// that work, so a key that can't serve what's already set doesn't belong
+// in it; the alternative is picking one and being told afterwards what it
+// won't do.
+function requestedCapabilities() {
+  const needed = [];
+  const capability = modeCapability(currentMode());
+  if (capability) needed.push(capability);
+  const whenOn = [
+    ["pg-search", "web_search"],
+    ["pg-cache-system", "prompt_caching"],
+    ["pg-tools-on", "tool_calling"],
+    ["pg-stt-diarize", "transcription_diarization"],
+  ];
+  whenOn.forEach(([id, flag]) => {
+    const control = el(id);
+    if (control && control.checked) needed.push(flag);
+  });
+  if (el("pg-reasoning").value) needed.push("reasoning_effort");
+  if (el("pg-seed").value) needed.push("supports_seed");
+  return needed;
+}
+
+// The attachment kinds switched on, which gate on the key's own accepts
+// map rather than a provider capability flag.
+function requestedAttachments() {
+  return ATTACHMENTS.filter(({ id }) => el(`pg-${id}-on`).checked).map(({ id }) => id);
+}
+
+function keyServes(target, needed, attachments) {
+  if (target.kind === "service") return false;
+  const caps = PROVIDER_CAPABILITIES[target.provider];
+  const servesAll = needed.every(
+    // An absent flag is unknown, not "no": an older server process that
+    // predates a newer flag must not disqualify every key for the task.
+    (flag) => !caps || caps[flag] === undefined || Boolean(caps[flag])
+  );
+  if (!servesAll) return false;
+  return attachments.every((kind) => {
+    const accepts = target.accepts ? target.accepts[kind] : null;
+    return !accepts || accepts.bytes || accepts.url;
+  });
+}
+
 // Rebuilds the Key select for the current task: the task decides which
 // models are needed, and only keys that can reach at least one such model
 // are offered at all. Provider capability rules out whole providers
@@ -655,18 +700,18 @@ async function renderPlaygroundTargets() {
   const sel = el("pg-target");
   const previous = sel.value;
   const category = modeCategory(currentMode());
-  const capability = modeCapability(currentMode());
   const token = ++PG_TARGET_RENDER;
-  let eligible = TARGETS.filter((t) => {
-    // A service key serves no Playground task: nothing to generate,
-    // speak, or transcribe. Absent kind (older server) counts as model.
-    if (t.kind === "service") return false;
-    if (!capability) return true;
-    const caps = PROVIDER_CAPABILITIES[t.provider];
-    // An absent flag is unknown, not "no": an older server process that
-    // predates a newer flag must not disqualify every key for the task.
-    return !caps || caps[capability] === undefined || Boolean(caps[capability]);
-  });
+  const needed = requestedCapabilities();
+  const attachments = requestedAttachments();
+  let eligible = TARGETS.filter((t) => keyServes(t, needed, attachments));
+  if (!eligible.length && (needed.length > 1 || attachments.length)) {
+    // Nothing serves the whole setup. Emptying the Key select would strand
+    // the user with no way back, so fall back to the keys the task alone
+    // allows and let the per-control gates switch the unsupported extras
+    // off, each naming the providers that would serve it.
+    const taskOnly = modeCapability(currentMode());
+    eligible = TARGETS.filter((t) => keyServes(t, taskOnly ? [taskOnly] : [], []));
+  }
   if (category && eligible.length) {
     sel.disabled = true;
     clear(sel);
@@ -3736,6 +3781,32 @@ el("pg-tools-on").addEventListener("change", () => {
 
 el("pg-search").addEventListener("change", updateSuggestedBudget);
 el("pg-reasoning").addEventListener("change", updateSuggestedBudget);
+
+// Switching an extra on narrows the Key list to the keys that serve it, so
+// each one rebuilds that list and the models under it. A gate switching a
+// control off does it by assignment, which fires no change event, so this
+// can't feed back on itself.
+async function reactToRequestChange() {
+  await renderPlaygroundTargets();
+  await loadPlaygroundModels();
+  applyKeyGates();
+}
+
+[
+  "pg-search",
+  "pg-cache-system",
+  "pg-tools-on",
+  "pg-stt-diarize",
+  "pg-reasoning",
+  "pg-seed",
+].forEach((id) => {
+  const control = el(id);
+  if (control) control.addEventListener("change", reactToRequestChange);
+});
+ATTACHMENTS.forEach(({ id }) => {
+  const toggle = el(`pg-${id}-on`);
+  if (toggle) toggle.addEventListener("change", reactToRequestChange);
+});
 
 el("pg-tools-example").addEventListener("click", () => {
   el("pg-tools").value = JSON.stringify(TOOL_EXAMPLE, null, 2);
