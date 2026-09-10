@@ -1,6 +1,7 @@
 # KeyCall live-verification targets — TOML format.
 # Same fields as the TXT format: provider (required), key (required),
-# protocol, name, base_url.
+# protocol, name, base_url, secret (the second field of a pair
+# credential, e.g. LiveKit's api_secret).
 #
 # Copy to keycall-test-keys.toml, fill in real keys, then:
 #   keycall verify --source ./keycall-test-keys.toml
@@ -61,6 +62,24 @@ name = "deepgram-test"
 provider = "elevenlabs"
 key = "REPLACE-ME"
 name = "elevenlabs-test"
+
+# Service providers: no models, so verification probes each service
+# category instead (--generate adds nothing here).
+
+[[targets]]
+provider = "google_maps"
+key = "REPLACE-ME"
+name = "maps-test"
+
+# LiveKit needs the key/secret pair and your project's own host
+# (the dashboard's wss:// spelling works too).
+
+[[targets]]
+provider = "livekit"
+key = "API-REPLACE-ME"
+secret = "REPLACE-ME"
+base_url = "https://my-project-abc123.livekit.cloud"
+name = "livekit-test"
 
 # [[targets]]
 # provider = "my-lab"

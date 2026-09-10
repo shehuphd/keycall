@@ -2,7 +2,8 @@
 # One target per line: field=value pairs, quotes optional (needed if a value
 # contains spaces). Lines starting with # are comments.
 #
-# Fields: provider (required), key (required), protocol, name, base_url
+# Fields: provider (required), key (required), protocol, name, base_url,
+# secret (the second field of a pair credential, e.g. LiveKit's api_secret).
 # protocol is only needed for custom openai-compatible targets.
 #
 # Copy to keycall-test-keys.txt, fill in real keys, then:
@@ -23,4 +24,8 @@ provider=xai key=REPLACE-ME name=grok-test
 # left off, since they have no text models to generate with.
 provider=assemblyai key=REPLACE-ME name=assemblyai-test
 provider=deepgram key=REPLACE-ME name=deepgram-test
+provider=elevenlabs key=REPLACE-ME name=elevenlabs-test
+# Service providers: no models, so verification probes each service category.
+provider=google_maps key=REPLACE-ME name=maps-test
+provider=livekit key=API-REPLACE-ME secret=REPLACE-ME base_url=https://my-project-abc123.livekit.cloud name=livekit-test
 # protocol=openai-compatible provider=my-lab base_url=https://llm.example.edu/v1 key=REPLACE-ME name="my lab"

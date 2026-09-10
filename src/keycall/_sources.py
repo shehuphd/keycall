@@ -21,7 +21,7 @@ from ._sanitize import safe_display_name
 
 __all__ = ["SourceWarning", "Target", "load_targets"]
 
-_ALLOWED_FIELDS = {"protocol", "provider", "key", "name", "base_url"}
+_ALLOWED_FIELDS = {"protocol", "provider", "key", "secret", "name", "base_url"}
 _REQUIRED_FIELDS = {"provider", "key"}
 
 # key=value tokens; values may be single- or double-quoted with escaped
@@ -39,6 +39,9 @@ class Target:
     # failing assert's operands (observed leaking a key into a local test
     # log 2026-09-02).
     key: str = field(repr=False)
+    # A service provider's second secret (LiveKit's api_secret); None for
+    # every single-key provider. Same repr=False shielding as the key.
+    secret: str | None = field(default=None, repr=False)
     protocol: str | None = None
     name: str | None = None
     base_url: str | None = None
@@ -55,6 +58,20 @@ class SourceWarning:
 
 class SourceError(ValueError):
     """Parse or validation failure. Never contains a key value."""
+
+
+def _resolves_with_one_key(name: str) -> bool:
+    """Whether a bare pasted api_key can construct this provider: its
+    credential is the single field and no base_url is required."""
+    from ._errors import KeyCallError
+    from ._registry import resolve_provider
+
+    try:
+        resolved = resolve_provider(name)
+    except KeyCallError:
+        # requires_base_url providers raise without one; they need a file.
+        return False
+    return resolved.credential_fields == ("api_key",)
 
 
 def _unquote(raw: str) -> str:
@@ -77,6 +94,7 @@ def _target_from_mapping(fields: dict[str, str], *, where: str) -> Target:
     return Target(
         provider=fields["provider"].strip().lower(),
         key=fields["key"],
+        secret=fields.get("secret") or None,
         protocol=fields.get("protocol", "").strip().lower() or None,
         name=fields.get("name"),
         base_url=fields.get("base_url") or None,
@@ -279,9 +297,17 @@ def load_targets(
         if provider:
             prompt_provider = provider
         else:
-            from ._registry import supported_providers
+            from ._registry import supported_providers, supported_service_providers
 
-            names = ", ".join(supported_providers())
+            # Single-key service providers belong in the prompt too
+            # (google_maps takes one pasted key); a pair provider like
+            # livekit needs a key file, so offering it here would dead-end.
+            single_key_services = tuple(
+                name
+                for name in supported_service_providers()
+                if _resolves_with_one_key(name)
+            )
+            names = ", ".join(supported_providers() + single_key_services)
             prompt_provider = input(f"Provider ({names}): ").strip().lower()
         key = getpass.getpass("API key: ")
         if not key.strip():

@@ -237,6 +237,16 @@ def _render(result: VerifyResult) -> list[str]:
         )
         return lines
 
+    if result.outcome == "services_probed":
+        # A service provider has no models; its verification is the
+        # per-category probe standing.
+        summary = ", ".join(f"{s.name} {s.status}" for s in result.services)
+        lines.append(f"✓ {result.label} ({result.provider}): key accepted — {summary}")
+        for status in result.services:
+            if status.status != "enabled" and status.detail:
+                lines.append(f"  ! {status.name}: {status.detail}")
+        return lines
+
     lines.append(
         f"✓ {result.label} ({result.provider}): key accepted, "
         f"{result.text_model_count} text model(s), "
@@ -304,7 +314,12 @@ def _run_verify(args: argparse.Namespace) -> int:
     all_ok = True
     for target in targets:
         result = run_verify(target, generate=args.generate, attempts=args.attempts)
-        all_ok = all_ok and (result.generate_ok if args.generate else result.listed_ok)
+        if result.outcome == "services_probed":
+            # The probe already made live calls; --generate has nothing
+            # further to prove on a provider with no models.
+            all_ok = all_ok and result.listed_ok
+        else:
+            all_ok = all_ok and (result.generate_ok if args.generate else result.listed_ok)
         for line in _render(result):
             _emit(safe_display_name(line, max_length=300), sys.stdout)
 

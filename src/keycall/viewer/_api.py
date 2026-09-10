@@ -323,11 +323,22 @@ def _discovery_dict(discovery: Any) -> dict[str, Any]:
 
 
 def check_target(registry: Registry, target_id: int) -> dict[str, Any]:
-    """Live list_models() call across every category, cached for browse_models."""
+    """Live list_models() call across every category, cached for
+    browse_models — or, for a service key, its category probes."""
     try:
         client = registry.client(target_id)
     except KeyError:
         return {"error": {"code": "not_found", "message": "unknown target id"}}
+    if client.kind == "service":
+        try:
+            report = client.probe_services()
+        except KeyCallError as error:
+            return error_body(error)
+        return {
+            "provider": client.provider,
+            "kind": "service",
+            "services": [dataclasses.asdict(status) for status in report.services],
+        }
     try:
         discovery = client.list_models(categories=set(ModelCategory), refresh=True)
     except KeyCallError as error:
@@ -339,6 +350,14 @@ def check_target(registry: Registry, target_id: int) -> dict[str, Any]:
 def browse_models(
     registry: Registry, target_id: int, *, category: str | None, refresh: bool
 ) -> dict[str, Any]:
+    try:
+        client = registry.client(target_id)
+    except KeyError:
+        return {"error": {"code": "not_found", "message": "unknown target id"}}
+    if client.kind == "service":
+        # No model list exists or gets cached for a service key: every
+        # check is its live category probes, straight through.
+        return check_target(registry, target_id)
     discovery = None if refresh else registry.cached_discovery(target_id)
     if discovery is None:
         # Single-flight: concurrent callers (dashboard + playground booting

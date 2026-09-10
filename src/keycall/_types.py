@@ -44,6 +44,8 @@ __all__ = [
     "ModelDiscovery",
     "OutputPart",
     "ReasoningDelta",
+    "ServiceReport",
+    "ServiceStatus",
     "SpeechGenerationRequest",
     "StreamEvent",
     "StreamFinish",
@@ -1294,3 +1296,31 @@ class InvocationResult:
             elif isinstance(part, ToolCall):
                 content.append(part)
         return Message(role="assistant", content=content)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ServiceStatus:
+    """One service category's standing on a probed key. ``name`` is the
+    catalog category ("geocoding", "places", "directions", "realtime"),
+    the unit another provider's equivalent service would share. ``status``
+    is a closed set: "enabled" (the probe answered with results),
+    "denied" (the provider refused the category for this key — an API not
+    enabled on the project, a missing grant), "restricted" (the key works
+    but a restriction on it blocked this use), "unknown" (an answer the
+    probe has no recorded meaning for). ``detail`` carries the provider's
+    own words, scrubbed and bounded — for a denial that is usually the
+    sentence naming the fix, enable URL included."""
+
+    name: str
+    status: str
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ServiceReport:
+    """What ``probe_services()`` found: one ``ServiceStatus`` per catalog
+    category for the provider, in catalog order. Reaching a report at all
+    means the credential authenticated; a bad key raises instead."""
+
+    provider: str
+    services: tuple[ServiceStatus, ...]

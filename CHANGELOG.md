@@ -4,6 +4,20 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] — 2026-09-10
+
+### Added
+
+- **Service providers: keys whose verification is a set of service standings rather than a model list.** The catalog now carries a second provider kind, `service`, with two entries: `google_maps` (Google Maps Platform) and `livekit` (LiveKit Cloud). A service client's one operation is `probe_services()`, which sends the cheapest possible request per catalog-declared category and returns a `ServiceReport` of per-category `ServiceStatus` records — `enabled`, `denied` with the provider's own reason (Google's 403 carries the console URL that turns the API on), or `unknown`. A rejected credential raises `INVALID_API_KEY` as ever, so a bad key and a key missing one service stay distinguishable. Every model operation refuses on a service client naming `probe_services()`, and `probe_services()` refuses on a model client, both before any network call. Each probe that reaches an enabled service is one billable call at that category's own per-call rate (dated pricing rides the catalog notes).
+- **Google Maps probes geocoding, places, and directions.** Geocoding rides the v4beta surface because it takes the key in the `X-Goog-Api-Key` header, where the legacy endpoint only reads a query string and KeyCall never puts a credential in a URL; places asks for ids alone and directions for one route's duration, each category's cheapest request (all live-verified 2026-09-10). A bad key answers Google's 400 `INVALID_ARGUMENT` spelling and maps to `INVALID_API_KEY` rather than reading as a malformed request.
+- **LiveKit probes its realtime API with a per-request HS256 token minted from the key pair.** Construction takes `credential={"api_key": ..., "api_secret": ...}` plus the project's `base_url` (the dashboard's `wss://` spelling is accepted and normalized to `https://`), and the transport mints a ten-minute stdlib-signed token per request, so the secret never rides a URL and no token outlives its call. The two 401 bodies translate apart: a wrong secret reads as `INVALID_API_KEY`, a valid pair missing the roomList grant as `PERMISSION_DENIED` naming the grant to add (both live-verified 2026-09-10).
+- **`credential=` on both clients for named-field secrets.** A provider that authenticates with more than one field takes a mapping instead of `api_key=`; passing both, neither, or fields the provider doesn't declare is refused by field name, never by value. Single-key providers are unchanged — `api_key=` remains the same shorthand it always was.
+- **The verify CLI, key files, and the viewer all take service targets.** A key-file target grew an optional `secret` field for pair providers; `keycall verify` renders a service row as its category standings ("key accepted — geocoding enabled, places enabled, directions enabled") with a detail line per non-enabled category, and the interactive prompt offers single-key service providers beside the model providers. The viewer's dashboard check shows the same standings per category, and service keys stay out of the Models tab and the Playground key picker, which have nothing to offer them.
+
+### Changed
+
+- **The project description generalizes beyond AI keys.** With service providers in the catalog, KeyCall validates keys and normalizes calls for providers with no models at all, and the package description and README now say so.
+
 ## [1.11.2] — 2026-09-10
 
 ### Fixed

@@ -1,8 +1,8 @@
 # KeyCall
 
-One consistent interface for validating AI-provider API keys, listing and filtering the models available to them, and making normalized calls, so every product stops rebuilding the same model-picker filters and provider wrappers.
+One consistent interface for validating API keys across AI and service providers, listing and filtering the models available to them, and making normalized calls, so every product stops rebuilding the same model-picker filters and provider wrappers.
 
-Key validation, model listing and filtering, text generation, streaming, tool calling (with tool search, custom freeform tools, and OpenAI's apply_patch convention), native web search with normalized citations, hosted code execution, structured JSON output, reasoning-effort control, prompt caching, embeddings, image, speech, realtime voice, and video generation, streaming speech-to-text, and image, audio, and document input all work and are live-verified against every provider that supports them. The API is stable.
+Key validation, model listing and filtering, text generation, streaming, tool calling (with tool search, custom freeform tools, and OpenAI's apply_patch convention), native web search with normalized citations, hosted code execution, structured JSON output, reasoning-effort control, prompt caching, embeddings, image, speech, realtime voice, and video generation, streaming speech-to-text, image, audio, and document input, and service-key probing (Google Maps Platform, LiveKit Cloud) all work and are live-verified against every provider that supports them. The API is stable.
 
 Docs: [USAGE.md](https://github.com/shehuphd/keycall/blob/main/USAGE.md) for the full API and CLI reference · [ARCHITECTURE.md](https://github.com/shehuphd/keycall/blob/main/ARCHITECTURE.md) for the layer diagram and component contracts · [CHANGELOG.md](https://github.com/shehuphd/keycall/blob/main/CHANGELOG.md) for version history.
 
@@ -23,7 +23,7 @@ keycall verify
 ```
 
 ```
-Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram, elevenlabs): openai
+Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram, elevenlabs, google_maps): openai
 API key:
 ✓ openai (openai): key accepted, 79 text model(s), list digest 6d356bc3f4c24389, selection rule v4
 ```
@@ -98,6 +98,7 @@ print(result.round_trip_duration_ms)
 - **Custom (freeform) tools.** `Tool(input_schema=None)` declares a tool with no JSON Schema: the model's call arrives as a plain string instead of parsed arguments. OpenAI-only; other providers refuse before the network.
 - **Prompt caching.** `TextInput(cacheable=True)` marks a stable prefix (a big system prompt, reference material) for caching. Anthropic is the one provider where caching doesn't happen at all without this marker; OpenAI already caches automatically and the marker opts into its optional explicit mode; every other provider ignores the flag and keeps caching automatically on its own. `Usage.cached_input_tokens` reports a cache hit uniformly everywhere, marked or not.
 - **Structured output.** `response_schema=<JSON Schema>` is enforced provider-side on OpenAI, Anthropic, Gemini, Moonshot, Perplexity, and xAI; on providers without enforcement (DeepSeek, unverified custom targets) KeyCall falls back to guaranteed-valid-JSON mode and adds a result warning rather than claiming a guarantee it can't back. `result.text` is always the JSON string, regardless of which mechanism produced it.
+- **Service-provider keys.** A key with no models behind it — Google Maps Platform, or a LiveKit Cloud key/secret pair — verifies through `probe_services()`: one cheapest-possible request per service category, answered as per-category standings (`enabled`, `denied` with the provider's own reason, or `unknown`), with a rejected credential still raising the same typed `INVALID_API_KEY` as everywhere else. The verify CLI, key files (an optional `secret` field), and the viewer's dashboard all take these targets.
 - **Hardened transport.** TLS always verified, redirects refused, response sizes capped, SSRF and DNS-rebinding guards on custom endpoints that fail closed when a proxy would bypass them, and generation is never silently retried.
 
 ## Provider support
@@ -117,8 +118,10 @@ Live-verified 2026-09-08. Every release re-runs a model list, a bounded generati
 | Deepgram | stt | verified | streaming transcription verified |
 | ElevenLabs | elevenlabs | verified | speech + streaming transcription verified |
 | Custom endpoint (explicit `base_url`) | openai-compatible | fixtures only | fixtures only |
+| Google Maps Platform | google_maps | no models (service) | service probes verified |
+| LiveKit Cloud | livekit | no models (service) | service probe verified |
 
-AssemblyAI and Deepgram are speech-to-text providers: their generation column is `transcribe_stream()`, since they have no text-generation API, and their model lists are maintained catalog data behind a live credential check. ElevenLabs is a speech platform with the same posture on text: its generation column is `generate_speech()` plus `transcribe_stream()`, and its model list comes live from its own models endpoint, with the streaming-transcription model as maintained catalog data since that endpoint omits it.
+AssemblyAI and Deepgram are speech-to-text providers: their generation column is `transcribe_stream()`, since they have no text-generation API, and their model lists are maintained catalog data behind a live credential check. ElevenLabs is a speech platform with the same posture on text: its generation column is `generate_speech()` plus `transcribe_stream()`, and its model list comes live from its own models endpoint, with the streaming-transcription model as maintained catalog data since that endpoint omits it. Google Maps Platform and LiveKit Cloud are service providers with no models at all: their column is `probe_services()`, one live request per service category, and release probes re-verify each provider's observed auth and error behavior.
 
 **OpenAI** advertises `-latest` aliases its own account can't invoke, and is retiring that family wholesale. On 2026-08-10 all four were dead: `gpt-5-chat-latest` and `gpt-5.1-chat-latest` returned "Model not found", and `gpt-5.2-chat-latest` and `gpt-5.3-chat-latest` were newly deprecated hours after both had worked. The numbered models were healthy throughout. This is the same failure as Gemini's retired models, on a provider people assume is tidier, and it is why `verify` walks the candidates and reports every attempt rather than trusting the first listed model. The models OpenAI has since shut down while still listing them are recorded in the retired-model registry, so they refuse pre-flight and never enter a listing.
 

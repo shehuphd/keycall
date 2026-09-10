@@ -26,6 +26,7 @@ __all__ = [
     "SamplingConstraint",
     "ToolChoiceConstraint",
     "resolve_provider",
+    "supported_service_providers",
 ]
 
 
@@ -154,6 +155,21 @@ class ResolvedProvider:
     # a live voices endpoint has an empty tuple and a list_voices op.
     catalog_voices: tuple[dict[str, Any], ...] = ()
     catalog_voices_verified: str | None = None
+    # Provider kind: "model" lists and invokes models; "service" has
+    # neither and is validated by a live probe per named service category.
+    kind: str = "model"
+    # The named secret fields this provider's credential carries. One
+    # field for every model provider; a service provider may need a pair
+    # (LiveKit's api_key + api_secret).
+    credential_fields: tuple[str, ...] = ("api_key",)
+    # Whether the caller must supply base_url at construction (LiveKit's
+    # host is per project, so the catalog cannot carry it).
+    requires_base_url: bool = False
+    # kind "service" only: the categories a probe checks, each an endpoint
+    # fact ({name, method, host, path, note}) with dated evidence. The
+    # hosts here are the provider profile, so a probe request can only
+    # ever carry the credential to a catalog-named host.
+    service_categories: tuple[dict[str, Any], ...] = ()
 
 
 @lru_cache(maxsize=1)
@@ -255,14 +271,32 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
 
 
 def supported_providers() -> tuple[str, ...]:
-    """Every provider the bundled catalog knows, in catalog order.
+    """Every model provider the bundled catalog knows, in catalog order.
 
     Read from the catalog rather than listed anywhere else, so a provider
     added there appears in the viewer's key form without a second edit.
     Custom targets aren't here by definition: they need a protocol and a
-    base URL, which the catalog cannot supply.
+    base URL, which the catalog cannot supply. Service providers (kind
+    "service") have their own list below: every consumer of this one
+    enumerates model listings, bad-key responses, or generation capabilities,
+    none of which a service provider has.
     """
-    return tuple(_load_catalog()["providers"])
+    return tuple(
+        name
+        for name, profile in _load_catalog()["providers"].items()
+        if profile.get("kind", "model") != "service"
+    )
+
+
+def supported_service_providers() -> tuple[str, ...]:
+    """Every service provider (kind "service") the catalog knows, in
+    catalog order: validated by live category probes rather than a model
+    list."""
+    return tuple(
+        name
+        for name, profile in _load_catalog()["providers"].items()
+        if profile.get("kind", "model") == "service"
+    )
 
 
 def providers_with(capability: str) -> frozenset[str]:
@@ -397,14 +431,40 @@ def resolve_provider(
     canonical = _canonical_name(provider)
 
     if canonical is not None:
-        if base_url is not None:
+        profile = _load_catalog()["providers"][canonical]
+        requires_base_url = bool(profile.get("requires_base_url", False))
+        if base_url is not None and not requires_base_url:
             raise KeyCallError(
                 f"provider {canonical!r} uses its maintained endpoint; "
                 "base_url is only for custom openai-compatible targets",
                 code=ErrorCode.UNSUPPORTED_PROVIDER,
                 provider=canonical,
             )
-        profile = _load_catalog()["providers"][canonical]
+        if requires_base_url and base_url is None:
+            raise KeyCallError(
+                f"provider {canonical!r} has a per-project host, so base_url "
+                "is required at construction (for livekit, the project URL "
+                "from its dashboard, e.g. https://<project>.livekit.cloud)",
+                code=ErrorCode.UNSUPPORTED_PROVIDER,
+                provider=canonical,
+            )
+        if requires_base_url and base_url is not None:
+            # LiveKit's dashboard hands the project URL out in its
+            # wss:// spelling (the realtime socket); the REST API is
+            # https on the same origin, so the pasted form is accepted
+            # rather than bounced back for a one-character edit.
+            if base_url.startswith("wss://"):
+                base_url = "https://" + base_url[len("wss://"):]
+            # The same posture as a custom target's URL: it is caller
+            # data, so the userinfo/query refusals and the SSRF guard all
+            # apply before it becomes the provider's origin.
+            resolved_base_url = _validate_custom_base_url(
+                base_url,
+                allow_insecure_localhost=allow_insecure_localhost,
+                allow_private_network=allow_private_network,
+            )
+        else:
+            resolved_base_url = profile["base_url"]
         catalog_protocol = ProviderProtocol(profile["protocol"])
         if requested_protocol is not None and requested_protocol is not catalog_protocol:
             raise KeyCallError(
@@ -417,7 +477,7 @@ def resolve_provider(
         return ResolvedProvider(
             provider=canonical,
             protocol=catalog_protocol,
-            base_url=profile["base_url"],
+            base_url=resolved_base_url,
             auth_scheme=profile["auth"]["scheme"],
             auth_header=profile["auth"]["header"],
             operations=profile["operations"],
@@ -441,6 +501,10 @@ def resolve_provider(
                 )
                 for entry in profile.get("alias_conventions", ())
             ),
+            kind=str(profile.get("kind", "model")),
+            credential_fields=tuple(profile.get("credential_fields", ("api_key",))),
+            requires_base_url=requires_base_url,
+            service_categories=tuple(profile.get("service_categories", ())),
         )
 
     # Unknown name: only valid as an explicit custom openai-compatible target.

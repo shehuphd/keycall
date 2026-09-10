@@ -19,7 +19,7 @@ from ._enums import ModelCategory
 from ._errors import ErrorCode, KeyCallError
 from ._sanitize import safe_display_name
 from ._sources import Target
-from ._types import Message, Model, TextInput
+from ._types import Message, Model, ServiceStatus, TextInput
 
 __all__ = [
     "ModelAttempt",
@@ -139,8 +139,11 @@ class VerifyResult:
     # version of the selection procedure that produced these attempts.
     model_list_digest: str | None = None
     selection_rule_version: str = SELECTION_RULE_VERSION
+    # A service target's per-category standings; empty for model targets.
+    services: tuple[ServiceStatus, ...] = ()
     # "listed" | "generated" | "no_text_models" | "credential_rejected" |
-    # "rate_limited_unverified" | "no_model_invocable" | "list_failed"
+    # "rate_limited_unverified" | "no_model_invocable" | "list_failed" |
+    # "services_probed" | "unresolvable_target"
     outcome: str = "listed"
 
 
@@ -162,12 +165,20 @@ def run_verify(
     # AttributeError at verification time.
     if client is None:
         try:
-            client = KeyCall(
-                provider=target.provider,
-                api_key=target.key,
-                protocol=target.protocol,
-                base_url=target.base_url,
-            )
+            if target.secret is not None:
+                client = KeyCall(
+                    provider=target.provider,
+                    credential={"api_key": target.key, "api_secret": target.secret},
+                    protocol=target.protocol,
+                    base_url=target.base_url,
+                )
+            else:
+                client = KeyCall(
+                    provider=target.provider,
+                    api_key=target.key,
+                    protocol=target.protocol,
+                    base_url=target.base_url,
+                )
         except KeyCallError as error:
             # A target the registry can't resolve (unknown provider name
             # with no protocol and base_url) is a configuration fault, not
@@ -183,6 +194,30 @@ def run_verify(
                 outcome="unresolvable_target",
             )
     try:
+        if client.kind == "service":
+            # A service provider's verification is its category probes:
+            # there is no model list, and the probes are the live calls.
+            try:
+                report = client.probe_services()
+            except KeyCallError as error:
+                credential_fault = error.code in _CREDENTIAL_FAILURES
+                return VerifyResult(
+                    label=label,
+                    provider=client.provider,
+                    listed_ok=False,
+                    list_error_code=error.code.value,
+                    list_error_message=error.message,
+                    generate_requested=generate,
+                    outcome="credential_rejected" if credential_fault else "list_failed",
+                )
+            return VerifyResult(
+                label=label,
+                provider=client.provider,
+                listed_ok=True,
+                generate_requested=generate,
+                services=report.services,
+                outcome="services_probed",
+            )
         try:
             # Verification must hit the live provider, never cached data.
             # All categories are requested so each text candidate's position

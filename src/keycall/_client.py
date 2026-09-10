@@ -41,6 +41,7 @@ from ._registry import (
     catalog_version,
     resolve_provider,
     retired_model_fact,
+    supported_service_providers,
 )
 from ._transport import AsyncTransport, Transport
 from ._types import (
@@ -54,6 +55,8 @@ from ._types import (
     Model,
     ModelDiscovery,
     RealtimeConfig,
+    ServiceReport,
+    ServiceStatus,
     SpeechGenerationRequest,
     StreamEvent,
     TextGenerationRequest,
@@ -240,6 +243,33 @@ def _build_discovery(
     )
 
 
+def _require_declared_credential_fields(resolved: ResolvedProvider, credential: Credential) -> None:
+    """Refuse a credential whose field set differs from what the catalog
+    declares for this provider, naming the missing or unrecognized field
+    names (catalog vocabulary, never values) and the constructor shape
+    that fixes it — before any network call could fail less legibly."""
+    declared = resolved.credential_fields
+    supplied = credential.field_names()
+    missing = [name for name in declared if name not in supplied]
+    unrecognized = [name for name in supplied if name not in declared]
+    if not missing and not unrecognized:
+        return
+    shape = ", ".join(f"'{name}': ..." for name in declared)
+    problems = []
+    if missing:
+        problems.append("missing: " + ", ".join(missing))
+    if unrecognized:
+        problems.append("not a field it takes: " + ", ".join(unrecognized))
+    raise KeyCallError(
+        f"{resolved.provider}'s credential carries {', '.join(declared)} "
+        f"({'; '.join(problems)}). Pass credential={{{shape}}}"
+        + (" or the api_key shorthand" if declared == ("api_key",) else ""),
+        code=ErrorCode.INVALID_API_KEY,
+        provider=resolved.provider,
+        retryable=False,
+    )
+
+
 class _BaseClient:
     __slots__ = ("_adapter", "_credential", "_resolved", "_transport")
 
@@ -252,15 +282,24 @@ class _BaseClient:
         self,
         *,
         provider: str,
-        api_key: str,
+        api_key: str | None = None,
+        credential: Mapping[str, str] | None = None,
         protocol: ProviderProtocol | str | None = None,
         base_url: str | None = None,
         allow_insecure_localhost: bool = False,
         allow_private_network: bool = False,
     ) -> None:
-        # Wrap the credential first so no later failure path ever handles
-        # the raw string.
-        credential = Credential(api_key)
+        # One mechanism, one spelling: api_key is the single-key shorthand
+        # for credential={"api_key": ...}, so passing both is undefined and
+        # refused rather than one silently winning.
+        if (api_key is None) == (credential is None):
+            raise ValueError(
+                "pass api_key for a single-key provider, or credential "
+                "with the provider's named secret fields; never both"
+            )
+        # Wrap the secret fields first so no later failure path ever
+        # handles a raw string.
+        wrapped = Credential(api_key if api_key is not None else dict(credential or {}))
         resolved = resolve_provider(
             provider,
             protocol=protocol,
@@ -268,8 +307,9 @@ class _BaseClient:
             allow_insecure_localhost=allow_insecure_localhost,
             allow_private_network=allow_private_network,
         )
+        _require_declared_credential_fields(resolved, wrapped)
         object.__setattr__(self, "_resolved", resolved)
-        object.__setattr__(self, "_credential", credential)
+        object.__setattr__(self, "_credential", wrapped)
         object.__setattr__(self, "_adapter", adapter_for(resolved))
         object.__setattr__(self, "_transport", None)
 
@@ -296,6 +336,12 @@ class _BaseClient:
     def base_url(self) -> str:
         return self._resolved.base_url
 
+    @property
+    def kind(self) -> str:
+        """"model" for a provider that lists and invokes models, "service"
+        for one validated by live category probes (probe_services())."""
+        return self._resolved.kind
+
     # Deliberately no api_key property.
 
     @property
@@ -307,6 +353,34 @@ class _BaseClient:
         if credential is None:
             raise RuntimeError(f"{type(self).__name__} is closed; construct a new client")
         return credential
+
+    def _require_service_kind(self) -> None:
+        """probe_services() is the service-provider validation surface; a
+        model provider validates by listing, so pointing there beats a
+        probe that has no categories to check."""
+        if self._resolved.kind == "service":
+            return
+        raise KeyCallError(
+            f"{self.provider} is a model provider; probe_services() checks "
+            "the service categories of a service provider ("
+            + ", ".join(supported_service_providers())
+            + "). Validate this key by listing models: list_models(), or "
+            "keycall verify",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.provider,
+            operation=Operation.SERVICE_PROBE.value,
+        )
+
+    def _service_probe_status(
+        self, trace: Any, category: str, outcome: ServiceStatus
+    ) -> ServiceStatus:
+        trace.event(
+            "app",
+            operation="service_probe",
+            status="ok" if outcome.status == "enabled" else "error",
+            result={"category": category, "status": outcome.status},
+        )
+        return outcome
 
     def _require_model_not_retired(self, model: str | None) -> None:
         """Refuse a model the catalog records as shut down, before any
@@ -1061,7 +1135,8 @@ class KeyCall(_BaseClient):
         self,
         *,
         provider: str,
-        api_key: str,
+        api_key: str | None = None,
+        credential: Mapping[str, str] | None = None,
         protocol: ProviderProtocol | str | None = None,
         base_url: str | None = None,
         allow_insecure_localhost: bool = False,
@@ -1075,6 +1150,7 @@ class KeyCall(_BaseClient):
         super().__init__(
             provider=provider,
             api_key=api_key,
+            credential=credential,
             protocol=protocol,
             base_url=base_url,
             allow_insecure_localhost=allow_insecure_localhost,
@@ -1151,6 +1227,47 @@ class KeyCall(_BaseClient):
                 fingerprint=fingerprint,
                 trace=trace,
             )
+
+    def probe_services(self) -> ServiceReport:
+        """One billable live probe per catalog service category, reporting
+        each category's standing on this key. Reaching a report at all
+        means the credential authenticated; a bad key (or, on LiveKit, a
+        secret that fails the signature) raises instead."""
+        self._require_open()
+        self._require_service_kind()
+        with _tracing.span(
+            "keycall.probe_services", provider=self.provider, protocol=self.protocol.value
+        ) as trace:
+            statuses: list[ServiceStatus] = []
+            for category, spec in self._adapter.service_probe_specs():
+                try:
+                    result = self._transport.request(
+                        spec,
+                        operation=Operation.SERVICE_PROBE.value,
+                        retry_policy="list",
+                        translate_error=self._adapter.translate_error,
+                    )
+                except KeyCallError as exc:
+                    if exc.code is ErrorCode.INVALID_API_KEY:
+                        # Credential-level, not a category fact: every
+                        # other category would fail the same way.
+                        raise
+                    statuses.append(
+                        self._service_probe_status(
+                            trace,
+                            category,
+                            self._adapter.service_status_from_error(category, exc),
+                        )
+                    )
+                else:
+                    statuses.append(
+                        self._service_probe_status(
+                            trace,
+                            category,
+                            self._adapter.service_status_from_payload(category, result.payload),
+                        )
+                    )
+            return ServiceReport(provider=self.provider, services=tuple(statuses))
 
     def invoke(self, request: TextGenerationRequest) -> InvocationResult:
         self._require_open()
@@ -1925,7 +2042,8 @@ class AsyncKeyCall(_BaseClient):
         self,
         *,
         provider: str,
-        api_key: str,
+        api_key: str | None = None,
+        credential: Mapping[str, str] | None = None,
         protocol: ProviderProtocol | str | None = None,
         base_url: str | None = None,
         allow_insecure_localhost: bool = False,
@@ -1939,6 +2057,7 @@ class AsyncKeyCall(_BaseClient):
         super().__init__(
             provider=provider,
             api_key=api_key,
+            credential=credential,
             protocol=protocol,
             base_url=base_url,
             allow_insecure_localhost=allow_insecure_localhost,
@@ -2014,6 +2133,42 @@ class AsyncKeyCall(_BaseClient):
                 fingerprint=fingerprint,
                 trace=trace,
             )
+
+    async def probe_services(self) -> ServiceReport:
+        """Async twin of KeyCall.probe_services()."""
+        self._require_open()
+        self._require_service_kind()
+        with _tracing.span(
+            "keycall.probe_services", provider=self.provider, protocol=self.protocol.value
+        ) as trace:
+            statuses: list[ServiceStatus] = []
+            for category, spec in self._adapter.service_probe_specs():
+                try:
+                    result = await self._transport.request(
+                        spec,
+                        operation=Operation.SERVICE_PROBE.value,
+                        retry_policy="list",
+                        translate_error=self._adapter.translate_error,
+                    )
+                except KeyCallError as exc:
+                    if exc.code is ErrorCode.INVALID_API_KEY:
+                        raise
+                    statuses.append(
+                        self._service_probe_status(
+                            trace,
+                            category,
+                            self._adapter.service_status_from_error(category, exc),
+                        )
+                    )
+                else:
+                    statuses.append(
+                        self._service_probe_status(
+                            trace,
+                            category,
+                            self._adapter.service_status_from_payload(category, result.payload),
+                        )
+                    )
+            return ServiceReport(provider=self.provider, services=tuple(statuses))
 
     async def invoke(self, request: TextGenerationRequest) -> InvocationResult:
         self._require_open()

@@ -36,6 +36,12 @@ class ProviderProtocol(str, Enum):
     # for models/voices/TTS, a JSON-message WebSocket for realtime STT);
     # single-vendor, so custom targets cannot claim this protocol either.
     ELEVENLABS = "elevenlabs"
+    # Service providers (kind "service" in the catalog): no models, no
+    # generation; validated by a live probe per service category. Each is
+    # single-vendor with its own wire, so custom targets cannot claim
+    # these protocols either.
+    GOOGLE_MAPS = "google_maps"
+    LIVEKIT = "livekit"
 
 
 class Operation(str, Enum):
@@ -51,3 +57,4 @@ class Operation(str, Enum):
     VIDEO_GENERATION = "video_generation"
     TRANSCRIPTION = "transcription"
     STREAMING_TRANSCRIPTION = "streaming_transcription"
+    SERVICE_PROBE = "service_probe"

@@ -47,16 +47,17 @@ A call moves through four layers, each with one job:
 The raw key enters the library at a single point and is revealed at a single point:
 
 ```text
-api_key (str)
+api_key (str) or credential (mapping of named fields)
   └─ KeyCall.__init__          wraps immediately in Credential (_credential.py)
        └─ Credential           redacted repr/str/format; refuses pickle/copy;
-          .reveal()            called only by _transport._build_headers()
+          .reveal(field)       called only by _transport._build_headers()
+                               and the per-request JWT mint it calls
 ```
 
-Everything between those two points handles the opaque `Credential` wrapper. Supporting rules:
+Everything between those two points handles the opaque `Credential` wrapper. A provider whose credential has more than one field (LiveKit's key/secret pair) declares its field names in the catalog, and the wrapper holds them all under the same rules — construction is refused by field name, never by value, when the mapping and the declaration disagree. Supporting rules:
 
 - Adapters receive requests and payloads, never the credential.
-- All provider-originated error text passes through `scrub()` (`_sanitize.py`) before entering a `KeyCallError`: the active credential and its URL-/base64-encoded forms are replaced, credential-shaped patterns are redacted, control characters are stripped, and length is bounded.
+- All provider-originated error text passes through `scrub()` (`_sanitize.py`) before entering a `KeyCallError`: every field of the active credential and its URL-/base64-encoded forms are replaced, credential-shaped patterns are redacted, control characters are stripped, and length is bounded.
 - Provider-supplied request identifiers pass through `safe_request_id()` before entering results or errors.
 - Cache identity uses an HMAC fingerprint of the key under a process-local secret, never the raw key or an unkeyed digest.
 - Clients and credentials refuse `pickle`, `copy`, and `deepcopy` outright.
@@ -66,7 +67,7 @@ Everything between those two points handles the opaque `Credential` wrapper. Sup
 | Component | Owns | Must never |
 |---|---|---|
 | `_client.py` | Identity binding, page loop, cache use, tracing spans, category filtering, the retired-model pre-flight gate and listing withholding | Expose the credential through any property or repr |
-| `_registry.py` + `_catalog/catalog.json` | Name → endpoint/auth/operations resolution (text generation, embeddings, image generation, speech generation, video generation and status, batch generation, prerecorded and streaming transcription), custom-URL validation, per-provider capability evidence (tool calling, web search, schema enforcement, media input forms, sampling and tool-choice constraints, seed support, video download hosts, prompt caching, batch support, rolling-alias conventions), each dated, and the retired-model records (id, alias spellings, retirement date, provider-named replacement, dated evidence note) | Accept credential-routing data from outside the bundled catalog |
+| `_registry.py` + `_catalog/catalog.json` | Name → endpoint/auth/operations resolution (text generation, embeddings, image generation, speech generation, video generation and status, batch generation, prerecorded and streaming transcription), provider kind (model vs service, with declared credential fields and probe-category endpoints), custom and required-at-construction base-URL validation, per-provider capability evidence (tool calling, web search, schema enforcement, media input forms, sampling and tool-choice constraints, seed support, video download hosts, prompt caching, batch support, rolling-alias conventions), each dated, and the retired-model records (id, alias spellings, retirement date, provider-named replacement, dated evidence note) | Accept credential-routing data from outside the bundled catalog |
 | `adapters/` | Request building, response parsing, error translation, model classification evidence, the pre-flight sampling and seed gates | Perform I/O, see the credential, leak raw provider objects |
 | `_transport.py` | HTTP and WebSocket execution, retries, size cap, redirect refusal, header construction, `DownloadPlan` enforcement | Retry generation, follow a redirect, emit unscrubbed provider text |
 | `_realtime.py` | Sync/async realtime session sequencing over the transport's WebSocket wire | Perform I/O directly (the transport owns the socket) |
@@ -85,7 +86,7 @@ Everything between those two points handles the opaque `Credential` wrapper. Sup
 
 ## Provider resolution
 
-Provider identity and wire protocol are separate. The catalog maps ten named providers onto six protocols; the adapter is chosen by protocol, with named overrides for providers whose behavior diverges. The `stt` protocol has no protocol-level adapter: no generic STT-compatible wire exists the way OpenAI-compatible does, so its two providers resolve by name alone and custom targets cannot claim it. The `elevenlabs` protocol is single-vendor — one provider speaks that wire — and custom targets cannot claim it either, since they can only claim `openai-compatible`:
+Provider identity and wire protocol are separate. The catalog maps twelve named providers onto eight protocols; the adapter is chosen by protocol, with named overrides for providers whose behavior diverges. The `stt` protocol has no protocol-level adapter: no generic STT-compatible wire exists the way OpenAI-compatible does, so its two providers resolve by name alone and custom targets cannot claim it. The `elevenlabs` protocol is single-vendor — one provider speaks that wire — and custom targets cannot claim it either, since they can only claim `openai-compatible`:
 
 ```text
 provider name ──► catalog profile ──► protocol ──► adapter
@@ -99,10 +100,20 @@ provider name ──► catalog profile ──► protocol ──► adapter
   assemblyai          stt                            AssemblyAIAdapter (by name)
   deepgram            stt                            DeepgramAdapter (by name)
   elevenlabs          elevenlabs        elevenlabs   ElevenLabsAdapter
+  google_maps         google_maps       google_maps  GoogleMapsAdapter (service)
+  livekit             livekit           livekit      LiveKitAdapter (service)
   <custom> + base_url openai-compatible              OpenAICompatibleAdapter (is_custom)
 ```
 
+The two service protocols are single-vendor the same way `elevenlabs` is, so custom targets cannot claim them. LiveKit's catalog entry declares `requires_base_url`: resolution refuses construction without the caller's per-project host (normalizing the dashboard's `wss://` spelling to `https://`), and that host passes the same custom-base-URL validation every explicit base URL gets.
+
 An unknown name is an error unless the caller explicitly passes `protocol="openai-compatible"` with a validated HTTPS `base_url`. Custom targets get the DNS-rebinding guard; named providers route to catalog-maintained hostnames and don't. The guard fails closed against the environment too: a set proxy variable would route requests around it (the proxy resolves DNS itself), so constructing a guarded custom-target client with one set raises a typed error naming the resolutions (`trust_env=False`, `allow_private_network=True`, or unsetting the variable) rather than proceeding with the guard silently disabled.
+
+## Service providers
+
+A catalog entry with `kind: "service"` describes a provider with no models: instead of operations it declares `credential_fields` and `service_categories`, each category naming the method, host, and path of the cheapest request that answers it (dated notes carry the evidence and per-call pricing). `probe_services()` (`_client.py`) walks the adapter's per-category `RequestSpec`s under the `list` retry policy — every probe is an idempotent read — and the `ServiceProviderAdapter` hooks (`adapters/_base.py`) turn each response or translated error into a `ServiceStatus`: a credential-level failure (`INVALID_API_KEY`) re-raises for the whole probe, anything category-scoped becomes that category's standing. Model operations refuse on a service adapter naming `probe_services()`, and the service hooks refuse on a model adapter, so the two kinds can't be driven across each other.
+
+Two transport pieces exist for this kind. `RequestSpec.host` overrides the request origin with a catalog-declared host, because Google Maps serves its categories from three hostnames under one credential — the override never takes caller input, so the credential still can't be routed anywhere the catalog doesn't name. And the `jwt_hs256` auth scheme mints a per-request HS256 token (stdlib only) from the credential pair inside `_build_headers`, keeping `Credential.reveal()` confined to the transport; grants ride `RequestSpec.jwt_grants`, the token expires in ten minutes, and nothing is cached.
 
 ## Retired models
 

@@ -489,6 +489,15 @@ async function checkTarget(id, row) {
     row.children[3].textContent = data.error.message;
     return;
   }
+  if (data.kind === "service") {
+    // A service key has categories, never models: the standing per
+    // category is the whole answer.
+    statusCell.appendChild(pill("key valid", "ok"));
+    row.children[3].textContent = (data.services || [])
+      .map((s) => `${s.name} ${s.status}`)
+      .join(", ");
+    return;
+  }
   statusCell.appendChild(pill("key valid", "ok"));
   row.children[3].textContent = String(data.models.length);
 }
@@ -516,7 +525,9 @@ el("dash-check-all").addEventListener("click", checkAllTargets);
 async function fillTargetSelects() {
   const sel = el("models-target");
   clear(sel);
-  TARGETS.forEach((t) => {
+  // A service key has no model list to browse; offering it here would
+  // dead-end into a refusal. Absent kind (older server) counts as model.
+  TARGETS.filter((t) => t.kind !== "service").forEach((t) => {
     const opt = document.createElement("option");
     opt.value = t.id;
     opt.textContent = `${t.name} (${t.provider})`;
@@ -582,6 +593,9 @@ async function renderPlaygroundTargets() {
   const capability = modeCapability(currentMode());
   const token = ++PG_TARGET_RENDER;
   let eligible = TARGETS.filter((t) => {
+    // A service key serves no Playground task: nothing to generate,
+    // speak, or transcribe. Absent kind (older server) counts as model.
+    if (t.kind === "service") return false;
     if (!capability) return true;
     const caps = PROVIDER_CAPABILITIES[t.provider];
     // An absent flag is unknown, not "no": an older server process that
@@ -4166,6 +4180,25 @@ function renderVerify(target, data) {
     msg.className = "meta";
     msg.textContent = data.list_error_message || "";
     card.appendChild(msg);
+    return card;
+  }
+
+  if (data.outcome === "services_probed") {
+    head.appendChild(pill("key accepted", "ok"));
+    const summary = document.createElement("span");
+    summary.className = "meta";
+    summary.textContent = " " + (data.services || [])
+      .map((s) => `${s.name} ${s.status}`)
+      .join(", ");
+    head.appendChild(summary);
+    card.appendChild(head);
+    (data.services || []).forEach((s) => {
+      if (s.status === "enabled" || !s.detail) return;
+      const line = document.createElement("div");
+      line.className = "attempt fail";
+      line.textContent = `! ${s.name}: ${s.detail}`;
+      card.appendChild(line);
+    });
     return card;
   }
 

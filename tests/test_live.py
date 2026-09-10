@@ -19,6 +19,7 @@ import os
 import pytest
 
 from keycall._errors import KeyCallError
+from keycall._registry import supported_service_providers
 from keycall._sources import load_targets
 from keycall._verify_core import run_verify
 
@@ -63,6 +64,13 @@ def test_live_smoke_every_target_generates():
             verified.append(result.label)
         elif result.outcome == "rate_limited_unverified":
             rate_limited.append(summary)
+        elif result.outcome == "services_probed" and result.listed_ok:
+            # A service key's verification is its category probes, which ran
+            # live inside run_verify; print the standings so the log shows
+            # what each category reported.
+            for service in result.services:
+                print(f"    {service.name}: {service.status}")
+            verified.append(result.label)
         elif result.outcome == "no_text_models" and result.listed_ok:
             # The credential verified: listing succeeded, the account just
             # advertises nothing to invoke. Tinker's OpenAI-compatible
@@ -95,8 +103,13 @@ def test_live_stream_smoke_every_target():
     from keycall import KeyCall, Message, ModelCategory, TextInput
 
     targets, _ = load_targets(source)
+    service_names = set(supported_service_providers())
     failures = []
     for target in targets:
+        if target.provider in service_names:
+            # A service key has no models to stream; its own drift probes
+            # cover it.
+            continue
         try:
             client = KeyCall(
                 provider=target.provider,
@@ -1621,6 +1634,229 @@ def test_live_anthropic_structured_output_still_holds():
     )
 
 
+def test_live_google_maps_service_probes_still_hold():
+    """Capability-drift probe for the Google Maps service adapter (evidence
+    2026-09-10). Probed raw, not through KeyCall, so it verifies the provider:
+
+    1. All three category endpoints take the key in the X-Goog-Api-Key
+       header: geocoding on the v4beta surface, places text search, and
+       routes. Any of them refusing the header means the auth carve moved
+       and the catalog hosts and auth note need re-probing.
+    2. An absence claim: the legacy maps.googleapis.com geocode endpoint
+       still refuses a header-only key with REQUEST_DENIED. If it starts
+       reading the header, the v4beta choice in the catalog geocoding note
+       should be revisited.
+    3. A bad key answers HTTP 400 with "API key not valid" (google.rpc's
+       INVALID_ARGUMENT spelling), the discriminator behind the adapter's
+       translate_error carve to INVALID_API_KEY.
+
+    This test failing IS the notification. A transport failure says nothing
+    about any claim and skips instead. Each enabled-endpoint probe is one
+    billable call at the category's per-call rate."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import httpx
+
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider == "google_maps"), None)
+    if target is None:
+        pytest.skip("no google_maps target in the live source")
+
+    def probe() -> None:
+        with httpx.Client(timeout=60) as client:
+            key_header = {"X-Goog-Api-Key": target.key}
+            category_requests = {
+                "geocoding": client.get(
+                    "https://geocode.googleapis.com/v4beta/geocode/address",
+                    params={"addressQuery": "1600 Amphitheatre Parkway, Mountain View, CA"},
+                    headers=key_header,
+                ),
+                "places": client.post(
+                    "https://places.googleapis.com/v1/places:searchText",
+                    json={"textQuery": "coffee", "maxResultCount": 1},
+                    headers={**key_header, "X-Goog-FieldMask": "places.id"},
+                ),
+                "directions": client.post(
+                    "https://routes.googleapis.com/directions/v2:computeRoutes",
+                    json={
+                        "origin": {"address": "Victoria Station, London"},
+                        "destination": {"address": "London Bridge Station, London"},
+                        "travelMode": "TRANSIT",
+                    },
+                    headers={**key_header, "X-Goog-FieldMask": "routes.duration"},
+                ),
+            }
+            for name, response in category_requests.items():
+                # 200 is the enabled answer; 403 is a project with that API
+                # switched off, which still proves the header carried the
+                # key. Anything else means the auth surface moved.
+                assert response.status_code in (200, 403), (
+                    f"capability drift: {name} answered HTTP {response.status_code} "
+                    f"to a header-keyed request ({response.text[:300]}) — re-probe "
+                    "the catalog hosts and auth note"
+                )
+
+            legacy = client.get(
+                "https://maps.googleapis.com/maps/api/geocode/json",
+                params={"address": "1600 Amphitheatre Parkway, Mountain View, CA"},
+                headers=key_header,
+            )
+            legacy_status = legacy.json().get("status") if legacy.status_code == 200 else None
+            assert legacy_status == "REQUEST_DENIED", (
+                f"capability drift: the legacy geocode endpoint no longer refuses a "
+                f"header-only key (HTTP {legacy.status_code}, status {legacy_status!r}) "
+                "— revisit the v4beta choice in the catalog geocoding note"
+            )
+
+            bad = client.get(
+                "https://geocode.googleapis.com/v4beta/geocode/address",
+                params={"addressQuery": "Mountain View"},
+                headers={"X-Goog-Api-Key": "keycall-drift-probe-not-a-key"},
+            )
+            assert bad.status_code == 400 and "API key not valid" in bad.text, (
+                f"capability drift: a bad key no longer answers 400 'API key not "
+                f"valid' (HTTP {bad.status_code}: {bad.text[:300]}) — revisit the "
+                "adapter's INVALID_API_KEY carve"
+            )
+
+    for attempt in (1, 2):
+        try:
+            probe()
+            break
+        except httpx.TransportError as exc:
+            if attempt == 2:
+                pytest.skip(
+                    f"google maps unreachable from this runner ({type(exc).__name__}: "
+                    f"{exc}); service probes unverified this run"
+                )
+    print(
+        "google_maps: header key accepted on all three category endpoints, legacy "
+        "geocode still refuses it, bad key still 400s (evidence current)"
+    )
+
+
+def test_live_livekit_probe_still_holds():
+    """Capability-drift probe for the LiveKit service adapter (evidence
+    2026-09-10). Minted and probed raw, not through KeyCall, so it verifies
+    the provider's wire contract:
+
+    1. A stdlib HS256 token (iss = api_key, api_secret signs, video.roomList
+       grant, Bearer) answers RoomService ListRooms with 200.
+    2. A wrong secret answers 401 with a body that is not Twirp JSON — the
+       plain-text discriminator translate_error reads as a bad signature.
+    3. A valid signature without the grant answers 401 with a Twirp JSON
+       body naming permissions — the other half of that discriminator.
+
+    This test failing IS the notification. A transport failure says nothing
+    about any claim and skips instead."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import base64
+    import hashlib
+    import hmac
+    import json
+    import time
+
+    import httpx
+
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider == "livekit"), None)
+    if target is None or target.secret is None or target.base_url is None:
+        pytest.skip("no livekit target with a key pair and base_url in the live source")
+    api_key, api_secret = target.key, target.secret
+
+    # The dashboard offers the wss:// spelling; the API rides https on the
+    # same host, the same normalization resolve_provider applies.
+    origin = target.base_url.replace("wss://", "https://").rstrip("/")
+    url = f"{origin}/twirp/livekit.RoomService/ListRooms"
+
+    def mint(secret: str, grants: dict[str, bool]) -> str:
+        def encode(raw: bytes) -> str:
+            return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+        now = int(time.time())
+        header = encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+        payload = encode(
+            json.dumps(
+                {
+                    "iss": api_key,
+                    "sub": "keycall-drift-probe",
+                    "nbf": now - 10,
+                    "exp": now + 600,
+                    "video": grants,
+                }
+            ).encode()
+        )
+        signing_input = f"{header}.{payload}".encode()
+        signature = encode(hmac.new(secret.encode(), signing_input, hashlib.sha256).digest())
+        return f"{header}.{payload}.{signature}"
+
+    def post(token: str) -> httpx.Response:
+        return httpx.post(
+            url,
+            json={},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=60,
+        )
+
+    def probe() -> None:
+        good = post(mint(api_secret, {"roomList": True}))
+        assert good.status_code == 200, (
+            f"capability drift: a granted HS256 token no longer lists rooms "
+            f"(HTTP {good.status_code}: {good.text[:300]}) — re-probe the mint "
+            "convention against LiveKit Cloud"
+        )
+
+        bad_signature = post(mint(api_secret + "x", {"roomList": True}))
+        assert bad_signature.status_code == 401, (
+            f"capability drift: a bad signature answered HTTP "
+            f"{bad_signature.status_code}, not 401 ({bad_signature.text[:300]})"
+        )
+        try:
+            bad_payload = bad_signature.json()
+        except ValueError:
+            bad_payload = None
+        assert not isinstance(bad_payload, dict), (
+            f"capability drift: a bad signature now answers Twirp JSON "
+            f"({bad_signature.text[:300]}) — the adapter's plain-text-vs-JSON 401 "
+            "discriminator no longer separates wrong-secret from missing-grant"
+        )
+
+        ungranted = post(mint(api_secret, {}))
+        assert ungranted.status_code == 401, (
+            f"capability drift: a token without the roomList grant answered HTTP "
+            f"{ungranted.status_code}, not 401 ({ungranted.text[:300]})"
+        )
+        try:
+            ungranted_payload = ungranted.json()
+        except ValueError:
+            ungranted_payload = None
+        assert isinstance(ungranted_payload, dict) and "permissions" in str(
+            ungranted_payload.get("msg", "")
+        ), (
+            f"capability drift: a missing grant no longer answers Twirp JSON naming "
+            f"permissions ({ungranted.text[:300]}) — revisit the adapter's 401 "
+            "discriminator"
+        )
+
+    for attempt in (1, 2):
+        try:
+            probe()
+            break
+        except httpx.TransportError as exc:
+            if attempt == 2:
+                pytest.skip(
+                    f"livekit unreachable from this runner ({type(exc).__name__}: "
+                    f"{exc}); service probe unverified this run"
+                )
+    print(
+        "livekit: granted token lists rooms, wrong secret answers plain-text 401, "
+        "missing grant answers Twirp JSON 401 (evidence current)"
+    )
+
+
 @pytest.mark.live
 def test_live_streaming_diarization_still_holds():
     """Capability-drift probe for streaming speaker labels (evidence
@@ -2602,8 +2838,11 @@ def test_live_candidate_order_has_headroom_before_the_budget():
     ask = [Message(role="user", content=[TextInput(text="Reply with the single word: ok")])]
 
     targets, _ = load_targets(source)
+    service_names = set(supported_service_providers())
     failures = []
     for target in targets:
+        if target.provider in service_names:
+            continue  # no model walk exists on a service key
         client = KeyCall(
             provider=target.provider,
             api_key=target.key,

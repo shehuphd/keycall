@@ -29,6 +29,7 @@ from .._types import (
     InvocationResult,
     Model,
     OutputPart,
+    ServiceStatus,
     StreamEvent,
     TextGenerationRequest,
     TextOutput,
@@ -1377,6 +1378,26 @@ class ProviderAdapter(ABC):
         """ToolResult.content as the string most providers want."""
         return content if isinstance(content, str) else json.dumps(content)
 
+    # --- service probes (kind "service" adapters override) ---
+
+    def _refuse_service_operation(self) -> KeyCallError:
+        return KeyCallError(
+            f"provider {self.resolved.provider!r} is not a service "
+            "provider; probe_services() has no categories to check here",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.SERVICE_PROBE.value,
+        )
+
+    def service_probe_specs(self) -> tuple[tuple[str, RequestSpec], ...]:
+        raise self._refuse_service_operation()
+
+    def service_status_from_payload(self, category: str, payload: Any) -> ServiceStatus:
+        raise self._refuse_service_operation()
+
+    def service_status_from_error(self, category: str, error: KeyCallError) -> ServiceStatus:
+        raise self._refuse_service_operation()
+
     @staticmethod
     def sampling_fields(request: TextGenerationRequest) -> dict[str, float]:
         """temperature/top_p body fields, omitted when unset (the OpenAI-shaped
@@ -1387,3 +1408,60 @@ class ProviderAdapter(ABC):
         if request.top_p is not None:
             fields["top_p"] = request.top_p
         return fields
+
+
+class ServiceProviderAdapter(ProviderAdapter):
+    """Shared base for kind "service" providers: no models to list or
+    invoke, validated instead by one billable live probe per catalog
+    service category. The model-operation hooks all refuse with the same
+    message, so every client method a service provider cannot serve fails
+    pre-flight naming the one that can."""
+
+    def _refuse_model_operation(self, operation: Operation) -> KeyCallError:
+        return KeyCallError(
+            f"{self.resolved.provider} is a service provider: it has no "
+            "models to list or invoke. Validate the key with "
+            "probe_services(), which checks each of its service "
+            "categories live",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=operation.value,
+        )
+
+    def initial_list_request(self) -> RequestSpec:
+        raise self._refuse_model_operation(Operation.TEXT_GENERATION)
+
+    def parse_model_page(self, payload: Any) -> tuple[list[Model], RequestSpec | None]:
+        raise self._refuse_model_operation(Operation.TEXT_GENERATION)
+
+    def build_generation_spec(self, request: TextGenerationRequest) -> RequestSpec:
+        raise self._refuse_model_operation(Operation.TEXT_GENERATION)
+
+    def parse_generation_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        model: str,
+    ) -> InvocationResult:
+        raise self._refuse_model_operation(Operation.TEXT_GENERATION)
+
+    # --- the service surface ---
+
+    @abstractmethod
+    def service_probe_specs(self) -> tuple[tuple[str, RequestSpec], ...]:
+        """One (category name, request spec) per catalog category, in
+        catalog order. Every spec's endpoint comes from the catalog entry;
+        probes are billable, so each is the cheapest request the category
+        answers."""
+
+    @abstractmethod
+    def service_status_from_payload(self, category: str, payload: Any) -> ServiceStatus:
+        """The category's status for a 2xx answer."""
+
+    @abstractmethod
+    def service_status_from_error(self, category: str, error: KeyCallError) -> ServiceStatus:
+        """The category's status for a typed refusal the transport raised.
+        Only reached for errors the client did not re-raise: a bad
+        credential fails the whole report rather than one category."""

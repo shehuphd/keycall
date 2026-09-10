@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.09.10.1",
+  "catalog_version": "2026.09.10.2",
   "verified_at": "2026-08-10T00:00:00Z",
   "providers": {
     "openai": {
@@ -1884,6 +1884,78 @@
         "transcription_diarization": true,
         "streaming_diarization": false,
         "streaming_diarization_note": "The realtime socket takes no diarization parameter and never fills the field: committed_transcript_with_timestamps words carry a speaker_id key that stayed null for every word, with and without a diarize param (live-probed 2026-09-08, 18 words, scribe_v2_realtime). Prerecorded diarization is unaffected and still reports speaker ids."
+      }
+    },
+    "google_maps": {
+      "aliases": [
+        "maps",
+        "googlemaps"
+      ],
+      "kind": "service",
+      "protocol": "google_maps",
+      "base_url": "https://places.googleapis.com",
+      "auth": {
+        "scheme": "api_key",
+        "header": "X-Goog-Api-Key"
+      },
+      "operations": {},
+      "credential_fields": [
+        "api_key"
+      ],
+      "service_categories": [
+        {
+          "name": "geocoding",
+          "method": "GET",
+          "host": "geocode.googleapis.com",
+          "path": "/v4beta/geocode/address",
+          "note": "v4beta surface chosen over the legacy maps.googleapis.com endpoint because it takes the X-Goog-Api-Key header, which the legacy one refuses (REQUEST_DENIED with the key in a header, OK with it in the query string; both live-probed 2026-09-10). $5.00 per 1000 after 10000 free monthly calls (Essentials tier, pricing page read 2026-09-10)."
+        },
+        {
+          "name": "places",
+          "method": "POST",
+          "host": "places.googleapis.com",
+          "path": "/v1/places:searchText",
+          "note": "Needs an X-Goog-FieldMask header naming the response fields; probes request places.id only, the cheapest mask. Live-probed 2026-09-10. $32.00 per 1000 after 5000 free monthly calls (Pro tier, pricing page read 2026-09-10)."
+        },
+        {
+          "name": "directions",
+          "method": "POST",
+          "host": "routes.googleapis.com",
+          "path": "/directions/v2:computeRoutes",
+          "note": "Google's Routes API; the category keeps the neutral name so another provider's turn-by-turn service can join it. Needs an X-Goog-FieldMask header. Live-probed 2026-09-10. $5.00 per 1000 after 10000 free monthly calls (Essentials tier, pricing page read 2026-09-10)."
+        }
+      ],
+      "capabilities": {
+        "verified": "2026-09-10"
+      },
+      "error_shape_note": "Category endpoints answer google.rpc envelopes: a bad key is HTTP 400 INVALID_ARGUMENT \"API key not valid\"; an API not enabled on the key's project is HTTP 403 whose message names the API and carries the console enable URL (both live-probed 2026-09-10)."
+    },
+    "livekit": {
+      "aliases": [],
+      "kind": "service",
+      "protocol": "livekit",
+      "base_url": "",
+      "requires_base_url": true,
+      "auth": {
+        "scheme": "jwt_hs256",
+        "header": "Authorization"
+      },
+      "operations": {},
+      "credential_fields": [
+        "api_key",
+        "api_secret"
+      ],
+      "service_categories": [
+        {
+          "name": "realtime",
+          "method": "POST",
+          "host": "",
+          "path": "/twirp/livekit.RoomService/ListRooms",
+          "note": "Host is the caller's per-project base_url (https://<project>.livekit.cloud). Auth is a stdlib-minted HS256 JWT: iss = api_key, signed with api_secret, video.roomList grant, sent as Bearer. 200 with a rooms array (empty on a fresh project) validates the pair; a bad signature answers 401 with a plain-text body, a valid signature without the grant answers 401 with a Twirp JSON body, so wrong-secret and missing-permission are distinguishable. All live-probed 2026-09-10."
+        }
+      ],
+      "capabilities": {
+        "verified": "2026-09-10"
       }
     }
   }

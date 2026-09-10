@@ -484,3 +484,47 @@ def test_interactive_prompt_names_every_provider_and_ignores_case(monkeypatch, c
         assert name in prompts["provider"]
     assert targets[0].provider == "openai"
     assert warnings == []
+
+
+def test_render_service_probe_result():
+    from keycall._cli import _render
+    from keycall._types import ServiceStatus
+    from keycall._verify_core import VerifyResult
+
+    result = VerifyResult(
+        label="maps-test",
+        provider="google_maps",
+        listed_ok=True,
+        services=(
+            ServiceStatus(name="geocoding", status="enabled"),
+            ServiceStatus(
+                name="directions",
+                status="denied",
+                detail="Routes API has not been used... Enable it by visiting https://console.developers.google.com/apis/api/routes.googleapis.com/overview",
+            ),
+        ),
+        outcome="services_probed",
+    )
+    lines = _render(result)
+    assert lines[0].startswith("✓ maps-test (google_maps): key accepted — ")
+    assert "geocoding enabled" in lines[0]
+    assert "directions denied" in lines[0]
+    assert lines[1].startswith("  ! directions:")
+    assert "console.developers.google.com" in lines[1]
+    assert "text model" not in " ".join(lines), "no model vocabulary on a service row"
+
+
+def test_render_service_credential_rejection():
+    from keycall._cli import _render
+    from keycall._verify_core import VerifyResult
+
+    result = VerifyResult(
+        label="livekit-test",
+        provider="livekit",
+        listed_ok=False,
+        list_error_code="invalid_api_key",
+        list_error_message="livekit rejected the token signature: the api_secret does not match this api_key",
+        outcome="credential_rejected",
+    )
+    lines = _render(result)
+    assert lines[0].startswith("✗ livekit-test (livekit): invalid_api_key")

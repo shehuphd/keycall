@@ -33,6 +33,9 @@ class TargetView:
     provider: str
     protocol: str | None
     base_url: str | None
+    # "model" or "service": the page branches its rendering on this (a
+    # service key has categories to probe, never models to list).
+    kind: str
     # Which attachment kinds this provider takes, as {"image": {"bytes":
     # true, "url": true}, ...}. The Playground uses it to disable a control
     # the selected key can never satisfy, rather than letting the user pick
@@ -108,6 +111,17 @@ class Registry:
         self.add_targets(targets)
 
     def _open_client(self, target: Target) -> KeyCall:
+        if target.secret is not None:
+            # A pair-credential service target (LiveKit): the secret rides
+            # the named-field credential, never the api_key shorthand.
+            return KeyCall(
+                provider=target.provider,
+                credential={"api_key": target.key, "api_secret": target.secret},
+                protocol=target.protocol,
+                base_url=target.base_url,
+                read_timeout=float(self._read_timeout),
+                httpx_transport=self._httpx_transport,
+            )
         return KeyCall(
             provider=target.provider,
             api_key=target.key,
@@ -168,6 +182,7 @@ class Registry:
                 provider=entry.client.provider,
                 protocol=entry.client.protocol.value,
                 base_url=entry.target.base_url,
+                kind=entry.client.kind,
                 # Reaching past the client's public surface on purpose: the
                 # viewer ships with the library and these are the same
                 # frozen catalog facts the adapters gate on, so reading

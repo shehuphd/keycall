@@ -1,9 +1,9 @@
 """HTTP transport: the single audited place credentials are revealed.
 
-``_build_headers`` is the only call site of ``Credential.reveal()`` in the
-package. Adapters produce pure request specs and parse pure payloads; they
-never see the credential. All provider error text is scrubbed here before
-it can reach a KeyCallError.
+``_build_headers`` and the JWT mint it calls are the only call sites of
+``Credential.reveal()`` in the package. Adapters produce pure request
+specs and parse pure payloads; they never see the credential. All
+provider error text is scrubbed here before it can reach a KeyCallError.
 
 Retry policy is operation-aware: model listing gets a small bounded
 retry budget for transient failures; generation is never
@@ -16,6 +16,9 @@ broken endpoint can't buffer unbounded data into memory.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
@@ -115,6 +118,16 @@ class RequestSpec:
     # shape Deepgram's prerecorded listen and AssemblyAI's upload take.
     # Mutually exclusive with json_body and file_upload.
     binary_body: tuple[bytes, str] | None = None
+    # Overrides the resolved base_url's origin with https://{host} for this
+    # one request. Set only from a catalog service category's own host
+    # (Google Maps splits its categories across three hosts), never from a
+    # response, so a credential still can't be sent to a host outside the
+    # provider profile.
+    host: str | None = None
+    # jwt_hs256 auth only: the grant claims the minted token carries for
+    # this request (LiveKit's ListRooms needs video.roomList). The mint
+    # happens in ``_build_headers``, keeping every reveal() in this module.
+    jwt_grants: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -185,13 +198,51 @@ def _refuse_if_proxy_bypasses_guard(provider: str) -> None:
 _EMPTY_HEADERS: Mapping[str, str] = {}
 
 
+def _mint_jwt_hs256(credential: Credential, grants: Mapping[str, Any] | None) -> str:
+    """A LiveKit-convention HS256 access token, stdlib-only: ``iss`` is the
+    api_key, the api_secret signs, grants ride the ``video`` claim
+    (live-verified 2026-09-10 against LiveKit Cloud RoomService). Minted
+    per request with a ten-minute expiry, never cached, so no token
+    outlives the call that needed it."""
+
+    def encode(raw: bytes) -> str:
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+    now = int(time.time())
+    header = encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    payload = encode(
+        json.dumps(
+            {
+                "iss": credential.reveal("api_key"),
+                "sub": "keycall",
+                "nbf": now - 10,
+                "exp": now + 600,
+                "video": dict(grants or {}),
+            }
+        ).encode()
+    )
+    signing_input = f"{header}.{payload}".encode()
+    signature = encode(
+        hmac.new(credential.reveal("api_secret").encode(), signing_input, hashlib.sha256).digest()
+    )
+    return f"{header}.{payload}.{signature}"
+
+
 def _build_headers(
     resolved: ResolvedProvider,
     credential: Credential,
     *,
     extra: Mapping[str, str] = _EMPTY_HEADERS,
+    jwt_grants: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
-    # The one reveal() site in the package. Keep it that way.
+    # The reveal() sites in the package: here and the mint above. Keep it
+    # that way.
+    if resolved.auth_scheme == "jwt_hs256":
+        return _finish_headers(
+            resolved,
+            {resolved.auth_header: f"Bearer {_mint_jwt_hs256(credential, jwt_grants)}"},
+            extra=extra,
+        )
     revealed = credential.reveal()
     if resolved.auth_scheme == "bearer":
         headers = {resolved.auth_header: f"Bearer {revealed}"}
@@ -206,6 +257,15 @@ def _build_headers(
             code=ErrorCode.UNSUPPORTED_PROVIDER,
             provider=resolved.provider,
         )
+    return _finish_headers(resolved, headers, extra=extra)
+
+
+def _finish_headers(
+    resolved: ResolvedProvider,
+    headers: dict[str, str],
+    *,
+    extra: Mapping[str, str],
+) -> dict[str, str]:
     if resolved.api_version_header is not None:
         name, value = resolved.api_version_header
         headers[name] = value
@@ -220,7 +280,7 @@ def _build_request_kwargs(
     """The httpx build_request keyword set for a spec — JSON by default,
     multipart when the spec carries a file upload (the JSON Content-Type
     is dropped there so httpx can set the multipart boundary)."""
-    headers = _build_headers(resolved, credential, extra=spec.headers)
+    headers = _build_headers(resolved, credential, extra=spec.headers, jwt_grants=spec.jwt_grants)
     kwargs: dict[str, Any] = {
         "params": dict(spec.params) or None,
         "headers": headers,
@@ -288,11 +348,16 @@ class _TransportCore:
             connect=connect_timeout, read=read_timeout, write=read_timeout, pool=connect_timeout
         )
 
-    def _url(self, path: str) -> str:
+    def _url(self, path: str, *, host: str | None = None) -> str:
+        if host is not None:
+            # A catalog service category's own host (see RequestSpec.host):
+            # scheme pinned to https, host only ever from the provider
+            # profile, never from a response.
+            return f"https://{host}" + path
         return self._resolved.base_url.rstrip("/") + path
 
     def _scrub(self, text: str) -> str:
-        return scrub(text, credential_value=self._credential.reveal())
+        return scrub(text, credential_values=self._credential.secret_values())
 
     def _request_id(self, headers: Mapping[str, str]) -> str | None:
         header = self._resolved.provider_request_id_header
@@ -632,7 +697,7 @@ class Transport(_TransportCore):
             try:
                 http_request = self._client.build_request(
                     spec.method,
-                    self._url(spec.path),
+                    self._url(spec.path, host=spec.host),
                     **_build_request_kwargs(spec, self._resolved, self._credential),
                 )
                 response = self._client.send(http_request, stream=True)
@@ -746,7 +811,7 @@ class Transport(_TransportCore):
         try:
             http_request = self._client.build_request(
                 spec.method,
-                self._url(spec.path),
+                self._url(spec.path, host=spec.host),
                 params=dict(spec.params) or None,
                 json=spec.json_body,
                 headers=_build_headers(self._resolved, self._credential, extra=spec.headers),
@@ -875,7 +940,7 @@ class AsyncTransport(_TransportCore):
             try:
                 http_request = self._client.build_request(
                     spec.method,
-                    self._url(spec.path),
+                    self._url(spec.path, host=spec.host),
                     **_build_request_kwargs(spec, self._resolved, self._credential),
                 )
                 response = await self._client.send(http_request, stream=True)
@@ -981,7 +1046,7 @@ class AsyncTransport(_TransportCore):
         try:
             http_request = self._client.build_request(
                 spec.method,
-                self._url(spec.path),
+                self._url(spec.path, host=spec.host),
                 params=dict(spec.params) or None,
                 json=spec.json_body,
                 headers=_build_headers(self._resolved, self._credential, extra=spec.headers),

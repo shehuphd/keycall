@@ -50,6 +50,8 @@ from ._types import (
     RealtimeTranscriptDelta,
     RealtimeTurnComplete,
     ReasoningDelta,
+    ServiceReport,
+    ServiceStatus,
     SpeechGenerationRequest,
     StreamEvent,
     StreamFinish,
@@ -86,7 +88,7 @@ from ._types import (
     Voice,
 )
 
-__version__ = "1.11.2"
+__version__ = "1.12.0"
 
 __all__ = [
     "AliasFact",
@@ -137,6 +139,8 @@ __all__ = [
     "RealtimeTranscriptDelta",
     "RealtimeTurnComplete",
     "ReasoningDelta",
+    "ServiceReport",
+    "ServiceStatus",
     "SpeechGenerationRequest",
     "StreamEvent",
     "StreamFinish",

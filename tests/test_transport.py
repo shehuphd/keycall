@@ -320,3 +320,155 @@ def test_async_client_refuses_proxy_env_for_guarded_custom_target(monkeypatch):
         )
     assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
     assert CANARY not in excinfo.value.message
+
+
+def test_pair_credential_secret_scrubbed_from_error_bodies():
+    """A hostile or echoing provider error that repeats the api_secret of a
+    key/secret pair must come back redacted, through the transport's own
+    error path, the same way the api_key already does. Sends the secret in
+    the raw response body, the shape production traffic takes."""
+    from keycall._credential import Credential
+    from keycall._registry import resolve_provider
+    from keycall._transport import RequestSpec, Transport
+
+    secret = "livekit-pair-secret-f00ba4"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401, json={"error": {"message": f"bad signature for {CANARY} with {secret}"}}
+        )
+
+    def translate(status_code, payload):
+        # Surface the provider body the way a production adapter's translate_error
+        # does, so the scrub runs against text that carries the secret.
+        message = payload.get("error", {}).get("message", "")
+        return ErrorCode.INVALID_API_KEY, False, f"provider said: {message}"
+
+    resolved = resolve_provider("openai")
+    transport = Transport(
+        resolved,
+        Credential({"api_key": CANARY, "api_secret": secret}),
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    spec = RequestSpec(method="GET", path="/v1/models")
+    with pytest.raises(KeyCallError) as excinfo:
+        transport.request(
+            spec, operation="list_models", retry_policy="generation", translate_error=translate
+        )
+    rendered = str(excinfo.value)
+    assert "provider said" in rendered, "the body must reach the message"
+    assert CANARY not in rendered
+    assert secret not in rendered
+
+
+def test_jwt_hs256_scheme_mints_a_verifiable_token_per_request():
+    """A livekit-resolved transport sends Bearer <JWT>: HS256-signed with
+    the api_secret, iss = api_key, the spec's grants under video, and a
+    bounded expiry. Verified by re-signing in the test, not by decoding
+    claims alone."""
+    import base64 as b64
+    import hashlib
+    import hmac as hmac_mod
+    import json as json_mod
+    import time as time_mod
+
+    from keycall._credential import Credential
+    from keycall._registry import resolve_provider
+    from keycall._transport import RequestSpec, Transport
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["auth"] = request.headers.get("authorization")
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"rooms": []})
+
+    resolved = resolve_provider("livekit", base_url="https://demo-abc.livekit.cloud")
+    transport = Transport(
+        resolved,
+        Credential({"api_key": "lk-key-canary", "api_secret": "lk-secret-canary"}),
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    spec = RequestSpec(
+        method="POST",
+        path="/twirp/livekit.RoomService/ListRooms",
+        json_body={},
+        jwt_grants={"roomList": True},
+    )
+    transport.request(spec, operation="list_models", retry_policy="generation")
+
+    assert captured["url"] == "https://demo-abc.livekit.cloud/twirp/livekit.RoomService/ListRooms"
+    assert captured["auth"].startswith("Bearer ")
+    token = captured["auth"].removeprefix("Bearer ")
+    header_part, payload_part, signature_part = token.split(".")
+
+    def unpad(part: str) -> bytes:
+        return b64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
+
+    expected = b64.urlsafe_b64encode(
+        hmac_mod.new(
+            b"lk-secret-canary", f"{header_part}.{payload_part}".encode(), hashlib.sha256
+        ).digest()
+    ).rstrip(b"=").decode()
+    assert signature_part == expected, "signature must verify against the api_secret"
+    claims = json_mod.loads(unpad(payload_part))
+    assert claims["iss"] == "lk-key-canary"
+    assert claims["video"] == {"roomList": True}
+    assert claims["exp"] - time_mod.time() < 700, "short-lived, never a standing token"
+    assert json_mod.loads(unpad(header_part)) == {"alg": "HS256", "typ": "JWT"}
+
+
+def test_spec_host_overrides_the_origin_for_one_request():
+    """A catalog category host (Maps splits categories across hosts) routes
+    that one request; the resolved base_url still serves specs without one."""
+    from keycall._credential import Credential
+    from keycall._registry import resolve_provider
+    from keycall._transport import RequestSpec, Transport
+
+    urls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    transport = Transport(
+        resolve_provider("google_maps"),
+        Credential("maps-key-canary"),
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    transport.request(
+        RequestSpec(method="GET", path="/v4beta/geocode/address", host="geocode.googleapis.com"),
+        operation="list_models",
+        retry_policy="generation",
+    )
+    transport.request(
+        RequestSpec(method="POST", path="/v1/places:searchText", json_body={}),
+        operation="list_models",
+        retry_policy="generation",
+    )
+    assert urls[0].startswith("https://geocode.googleapis.com/v4beta/")
+    assert urls[1].startswith("https://places.googleapis.com/v1/")
+
+
+def test_google_maps_auth_rides_the_goog_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["goog"] = request.headers.get("x-goog-api-key")
+        captured["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={})
+
+    from keycall._credential import Credential
+    from keycall._registry import resolve_provider
+    from keycall._transport import RequestSpec, Transport
+
+    transport = Transport(
+        resolve_provider("google_maps"),
+        Credential("maps-key-canary"),
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    transport.request(
+        RequestSpec(method="GET", path="/x"), operation="list_models", retry_policy="generation"
+    )
+    assert captured["goog"] == "maps-key-canary"
+    assert captured["authorization"] is None, "the key never rides a bearer header or a URL"

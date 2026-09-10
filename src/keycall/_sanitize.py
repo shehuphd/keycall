@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import re
+from collections.abc import Sequence
 from urllib.parse import quote
 
 _MAX_MESSAGE_LENGTH = 400
@@ -49,15 +50,26 @@ def _credential_variants(value: str) -> tuple[str, ...]:
     return tuple(sorted(variants, key=len, reverse=True))
 
 
-def scrub(text: str, *, credential_value: str | None = None) -> str:
+def scrub(
+    text: str,
+    *,
+    credential_value: str | None = None,
+    credential_values: Sequence[str] | None = None,
+) -> str:
     """Redact credentials and credential-shaped values, strip control
-    characters, and bound the length."""
+    characters, and bound the length. ``credential_values`` redacts a whole
+    set of secrets (a key/secret pair), ``credential_value`` a single one;
+    both are honored so a single-secret caller need not wrap it in a list."""
     if not text:
         return ""
     cleaned = _CONTROL_CHARS.sub("", text)
+    secrets = list(credential_values or ())
     if credential_value:
-        for variant in _credential_variants(credential_value):
-            cleaned = cleaned.replace(variant, "<redacted>")
+        secrets.append(credential_value)
+    for secret in secrets:
+        if secret:
+            for variant in _credential_variants(secret):
+                cleaned = cleaned.replace(variant, "<redacted>")
     for pattern in _VALUE_PATTERNS:
         cleaned = pattern.sub("<redacted>", cleaned)
     if len(cleaned) > _MAX_MESSAGE_LENGTH:

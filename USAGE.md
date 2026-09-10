@@ -65,7 +65,7 @@ async with AsyncKeyCall(provider="anthropic", api_key=secret) as client:
     discovery = await client.list_models()
 ```
 
-Supported provider names: `openai`, `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, `xai`, the speech-to-text providers `assemblyai` and `deepgram`, and the speech platform `elevenlabs`. Aliases: `claude`, `google`, `google-gemini`, `pplx`, `kimi`, `grok`, `x-ai`, `eleven-labs`, `11labs`.
+Supported provider names: `openai`, `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, `xai`, the speech-to-text providers `assemblyai` and `deepgram`, the speech platform `elevenlabs`, and the service providers `google_maps` and `livekit` (see [Service providers](#service-providers)). Aliases: `claude`, `google`, `google-gemini`, `pplx`, `kimi`, `grok`, `x-ai`, `eleven-labs`, `11labs`, `maps`, `googlemaps`.
 
 ### Custom OpenAI-compatible endpoints
 
@@ -91,7 +91,8 @@ A proxy environment variable (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, in eithe
 | Parameter | Default | Purpose |
 |---|---|---|
 | `provider` | required | Provider name or custom label |
-| `api_key` | required | The credential; wrapped in a redacting type immediately |
+| `api_key` | one of these two | The credential; wrapped in a redacting type immediately |
+| `credential` | one of these two | A mapping of named secret fields, for providers whose credential has more than one (`{"api_key": ..., "api_secret": ...}` on LiveKit); same redacting wrapper |
 | `protocol` | from registry | Wire protocol; only needed for custom targets |
 | `base_url` | from registry | Only for custom targets |
 | `connect_timeout` | `10.0` | Seconds |
@@ -921,6 +922,54 @@ job = client.cancel_batch(job)         # stop a running batch; done work stays b
 
 `AsyncKeyCall` carries the same five methods as awaitables.
 
+## Service providers
+
+Two catalog providers have no models at all: `google_maps` (Google Maps Platform) and `livekit` (LiveKit Cloud). A client for one of these has a single operation, `probe_services()`, which sends the cheapest possible request per service category the catalog declares and reports how each answered:
+
+```python
+from keycall import KeyCall
+
+with KeyCall(provider="google_maps", api_key=secret) as client:
+    report = client.probe_services()
+
+for service in report.services:
+    print(service.name, service.status, service.detail or "")
+# geocoding enabled
+# places enabled
+# directions enabled
+```
+
+`ServiceReport` carries `provider` and `services`; each `ServiceStatus` carries `name`, `status`, and `detail`. `status` is a closed set:
+
+| Status | Meaning |
+|---|---|
+| `enabled` | The category answered the probe |
+| `denied` | The key authenticated but this category refused; `detail` carries the provider's own reason (Google's 403 names the console URL that turns the API on) |
+| `unknown` | The category couldn't be judged (a 5xx, a shape the adapter doesn't recognize); `detail` says why |
+
+A rejected credential raises `INVALID_API_KEY` rather than appearing as a per-category standing, so a bad key and a valid key missing one service stay distinguishable. Model operations (`list_models`, `generate_text`, everything else) refuse on a service client naming `probe_services()`, and `probe_services()` refuses on a model client, both before any network call. `AsyncKeyCall` carries `probe_services()` as an awaitable.
+
+**Costs.** A probe that reaches an enabled service is one billable call at that category's own per-call rate. On Google Maps (pricing page read 2026-09-10): geocoding and directions $5.00 per 1000 calls after 10,000 free monthly (Essentials tier), places text search $32.00 per 1000 after 5,000 free (Pro tier) — three calls per `probe_services()`. LiveKit's ListRooms probe is an API read on your project, not a billed room minute.
+
+**Google Maps** takes an ordinary `api_key`. Its probes ride the surfaces that accept the key in the `X-Goog-Api-Key` header — geocoding on v4beta, places text search, the Routes API — because KeyCall never puts a credential in a URL and the legacy geocoding endpoint only reads a query-string key.
+
+**LiveKit** authenticates with a key/secret pair and lives on a per-project host, so construction takes both:
+
+```python
+client = KeyCall(
+    provider="livekit",
+    credential={"api_key": key, "api_secret": secret},
+    base_url="https://my-project-abc123.livekit.cloud",
+)
+report = client.probe_services()  # realtime enabled
+```
+
+The dashboard's `wss://` spelling of the project URL is accepted and normalized to `https://`. Auth is a per-request HS256 token minted from the pair (ten-minute expiry, never cached, never in a URL). The two failure modes translate apart: a wrong `api_secret` raises `INVALID_API_KEY`, and a valid pair whose key lacks the roomList admin permission reports the `realtime` category as `denied`, naming the grant to add in the project's key settings.
+
+`credential=` and `api_key=` are mutually exclusive, and the fields a provider takes are declared in the catalog: passing a field the provider doesn't declare, or missing one it requires, is refused by field name before any network call. Field names appear in errors; field values never do.
+
+In the verify CLI, a service target's row renders its standings in place of a model count — `✓ maps-test (google_maps): key accepted — geocoding enabled, places enabled, directions enabled` — with a detail line per non-enabled category, and `--generate` adds nothing on a service target since the probes already made live calls. Key files take service targets with an optional `secret` field (see [Sources](#sources)). In the viewer, the dashboard check shows the same per-category standings; service keys don't appear in the Models tab or the Playground, which have nothing to offer a key with no models.
+
 ## Error handling
 
 Every failure raises `KeyCallError` with a typed `code`:
@@ -1035,9 +1084,20 @@ Environment variable (single target, provider required):
 keycall verify --source env:MY_OPENAI_KEY --provider openai
 ```
 
-Interactive (no `--source`): prompts for the provider, naming all ten valid choices (case-insensitive), then a hidden key.
+Interactive (no `--source`): prompts for the provider, naming every valid choice (case-insensitive) — the model providers plus single-key service providers like `google_maps`; a pair provider like `livekit` needs a file — then a hidden key.
 
-Fields: `provider` and `key` required; `protocol`, `base_url`, `name` optional. Repeating a provider creates independent targets.
+Fields: `provider` and `key` required; `protocol`, `base_url`, `name`, `secret` optional. `secret` is the second field of a pair credential (LiveKit's `api_secret`), and `base_url` is required for providers that live on a per-project host:
+
+```toml
+[[targets]]
+provider = "livekit"
+key = "APIxxxxxxxx"
+secret = "REPLACE-ME"
+base_url = "https://my-project-abc123.livekit.cloud"
+name = "livekit-test"
+```
+
+Repeating a provider creates independent targets.
 
 ### Behavior and exit codes
 

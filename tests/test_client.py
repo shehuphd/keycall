@@ -382,3 +382,48 @@ def test_stale_catalog_sets_the_flag_and_says_so():
 
     assert stale.catalog_stale is True
     assert any("catalog was last verified" in w for w in stale.warnings)
+
+
+# --- credential construction (named secret fields) ---------------------------
+
+
+def test_api_key_and_credential_are_exclusive():
+    with pytest.raises(ValueError):
+        KeyCall(provider="anthropic", api_key="sk-x-000", credential={"api_key": "sk-x-000"})
+    with pytest.raises(ValueError):
+        KeyCall(provider="anthropic")
+
+
+def test_credential_mapping_is_the_longhand_for_api_key():
+    client = KeyCall(provider="anthropic", credential={"api_key": "sk-canary-abc123"})
+    assert client.provider == "anthropic"
+    client.close()
+
+
+def test_undeclared_credential_field_is_refused_naming_it():
+    with pytest.raises(KeyCallError) as excinfo:
+        KeyCall(
+            provider="anthropic",
+            credential={"api_key": "sk-canary-abc123", "api_secret": "canary-secret-9z"},
+        )
+    assert excinfo.value.code is ErrorCode.INVALID_API_KEY
+    rendered = str(excinfo.value)
+    assert "api_secret" in rendered
+    assert "canary-secret-9z" not in rendered, "field values never enter the message"
+
+
+def test_livekit_single_key_refusal_names_the_missing_field():
+    """The api_key shorthand cannot carry LiveKit's pair; the refusal names
+    api_secret and the credential= shape that fixes it, before any network
+    call or adapter work."""
+    with pytest.raises(KeyCallError) as excinfo:
+        KeyCall(
+            provider="livekit",
+            api_key="lk-canary-key",
+            base_url="https://demo-abc.livekit.cloud",
+        )
+    assert excinfo.value.code is ErrorCode.INVALID_API_KEY
+    rendered = str(excinfo.value)
+    assert "api_secret" in rendered
+    assert "credential=" in rendered
+    assert "lk-canary-key" not in rendered
