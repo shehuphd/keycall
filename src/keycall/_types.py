@@ -1323,11 +1323,10 @@ class ServiceStatus:
     catalog category ("geocoding", "places", "directions", "realtime"),
     the unit another provider's equivalent service would share. ``status``
     is a closed set: "enabled" (the probe answered with results),
-    "denied" (the provider refused the category for this key — an API not
-    enabled on the project, a missing grant), "restricted" (the key works
-    but a restriction on it blocked this use), "unknown" (an answer the
+    "denied" (the provider refused the category for this key: an API not
+    enabled on the project, or a missing grant), "unknown" (an answer the
     probe has no recorded meaning for). ``detail`` carries the provider's
-    own words, scrubbed and bounded — for a denial that is usually the
+    own words, scrubbed and bounded; for a denial that is usually the
     sentence naming the fix, enable URL included."""
 
     name: str

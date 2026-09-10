@@ -166,7 +166,7 @@ client.generate_text(model="claude-3-5-haiku-latest", messages=messages)
 
 Where a provider publishes no dates (xAI), the message omits the date; where it names no replacement, the message says so instead of guessing one. A named replacement is always itself a live model — chains through intermediate retired models are resolved in the catalog data.
 
-**`list_models()` withholds retired models the provider still advertises.** Some providers keep shut-down models in their list endpoint indefinitely (OpenAI listed 13 such ids on 2026-09-04, including the whole `-chat-latest` family), so a picker built from the raw listing offers models that fail on use. Each withheld model is reported both as a warning in `ModelDiscovery.warnings` and as a `WithheldModel` record in `ModelDiscovery.withheld`, naming the model, the retirement date, and the replacement, so the filtering is visible, never silent. The viewer's Models tab summarises them under the model count as one line that opens a table of the same records.
+**`list_models()` withholds retired models the provider still advertises.** Some providers keep shut-down models in their list endpoint indefinitely (OpenAI listed 14 such ids on 2026-09-04, including the whole `-chat-latest` family), so a picker built from the raw listing offers models that fail on use. Each withheld model is reported both as a warning in `ModelDiscovery.warnings` and as a `WithheldModel` record in `ModelDiscovery.withheld`, naming the model, the retirement date, and the replacement, so the filtering is visible, never silent. The viewer's Models tab summarises them under the model count as one line that opens a table of the same records.
 
 The registry is dated evidence, and two release probes re-verify it: one sends each recorded id and alias to its provider raw and fails if any now answers, the other confirms every recorded replacement still appears in its provider's listing. A stale entry is a failing release test, never a silent false refusal.
 
@@ -367,7 +367,7 @@ print(result.text)  # the model's own written-out answer
 ```
 
 - **`output` isn't always the answer.** OpenAI and xAI report the run's code but not its printed output at the call level (`output` comes back empty); the human-readable result only appears in `result.text`, on the model's following reply. Gemini and Anthropic do report output directly.
-- **A generated file is only recovered on Gemini.** A code run that saves an image comes back as bytes inline only on Gemini, surfaced as an ordinary `ImageOutput` in `result.parts`. OpenAI, xAI, and Anthropic instead hand back an opaque file reference that needs a further authenticated download — KeyCall doesn't perform that download yet, so a run that only produces a file (no text answer) currently loses it on those three.
+- **A generated file is only recovered on Gemini.** A code run that saves an image comes back as bytes inline only on Gemini, surfaced as an ordinary `ImageOutput` in `result.parts`. OpenAI and Anthropic instead hand back an opaque file reference that needs a further authenticated download, which KeyCall doesn't perform yet; xAI exposes no confirmed way to retrieve a generated file at all. So a run that only produces a file (no text answer) currently loses it on all three.
 - **Anthropic maps this onto its own `bash_code_execution` server tool** and needs a beta header KeyCall sends automatically only when `code_interpreter=True`. Only that tool's calls are normalized; a chained `text_editor_code_execution` call Anthropic sometimes makes to author a file first surfaces as an `UnknownOutput` instead.
 - **Non-streaming only on Anthropic.** `stream_text(..., code_interpreter=True)` still completes correctly on Anthropic with the right final text, but its code/output currently doesn't survive the stream — call `generate_text()` instead when you need Anthropic's code execution details. OpenAI, Gemini, and xAI stream it fully.
 - Supported on OpenAI, Gemini, xAI, and Anthropic (all live-verified 2026-08-22); other providers raise `UNSUPPORTED_OPERATION`.
@@ -432,6 +432,7 @@ Support splits by *form*, not only by provider, and the gate fires before any ne
 | Gemini | yes | no |
 | Perplexity | yes | yes |
 | Moonshot | yes | no |
+| xAI | yes | yes |
 | DeepSeek | no | no (API is text only) |
 
 - **Bytes are the portable form.** Every image-capable provider accepts them, so `ImageInput(data=...)` works everywhere images work.
@@ -753,9 +754,9 @@ for text, part in zip(inputs, result.parts):
 |---|---|---|---|
 | OpenAI | yes | `text-embedding-3-small` | 1536 |
 | Gemini | yes | `gemini-embedding-001` | 3072 |
-| Anthropic, DeepSeek, Perplexity, Moonshot | no | | |
+| Anthropic, DeepSeek, Perplexity, Moonshot, xAI | no | | |
 
-Anthropic publishes no embeddings endpoint, and the other three return 404 or 403 for one (verified 2026-08-09). Calling `embed()` on them raises `UNSUPPORTED_OPERATION` before any network call, naming the providers that do support it. `AsyncKeyCall.embed()` is the awaitable twin.
+Anthropic publishes no embeddings endpoint, xAI publishes the endpoint but offers no embedding model, and the other three return 404 or 403 for one (verified 2026-08-09). Calling `embed()` on them raises `UNSUPPORTED_OPERATION` before any network call, naming the providers that do support it. `AsyncKeyCall.embed()` is the awaitable twin.
 
 Both providers batch: pass every string in one call rather than looping, which is one request instead of N. OpenAI reports token usage for the batch; Gemini's batch endpoint reports none, so `usage` is empty there rather than fabricated.
 
