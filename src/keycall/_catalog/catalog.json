@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.09.10.4",
+  "catalog_version": "2026.09.11.1",
   "verified_at": "2026-08-10T00:00:00Z",
   "providers": {
     "openai": {
@@ -35,6 +35,10 @@
         "realtime": {
           "method": "WS",
           "path": "/v1/realtime?model={model}"
+        },
+        "live": {
+          "method": "WS",
+          "path": "/v1/live/sessions"
         },
         "batch_upload": {
           "method": "POST",
@@ -117,6 +121,8 @@
         "video_generation": false,
         "realtime": true,
         "realtime_note": "The Realtime API (GA session shape). Text and audio output modalities both verified live 2026-08-14; usage arrives in response.done.",
+        "live": true,
+        "live_note": "gpt-live full-duplex voice on POST-created WebSocket sessions at /v1/live/sessions (its own endpoint, not the Realtime API). The model rides the session-config message, and reasoning plus tool use are delegated to a backend Responses model billed separately from the per-second voice session. Served by live(). NOT yet live-probed as of 2026-09-11 (needs a gpt-live-1-entitled key): the session-config and event wire are built against OpenAI's published docs and corrected once the probe records the endpoint's own vocabulary.",
         "batch_generation": true,
         "batch_generation_note": "Files API upload (purpose=batch, JSONL lines targeting /v1/responses) then POST /batches with completion_window 24h (the only accepted value); one model per input file; up to 50000 requests / 200MB per file at a 50% token discount. Results and per-line errors are separate downloadable files; output kept 30 days. Statuses validating/in_progress/finalizing/completed/failed/expired/cancelling/cancelled. Live-verified end to end 2026-09-02, including a per-org failure mode where batch validation cannot read a file the same key uploads and reads back \u2014 provider-side project state, fixed by a fresh project.",
         "batch_embeddings": true,

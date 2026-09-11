@@ -4,6 +4,18 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Highlights: `live()` adds full-duplex voice on OpenAI's gpt-live as a sibling of `realtime()`, with the model delegating reasoning to a separately-billed backend model and the billed session seconds reported on close.
+
+### Added
+
+- **`live()`: full-duplex voice sessions on OpenAI's gpt-live.** A sibling of `realtime()`, not a replacement, over gpt-live's own `v1/live/sessions` WebSocket endpoint: the caller's audio and the model's audio overlap, the model endpoints the caller's turn itself, and it delegates reasoning and tool use to a separately-billed backend model (`backend_model`, `backend_tools`, OpenAI's Responses delegation). Audio streams up with `send_audio()`, and `send_text()` and `end_audio_turn()` remain for manual control. Events come back normalized: the caller's own interim and final transcript, the model's audio and its output transcript, turn completion with the voice session's usage, full-duplex barge-in, and a session-ended event carrying `billed_seconds` where the provider reports it on close (the voice loop is billed per second). Sync and async, with the credential on the handshake headers and never in a URL. Every provider but OpenAI refuses `live()` with `UNSUPPORTED_OPERATION` before any connection, pointing at `realtime()` for half-duplex voice. `gpt-live-1` classifies into a new `ModelCategory.LIVE`.
+
+### Notes
+
+- **The gpt-live wire is provisional.** gpt-live shipped 2026-09-10 and this release has not yet run a live probe against `v1/live/sessions` (the probe needs a funded, gpt-live-1-entitled key, and the release gate is all-or-nothing over every live target). The normalized event taxonomy a caller reads is the stable surface; the provider frame names mapping to it may be corrected once the probe records the endpoint's own vocabulary, each a single-place edit in the translator.
+
 ## [1.12.0] — 2026-09-10
 
 Highlights: Google Maps and LiveKit join as a new `service` provider kind, verified by live service probes instead of a model list; `reasoning_effort` starts working on DeepSeek; and the Playground's key and model lists narrow to only what the current selection can serve.

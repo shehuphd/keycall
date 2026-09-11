@@ -103,6 +103,9 @@ class ProviderCapabilities:
     # control whose levels start at 'low'.
     reasoning_effort_minimal: bool = False
     realtime: bool = False
+    # Full-duplex live-sessions endpoint (OpenAI's gpt-live), served by
+    # live(); distinct from realtime, above.
+    live: bool = False
     # Whether TextInput(cacheable=True) sets a breakpoint here at all.
     # False doesn't mean "no caching" — every provider without this flag
     # still caches automatically; it just needs no marker from KeyCall.
@@ -240,6 +243,7 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
         reasoning_effort=bool(raw.get("reasoning_effort", False)),
         reasoning_effort_minimal=bool(raw.get("reasoning_effort_minimal", False)),
         realtime=bool(raw.get("realtime", False)),
+        live=bool(raw.get("live", False)),
         web_search=bool(raw.get("web_search", False)),
         apply_patch=bool(raw.get("apply_patch", False)),
         code_interpreter=bool(raw.get("code_interpreter", False)),

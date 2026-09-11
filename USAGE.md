@@ -155,7 +155,7 @@ The catalog records the models each provider has shut down: the id, any alias sp
 
 Two behaviors follow from an entry:
 
-**Any call naming a retired model refuses before the network** with `MODEL_RETIRED`, not retryable, on every operation that takes a model id — generation, streaming, tool calling, structured output, embeddings, image, speech, and video generation, batches (any request in the submission), file and streaming transcription, and realtime sessions. The message carries the fix:
+**Any call naming a retired model refuses before the network** with `MODEL_RETIRED`, not retryable, on every operation that takes a model id — generation, streaming, tool calling, structured output, embeddings, image, speech, and video generation, batches (any request in the submission), file and streaming transcription, realtime sessions, and live sessions. The message carries the fix:
 
 ```python
 client.generate_text(model="claude-3-5-haiku-latest", messages=messages)
@@ -582,6 +582,47 @@ Provider notes, all verified live:
 - **Gemini** (`gemini-2.5-flash-native-audio-latest`): audio-only models; the API key rides a header on the WebSocket handshake, never the URL; usage includes thought tokens. Caller audio is 16 kHz 16-bit PCM (OpenAI and xAI take 24 kHz); generated audio is 24 kHz on all three.
 
 Everything KeyCall doesn't model can be passed as `provider_config={...}`, merged verbatim into the provider's session-configuration message; using it reports a warning, since those keys won't port between providers. `AsyncKeyCall.realtime()` is the same surface with `async for` over `events()`. Providers without a realtime API (Anthropic, DeepSeek, Perplexity, Moonshot, custom targets) refuse with `UNSUPPORTED_OPERATION` before any connection.
+
+## Live sessions (full duplex)
+
+`live()` opens a full-duplex voice conversation with OpenAI's gpt-live on its own `v1/live/sessions` endpoint. It's a sibling of `realtime()`, not a replacement: the caller's audio and the model's audio overlap, the model endpoints the caller's turn itself, and it delegates reasoning and tool use to a separately-billed backend model (OpenAI's Responses delegation).
+
+```python
+with client.live(
+    model="gpt-live-1",
+    voice="marin",
+    instructions="You are a concise assistant.",
+    backend_model="gpt-5.1",
+    backend_tools=[{"type": "web_search"}],
+) as session:
+    session.send_audio(mic.read())        # stream caller audio continuously
+    for event in session.events(timeout=60):
+        if event.kind == "audio_delta":
+            speaker.play(event.data)      # raw 16-bit PCM
+        elif event.kind == "input_transcript_final":
+            print("you said:", event.text)
+        elif event.kind == "transcript_delta":
+            print(event.text, end="", flush=True)
+        elif event.kind == "interrupted":
+            speaker.stop()                # barge-in: the caller cut in
+```
+
+Turns go up three ways: `send_audio(pcm)` streams caller audio in chunks (the model decides when the turn ends), `end_audio_turn()` closes an audio turn by hand, and `send_text(text)` is a whole typed turn. Events come back normalized:
+
+| Event kind | Meaning |
+|---|---|
+| `session_started` | the provider accepted the session |
+| `input_transcript_delta` | an increment of the caller's own speech, revised until it finalizes |
+| `input_transcript_final` | the settled transcript of one caller utterance |
+| `audio_delta` | a chunk of generated speech, decoded to raw PCM bytes |
+| `transcript_delta` | the model's own spoken words (can trail the audio it describes) |
+| `turn_complete` | the response finished; carries the voice session's `usage` (the backend model is billed separately) |
+| `interrupted` | full-duplex barge-in: the caller talked over the model, or the turn was cancelled |
+| `session_ended` | the connection closed; always the final event, carrying `billed_seconds` where the provider reports it |
+
+The voice loop is billed per second, so `session_ended` carries `billed_seconds` where the provider reports it on close. Everything KeyCall doesn't model can be passed as `provider_config={...}`, merged verbatim into the session-configuration message with a portability warning. `AsyncKeyCall.live()` is the same surface with `async for` over `events()`. Every provider but OpenAI (and custom targets) refuses `live()` with `UNSUPPORTED_OPERATION` before any connection; use `realtime()` for a half-duplex voice model.
+
+The gpt-live wire is provisional: gpt-live shipped 2026-09-10 and KeyCall has not yet run a live probe against `v1/live/sessions` (that needs a funded, gpt-live-1-entitled key, and the release gate is all-or-nothing over every live target). The normalized event taxonomy above is the stable surface a caller reads; the provider frame names mapping to it may be corrected once the probe records the endpoint's own vocabulary.
 
 ## Streaming transcription
 

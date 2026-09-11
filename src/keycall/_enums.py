@@ -17,6 +17,10 @@ class ModelCategory(str, Enum):
     SPEECH_GENERATION = "speech_generation"
     VIDEO_GENERATION = "video_generation"
     REALTIME = "realtime"
+    # Full-duplex voice on a dedicated live-sessions endpoint that delegates
+    # reasoning to a separate backend model (OpenAI's gpt-live on
+    # /v1/live/sessions), distinct from the Realtime API that REALTIME covers.
+    LIVE = "live"
     UNKNOWN = "unknown"
 
 

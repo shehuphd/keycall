@@ -57,11 +57,8 @@ _RULES: tuple[tuple[tuple[str, ...], ModelCategory], ...] = (
     (("dall-e", "image", "imagen", "banana", "flux"), ModelCategory.IMAGE_GENERATION),
     (("sora", "veo", "imagine-video"), ModelCategory.VIDEO_GENERATION),
     # gpt-live is OpenAI's full-duplex voice model on its own
-    # v1/live/sessions endpoint (not the Realtime API); KeyCall has no
-    # adapter for that endpoint yet, so it stays out of the default text
-    # picker rather than being mis-served as text. Reclassify once a
-    # live-sessions surface lands.
-    (("gpt-live",), ModelCategory.UNKNOWN),
+    # v1/live/sessions endpoint (not the Realtime API), served by live().
+    (("gpt-live",), ModelCategory.LIVE),
     # Ambiguous or out-of-taxonomy families stay unknown rather than
     # guessing: moderation/reranking/guard models, audio-hybrid previews.
     (("moderation", "rerank", "guard", "audio"), ModelCategory.UNKNOWN),
