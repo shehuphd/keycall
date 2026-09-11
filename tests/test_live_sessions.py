@@ -91,7 +91,17 @@ def test_setup_configures_a_live_session_with_voice_under_audio_output():
     assert session["type"] == "live"
     assert session["model"] == "gpt-live-1"
     assert session["instructions"] == "Be brief."
-    assert session["audio"] == {"output": {"voice": "marin"}}
+    assert session["audio"]["output"] == {"voice": "marin"}
+
+
+def test_setup_asks_for_input_transcription_by_default():
+    (message,) = live_translator().setup_messages()
+    assert json.loads(message)["session"]["audio"]["input"] == {"transcription": {}}
+
+
+def test_input_transcription_can_be_turned_off():
+    (message,) = live_translator(input_transcription=False).setup_messages()
+    assert "input" not in json.loads(message)["session"].get("audio", {})
 
 
 def test_setup_delegates_reasoning_to_the_backend_responses_model():

@@ -96,8 +96,18 @@ class OpenAILiveTranslator:
         session: dict[str, Any] = {"type": "live", "model": self._config.model}
         if self._config.instructions is not None:
             session["instructions"] = self._config.instructions
+        audio: dict[str, Any] = {}
         if self._config.voice is not None:
-            session["audio"] = {"output": {"voice": self._config.voice}}
+            audio["output"] = {"voice": self._config.voice}
+        # The caller's own audio is transcribed only when the session asks
+        # for it: the model's output transcript rides its audio for free,
+        # but the input transcript is a separate opt-in that bills for the
+        # extra recognition. Without this the LiveInputTranscript* events
+        # never arrive. PROVISIONAL wire, confirm the shape at probe.
+        if self._config.input_transcription:
+            audio["input"] = {"transcription": {}}
+        if audio:
+            session["audio"] = audio
         # Responses delegation: gpt-live hands reasoning and tool use to a
         # separate backend model, billed separately.
         backend: dict[str, Any] = {}

@@ -1830,6 +1830,7 @@ class KeyCall(_BaseClient):
         instructions: str | None = None,
         backend_model: str | None = None,
         backend_tools: Sequence[Mapping[str, Any]] = (),
+        input_transcription: bool = True,
         provider_config: Mapping[str, Any] | None = None,
     ) -> LiveSession:
         """A full-duplex live voice session (OpenAI's gpt-live). A sibling
@@ -1838,7 +1839,9 @@ class KeyCall(_BaseClient):
         (backend_model plus backend_tools). Use as a context manager;
         stream caller audio with send_audio and read normalized events
         from events(). The model does its own endpointing, so no explicit
-        turn boundary is required."""
+        turn boundary is required. input_transcription (on by default) asks
+        the provider to transcribe the caller's own audio, so the
+        input-transcript events arrive."""
         self._require_open()
         self._require_model_not_retired(model)
         config = LiveConfig(
@@ -1847,6 +1850,7 @@ class KeyCall(_BaseClient):
             instructions=instructions,
             backend_model=backend_model,
             backend_tools=tuple(backend_tools),
+            input_transcription=input_transcription,
             provider_config=provider_config,
         )
         path, translator = self._adapter.live_plan(config)
@@ -2725,12 +2729,15 @@ class AsyncKeyCall(_BaseClient):
         instructions: str | None = None,
         backend_model: str | None = None,
         backend_tools: Sequence[Mapping[str, Any]] = (),
+        input_transcription: bool = True,
         provider_config: Mapping[str, Any] | None = None,
     ) -> AsyncLiveSession:
         """A full-duplex live voice session (OpenAI's gpt-live), the async
         twin of KeyCall.live(). Use as an async context manager; stream
         caller audio with send_audio and read normalized events with
-        `async for`."""
+        `async for`. input_transcription (on by default) asks the provider
+        to transcribe the caller's own audio, so the input-transcript
+        events arrive."""
         self._require_open()
         self._require_model_not_retired(model)
         config = LiveConfig(
@@ -2739,6 +2746,7 @@ class AsyncKeyCall(_BaseClient):
             instructions=instructions,
             backend_model=backend_model,
             backend_tools=tuple(backend_tools),
+            input_transcription=input_transcription,
             provider_config=provider_config,
         )
         path, translator = self._adapter.live_plan(config)

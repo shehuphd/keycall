@@ -998,16 +998,22 @@ LiveEvent = (
 class LiveConfig:
     """What a ``live()`` session asks of the provider: a full-duplex voice
     loop plus the backend model and tools it delegates reasoning to
-    (OpenAI's Responses delegation). ``provider_config`` is passed through
-    verbatim into the session-configuration message for anything KeyCall
-    does not model, reported with a warning so a portability seam is never
-    silent."""
+    (OpenAI's Responses delegation). ``input_transcription`` asks the
+    provider to transcribe the caller's own audio so the
+    ``LiveInputTranscript*`` events arrive; it is on by default (the
+    model's own output transcript rides its audio for free, but the input
+    side is a separate opt-in that bills for the extra recognition), and a
+    caller who never reads the caller-side transcript can turn it off.
+    ``provider_config`` is passed through verbatim into the
+    session-configuration message for anything KeyCall does not model,
+    reported with a warning so a portability seam is never silent."""
 
     model: str
     voice: str | None = None
     instructions: str | None = None
     backend_model: str | None = None
     backend_tools: tuple[Mapping[str, Any], ...] = ()
+    input_transcription: bool = True
     provider_config: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
