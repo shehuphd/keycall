@@ -29,6 +29,9 @@ CASES = [
     # Conservative unknowns: never guessed into the text picker.
     ("omni-moderation-latest", ModelCategory.UNKNOWN),
     ("gpt-4o-audio-preview", ModelCategory.UNKNOWN),
+    # gpt-live-1 is a full-duplex v1/live/sessions model KeyCall has no
+    # adapter for; it must not fall through to the text picker on its "gpt".
+    ("gpt-live-1", ModelCategory.UNKNOWN),
     ("totally-new-model-family", ModelCategory.UNKNOWN),
     ("davinci-002", ModelCategory.UNKNOWN),
 ]
