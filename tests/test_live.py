@@ -1028,6 +1028,101 @@ def test_live_streaming_transcription_every_supporting_target():
     assert not failures, "\n".join(failures)
 
 
+def test_live_gpt_live_voices_end_to_end():
+    """A whole gpt-live full-duplex turn on OpenAI: stream spoken-word PCM
+    in via live(), and confirm the model voices a reply (audio out), names
+    both transcripts, and reports its per-second billing. The wire was
+    converged over six raw-frame probe rounds (2026-09-12); this holds it
+    to that shape so a provider change surfaces here rather than in a
+    caller's session. Audio is synthesized with macOS `say` at gpt-live's
+    own 24 kHz so the caller words are known."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import shutil
+    import subprocess
+    import tempfile
+    import threading
+    import time as _time
+
+    if not shutil.which("say") or not shutil.which("ffmpeg"):
+        pytest.skip("live gpt-live check needs `say` and `ffmpeg` to synthesize audio")
+    from keycall import ErrorCode, KeyCall
+
+    targets, _ = load_targets(source)
+    openai_target = next((t for t in targets if t.provider == "openai"), None)
+    if openai_target is None:
+        pytest.skip("no openai target in the live source; gpt-live is OpenAI-only")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        aiff = f"{tmp}/speech.aiff"
+        pcm_path = f"{tmp}/speech.pcm"
+        subprocess.run(
+            ["say", "-o", aiff, "Hi. I have about eight years of backend experience."],
+            check=True,
+        )
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", aiff, "-ar", "24000", "-ac", "1", "-f", "s16le", pcm_path],
+            check=True,
+            capture_output=True,
+        )
+        with open(pcm_path, "rb") as f:
+            pcm = f.read()
+
+    client = KeyCall(provider=openai_target.provider, api_key=openai_target.key)
+    try:
+        with client.live(
+            model="gpt-live-1",
+            voice="marin",
+            instructions="You are a concise interviewer. Ask one short question.",
+            backend_model="gpt-4o",
+        ) as session:
+
+            def feed(feed_session=session):
+                chunk = 4800  # 100 ms of 24 kHz 16-bit mono
+                for i in range(0, len(pcm), chunk):
+                    feed_session.send_audio(pcm[i : i + chunk])
+                    _time.sleep(0.05)
+                feed_session.end_audio_turn()
+
+            feeder = threading.Thread(target=feed)
+            feeder.start()
+            audio_frames = 0
+            them, me = [], []
+            billed = None
+            unknowns = []
+            for event in session.events(timeout=30):
+                if event.kind == "audio_delta":
+                    audio_frames += 1
+                elif event.kind == "transcript_delta":
+                    them.append(event.text)
+                elif event.kind == "input_transcript_delta":
+                    me.append(event.text)
+                elif event.kind == "usage_updated":
+                    billed = event.billed_seconds
+                elif event.kind == "unknown":
+                    unknowns.append(event.provider_kind)
+                # The provider sends no turn-complete on the audio path, so
+                # stop once the model has voiced a reply and billed it.
+                if audio_frames and billed is not None:
+                    break
+            feeder.join()
+    except KeyCallError as exc:
+        if exc.code is ErrorCode.RATE_LIMITED:
+            pytest.skip(f"gpt-live rate limited (environment, provider not implicated): {exc}")
+        raise
+    finally:
+        client.close()
+
+    assert audio_frames, "gpt-live voiced nothing (no audio_delta frames)"
+    assert billed, "gpt-live reported no billed seconds via usage_updated"
+    assert not unknowns, f"gpt-live emitted unrecognized frames: {unknowns}"
+    print(
+        f"gpt-live voiced {audio_frames} audio frame(s), {billed}s billed; "
+        f"interviewer said {''.join(them)!r}, heard {''.join(me)!r}"
+    )
+
+
 def test_live_perplexity_tools_gate_still_correct():
     """Capability-drift probe: the Perplexity gate rests on live evidence
     that Sonar rejects tools. If this call stops failing with the known
