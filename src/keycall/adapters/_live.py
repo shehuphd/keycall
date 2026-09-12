@@ -20,10 +20,13 @@ text-injected turn. Rounds 3 and 4 established that gpt-live has no
 ``response`` wrapper and as a top-level session field), so none is sent:
 audio output is governed by the ``audio.output`` block, and ``response.
 create`` carries no arguments. A text turn stays text-only under this
-wire, so voicing is expected on an audio-input turn (``send_audio``),
-which is the path still to be probed, along with the live layer's own
-audio frames and its turn/close event names; those mappings stay best-
-guesses. The normalized ``LiveEvent`` taxonomy this produces is the stable
+wire, so voicing is expected on an audio-input turn (``send_audio``).
+Probe round 5 had the endpoint enumerate its whole client-event
+allowlist: caller audio is ``session.input_audio.append`` (not the
+Realtime API's ``input_audio_buffer.append``) and there is no commit verb,
+so ``end_audio_turn`` uses ``session.input_audio.mute``. The live layer's
+own inbound audio frames and its turn/close event names are still to be
+read at the next probe; those mappings stay best-guesses. The normalized ``LiveEvent`` taxonomy this produces is the stable
 surface a caller sees; only the strings mapping to it move.
 
 The translator turns provider frames into normalized events and caller
@@ -187,11 +190,19 @@ class OpenAILiveTranslator:
         )
 
     def audio_chunk_messages(self, pcm: bytes) -> tuple[str, ...]:
+        # gpt-live's own namespace, not the Realtime API's
+        # input_audio_buffer.*: the client-event allowlist the endpoint
+        # enumerated (probe round 5, 2026-09-12) names session.input_audio.
+        # append for caller audio.
         encoded = base64.b64encode(pcm).decode()
-        return (json.dumps({"type": "input_audio_buffer.append", "audio": encoded}),)
+        return (json.dumps({"type": "session.input_audio.append", "audio": encoded}),)
 
     def end_audio_messages(self) -> tuple[str, ...]:
-        return (json.dumps({"type": "input_audio_buffer.commit"}),)
+        # No commit verb exists in gpt-live's vocabulary. The model
+        # endpoints the caller's turn itself (server VAD); this closes the
+        # turn by hand with session.input_audio.mute, the allowlist's
+        # end-of-input signal (probe round 5, 2026-09-12).
+        return (json.dumps({"type": "session.input_audio.mute"}),)
 
     def _record_duration(self, container: dict[str, Any]) -> None:
         for key in ("billed_seconds", "duration_seconds", "seconds"):

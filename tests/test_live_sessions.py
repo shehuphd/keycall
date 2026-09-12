@@ -144,14 +144,15 @@ def test_a_user_text_turn_is_item_create_plus_response_create():
     assert "response" not in respond
 
 
-def test_audio_chunks_append_and_the_turn_ends_with_commit():
+def test_audio_chunks_append_and_the_turn_ends_with_mute():
     (chunk,) = live_translator().audio_chunk_messages(b"\x01\x02")
     assert json.loads(chunk) == {
-        "type": "input_audio_buffer.append",
+        "type": "session.input_audio.append",
         "audio": base64.b64encode(b"\x01\x02").decode(),
     }
-    (commit,) = live_translator().end_audio_messages()
-    assert json.loads(commit)["type"] == "input_audio_buffer.commit"
+    # gpt-live has no commit verb; the manual turn boundary is mute.
+    (end,) = live_translator().end_audio_messages()
+    assert json.loads(end)["type"] == "session.input_audio.mute"
 
 
 def test_frames_translate_to_normalized_events():
