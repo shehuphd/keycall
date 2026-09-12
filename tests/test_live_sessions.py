@@ -102,14 +102,16 @@ def test_setup_sends_no_output_modalities_key():
     assert session["audio"]["output"] == {"voice": "marin"}
 
 
-def test_setup_asks_for_input_transcription_by_default():
+def test_input_transcription_is_off_by_default():
+    # The caller-side transcript streams free on the audio path, so the
+    # provisional request block is not sent unless asked for.
     (message,) = live_translator().setup_messages()
-    assert json.loads(message)["session"]["audio"]["input"] == {"transcription": {}}
-
-
-def test_input_transcription_can_be_turned_off():
-    (message,) = live_translator(input_transcription=False).setup_messages()
     assert "input" not in json.loads(message)["session"].get("audio", {})
+
+
+def test_input_transcription_can_be_turned_on():
+    (message,) = live_translator(input_transcription=True).setup_messages()
+    assert json.loads(message)["session"]["audio"]["input"] == {"transcription": {}}
 
 
 def test_setup_delegates_reasoning_to_the_backend_responses_model():
@@ -180,6 +182,42 @@ def test_frames_translate_to_normalized_events():
     )
     assert delta.kind == "audio_delta"
     assert delta.data == b"pcm-bytes"
+
+
+def test_the_audio_turn_output_frames_translate():
+    # Probe round 6: an audio turn's output is top-level session.* frames.
+    t = live_translator()
+
+    audio = base64.b64encode(b"voice").decode()
+    (delta,) = t.events_for_frame(
+        json.dumps({"type": "session.output_audio.delta", "delta": audio})
+    )
+    assert delta.kind == "audio_delta" and delta.data == b"voice"
+
+    (them,) = t.events_for_frame(
+        json.dumps({"type": "session.output_transcript.delta", "delta": "Tell me"})
+    )
+    assert them.kind == "transcript_delta" and them.text == "Tell me"
+
+    (me,) = t.events_for_frame(
+        json.dumps({"type": "session.input_transcript.delta", "delta": "8 years"})
+    )
+    assert me.kind == "input_transcript_delta" and me.text == "8 years"
+
+    (muted,) = (
+        t.events_for_frame(json.dumps({"type": "session.input_audio.muted"})) or [None]
+    )
+    assert muted is None  # plumbing, no event
+
+
+def test_usage_updates_carry_the_running_billed_seconds():
+    t = live_translator()
+    (usage,) = t.events_for_frame(
+        json.dumps({"type": "session.usage.updated", "usage": {"seconds": 9.0}})
+    )
+    assert usage.kind == "usage_updated" and usage.billed_seconds == 9.0
+    # The last value seen is carried onto the session-ended event.
+    assert t.billed_seconds == 9.0
 
 
 def test_the_backend_stream_is_unwrapped_from_the_response_event_envelope():
@@ -330,44 +368,55 @@ def session_over(wire, provider="openai", **config_kwargs):
     )
 
 
-def test_a_session_configures_streams_events_and_reports_the_close():
+def test_a_session_configures_streams_an_audio_turn_and_reports_the_close():
+    # The audio path (probe round 6): stream caller audio, the model voices
+    # back over session.* frames, billing arrives incrementally, and the
+    # session-ended event on socket close carries the last billed seconds.
     wire = FakeWire(
         [
-            json.dumps({"type": "session.created", "session": {"id": "s1"}}),
+            json.dumps({"type": "session.started", "session": {"id": "s1"}}),
             json.dumps({"type": "session.delegation.created"}),
             json.dumps(
                 {
-                    "type": "response.event",
-                    "event": {"type": "response.output_text.delta", "delta": "Hi"},
+                    "type": "session.input_transcript.delta",
+                    "delta": "8 years of Python",
                 }
             ),
             json.dumps(
                 {
-                    "type": "response.event",
-                    "event": {
-                        "type": "response.completed",
-                        "response": {"status": "completed", "usage": {"billed_seconds": 3.0}},
-                    },
+                    "type": "session.output_audio.delta",
+                    "delta": base64.b64encode(b"voice").decode(),
                 }
             ),
-            json.dumps({"type": "session.ended", "session": {"billed_seconds": 3.0}}),
+            json.dumps({"type": "session.output_transcript.delta", "delta": "Tell me"}),
+            json.dumps({"type": "session.usage.updated", "usage": {"seconds": 9.0}}),
         ]
     )
     with session_over(wire, instructions="Be brief.") as session:
-        session.send_text("hello")
+        session.send_audio(b"\x01\x02")
+        session.end_audio_turn()
         events = list(session.events())
 
-    # Setup went first, then the text turn (item + response.create).
+    # Setup first, then the audio turn (append + mute).
     assert json.loads(wire.sent[0])["type"] == "session.start"
-    assert [json.loads(m)["type"] for m in wire.sent[1:]] == [
-        "response.item.create",
-        "response.create",
+    assert [json.loads(m)["type"] for m in wire.sent[1:3]] == [
+        "session.input_audio.append",
+        "session.input_audio.mute",
     ]
+    # session.close is sent on context exit.
+    assert json.loads(wire.sent[-1])["type"] == "session.close"
     kinds = [event.kind for event in events]
-    assert kinds == ["session_started", "transcript_delta", "turn_complete", "session_ended"]
+    assert kinds == [
+        "session_started",
+        "input_transcript_delta",
+        "audio_delta",
+        "transcript_delta",
+        "usage_updated",
+        "session_ended",
+    ]
     ended = events[-1]
     assert ended.reason == "1000"
-    assert ended.billed_seconds == 3.0
+    assert ended.billed_seconds == 9.0
 
 
 def test_provider_config_use_is_reported_with_a_warning():

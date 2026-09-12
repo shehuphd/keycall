@@ -1830,7 +1830,7 @@ class KeyCall(_BaseClient):
         instructions: str | None = None,
         backend_model: str | None = None,
         backend_tools: Sequence[Mapping[str, Any]] = (),
-        input_transcription: bool = True,
+        input_transcription: bool = False,
         provider_config: Mapping[str, Any] | None = None,
     ) -> LiveSession:
         """A full-duplex live voice session (OpenAI's gpt-live). A sibling
@@ -1839,9 +1839,9 @@ class KeyCall(_BaseClient):
         (backend_model plus backend_tools). Use as a context manager;
         stream caller audio with send_audio and read normalized events
         from events(). The model does its own endpointing, so no explicit
-        turn boundary is required. input_transcription (on by default) asks
-        the provider to transcribe the caller's own audio, so the
-        input-transcript events arrive."""
+        turn boundary is required. The caller-side transcript
+        (input-transcript events) streams on its own; input_transcription
+        (off by default) sends a provisional extra request for it."""
         self._require_open()
         self._require_model_not_retired(model)
         config = LiveConfig(
@@ -2729,15 +2729,15 @@ class AsyncKeyCall(_BaseClient):
         instructions: str | None = None,
         backend_model: str | None = None,
         backend_tools: Sequence[Mapping[str, Any]] = (),
-        input_transcription: bool = True,
+        input_transcription: bool = False,
         provider_config: Mapping[str, Any] | None = None,
     ) -> AsyncLiveSession:
         """A full-duplex live voice session (OpenAI's gpt-live), the async
         twin of KeyCall.live(). Use as an async context manager; stream
         caller audio with send_audio and read normalized events with
-        `async for`. input_transcription (on by default) asks the provider
-        to transcribe the caller's own audio, so the input-transcript
-        events arrive."""
+        `async for`. The caller-side transcript streams on its own;
+        input_transcription (off by default) sends a provisional extra
+        request for it."""
         self._require_open()
         self._require_model_not_retired(model)
         config = LiveConfig(

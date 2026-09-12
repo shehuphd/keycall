@@ -21,6 +21,7 @@ lives in the adapter's translator. This module only sequences them.
 
 from __future__ import annotations
 
+import contextlib
 import warnings
 from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,27 @@ if TYPE_CHECKING:
     from typing_extensions import Self
 
     from ._transport import AsyncTransport, Transport
+
+
+def _try_close(translator: Any, wire: Any) -> None:
+    """Send the translator's close frames on the way out, best-effort. The
+    socket may already be gone, so any failure is swallowed; the caller
+    closes the transport regardless."""
+    close = getattr(translator, "close_messages", None)
+    if wire is None or close is None:
+        return
+    with contextlib.suppress(Exception):
+        for message in close():
+            wire.send(message)
+
+
+async def _try_close_async(translator: Any, wire: Any) -> None:
+    close = getattr(translator, "close_messages", None)
+    if wire is None or close is None:
+        return
+    with contextlib.suppress(Exception):
+        for message in close():
+            await wire.send(message)
 
 
 def _warn_on_provider_config(config: LiveConfig, provider: str) -> None:
@@ -73,7 +95,8 @@ class LiveSession:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
-        cm, self._cm, self._wire = self._cm, None, None
+        cm, wire, self._cm, self._wire = self._cm, self._wire, None, None
+        _try_close(self._translator, wire)
         if cm is not None:
             cm.__exit__(*exc_info)
 
@@ -150,7 +173,8 @@ class AsyncLiveSession:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
-        cm, self._cm, self._wire = self._cm, None, None
+        cm, wire, self._cm, self._wire = self._cm, self._wire, None, None
+        await _try_close_async(self._translator, wire)
         if cm is not None:
             await cm.__aexit__(*exc_info)
 

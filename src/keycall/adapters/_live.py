@@ -24,9 +24,18 @@ wire, so voicing is expected on an audio-input turn (``send_audio``).
 Probe round 5 had the endpoint enumerate its whole client-event
 allowlist: caller audio is ``session.input_audio.append`` (not the
 Realtime API's ``input_audio_buffer.append``) and there is no commit verb,
-so ``end_audio_turn`` uses ``session.input_audio.mute``. The live layer's
-own inbound audio frames and its turn/close event names are still to be
-read at the next probe; those mappings stay best-guesses. The normalized ``LiveEvent`` taxonomy this produces is the stable
+so ``end_audio_turn`` uses ``session.input_audio.mute``.
+
+Probe round 6 ran a full voiced turn and captured the inbound side. On the
+audio path the model's output is top-level ``session.*`` frames, not the
+``response.event`` envelope (which is the text path): ``session.output_
+audio.delta`` is the voice, ``session.output_transcript.delta`` the model's
+own words, and ``session.input_transcript.delta`` the caller's words (which
+stream without asking). There is no turn-complete or session-ended frame;
+billing is incremental through ``session.usage.updated`` (its
+``usage.seconds`` is the cumulative elapsed cost), surfaced as
+``LiveUsageUpdated`` and carried onto ``LiveSessionEnded`` at socket close.
+The session is ended deliberately with ``session.close`` on context exit. The normalized ``LiveEvent`` taxonomy this produces is the stable
 surface a caller sees; only the strings mapping to it move.
 
 The translator turns provider frames into normalized events and caller
@@ -51,6 +60,7 @@ from .._types import (
     LiveSessionStarted,
     LiveTranscriptDelta,
     LiveTurnComplete,
+    LiveUsageUpdated,
     UnknownLiveEvent,
     Usage,
 )
@@ -62,6 +72,8 @@ _LIVE_PLUMBING = frozenset(
     {
         "session.updated",
         "session.delegation.created",
+        "session.input_audio.muted",
+        "session.input_audio.unmuted",
         "input_audio_buffer.committed",
         "input_audio_buffer.speech_stopped",
         "ping",
@@ -204,6 +216,13 @@ class OpenAILiveTranslator:
         # end-of-input signal (probe round 5, 2026-09-12).
         return (json.dumps({"type": "session.input_audio.mute"}),)
 
+    def close_messages(self) -> tuple[str, ...]:
+        # Close the session gracefully on the way out. gpt-live keeps the
+        # socket open on its own timer and sends no session-ended frame, so
+        # this is how the session is ended deliberately (session.close is on
+        # the client-event allowlist, probe round 5).
+        return (json.dumps({"type": "session.close"}),)
+
     def _record_duration(self, container: dict[str, Any]) -> None:
         for key in ("billed_seconds", "duration_seconds", "seconds"):
             value = container.get(key)
@@ -256,9 +275,26 @@ class OpenAILiveTranslator:
                     provider_session_id=str(session_id) if session_id else None
                 )
             ]
+        # gpt-live's own audio-turn output frames, all top-level session.*
+        # (probe round 6, 2026-09-12): the model's voice, its own words, and
+        # the caller's transcribed words.
+        if frame_type == "session.output_audio.delta":
+            return [LiveAudioDelta(data=base64.b64decode(frame.get("delta", "")))]
+        if frame_type == "session.output_transcript.delta":
+            return [LiveTranscriptDelta(text=str(frame.get("delta", "")))]
+        if frame_type == "session.input_transcript.delta":
+            return [LiveInputTranscriptDelta(text=str(frame.get("delta", "")))]
+        if frame_type == "session.usage.updated":
+            # Cumulative billing, reported through the session rather than on
+            # close; record the elapsed seconds so LiveSessionEnded can carry
+            # the last value, and surface it live.
+            usage_raw = _as_dict(frame.get("usage"))
+            self._record_duration(usage_raw)
+            return [LiveUsageUpdated(billed_seconds=self.billed_seconds)]
         if frame_type == "response.event":
             # An envelope carrying one event of the delegated Responses
-            # stream under .event (probe round 2, 2026-09-12).
+            # stream under .event, seen on the text-input path (probe round
+            # 2). The audio path uses the session.* frames above instead.
             return self._responses_stream_events(_as_dict(frame.get("event")))
         if frame_type in (
             "input_audio_transcription.delta",
@@ -277,9 +313,8 @@ class OpenAILiveTranslator:
         if frame_type == "input_audio_buffer.speech_started":
             return [LiveInterrupted()]
         if frame_type in ("session.done", "session.ended"):
-            # The session's own final usage arrives before the socket
-            # closes; capture the billed duration so LiveSessionEnded can
-            # carry it. The ended event itself is emitted on socket close.
+            # If a close/ended frame ever arrives, capture any final billed
+            # duration; the ended event itself is emitted on socket close.
             self._record_duration(_as_dict(frame.get("session")) or frame)
             return []
         if frame_type == "error":

@@ -961,10 +961,22 @@ class LiveInterrupted:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class LiveUsageUpdated:
+    """The running cost of the session, updated as it proceeds.
+    ``billed_seconds`` is the elapsed billable duration so far (the voice
+    loop bills per second); the provider reports it incrementally through
+    the session rather than only on close, so the last value seen is the
+    session's cost to that point."""
+
+    billed_seconds: float | None = None
+    kind: Literal["usage_updated"] = "usage_updated"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class LiveSessionEnded:
-    """The connection closed. ``billed_seconds`` is the voice session's
-    duration where the provider reports it on close (the voice loop is
-    billed per second); ``reason`` is the provider's scrubbed close
+    """The connection closed. ``billed_seconds`` is the session's elapsed
+    billable duration, carried from the last usage update seen (the voice
+    loop bills per second); ``reason`` is the provider's scrubbed close
     message when it gave one."""
 
     reason: str | None = None
@@ -989,6 +1001,7 @@ LiveEvent = (
     | LiveAudioDelta
     | LiveTurnComplete
     | LiveInterrupted
+    | LiveUsageUpdated
     | LiveSessionEnded
     | UnknownLiveEvent
 )
@@ -998,22 +1011,21 @@ LiveEvent = (
 class LiveConfig:
     """What a ``live()`` session asks of the provider: a full-duplex voice
     loop plus the backend model and tools it delegates reasoning to
-    (OpenAI's Responses delegation). ``input_transcription`` asks the
-    provider to transcribe the caller's own audio so the
-    ``LiveInputTranscript*`` events arrive; it is on by default (the
-    model's own output transcript rides its audio for free, but the input
-    side is a separate opt-in that bills for the extra recognition), and a
-    caller who never reads the caller-side transcript can turn it off.
-    ``provider_config`` is passed through verbatim into the
-    session-configuration message for anything KeyCall does not model,
-    reported with a warning so a portability seam is never silent."""
+    (OpenAI's Responses delegation). ``input_transcription`` sends a
+    provisional request to transcribe the caller's own audio; it is off by
+    default because on gpt-live's audio path the caller-side transcript
+    (``LiveInputTranscriptDelta``) already streams without asking, and the
+    request block is not yet probe-confirmed. ``provider_config`` is passed
+    through verbatim into the session-configuration message for anything
+    KeyCall does not model, reported with a warning so a portability seam
+    is never silent."""
 
     model: str
     voice: str | None = None
     instructions: str | None = None
     backend_model: str | None = None
     backend_tools: tuple[Mapping[str, Any], ...] = ()
-    input_transcription: bool = True
+    input_transcription: bool = False
     provider_config: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:

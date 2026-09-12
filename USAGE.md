@@ -599,7 +599,7 @@ with client.live(
     for event in session.events(timeout=60):
         if event.kind == "audio_delta":
             speaker.play(event.data)      # raw 16-bit PCM
-        elif event.kind == "input_transcript_final":
+        elif event.kind == "input_transcript_delta":
             print("you said:", event.text)
         elif event.kind == "transcript_delta":
             print(event.text, end="", flush=True)
@@ -616,13 +616,14 @@ Turns go up three ways: `send_audio(pcm)` streams caller audio in chunks (the mo
 | `input_transcript_final` | the settled transcript of one caller utterance |
 | `audio_delta` | a chunk of generated speech, decoded to raw PCM bytes |
 | `transcript_delta` | the model's own spoken words (can trail the audio it describes) |
-| `turn_complete` | the response finished; carries the voice session's `usage` (the backend model is billed separately) |
+| `turn_complete` | a response turn finished; carries `usage`. Arrives on a text turn; on an audio turn the model sends no turn-complete frame, so detect turn end from the output going idle |
 | `interrupted` | full-duplex barge-in: the caller talked over the model, or the turn was cancelled |
-| `session_ended` | the connection closed; always the final event, carrying `billed_seconds` where the provider reports it |
+| `usage_updated` | the running cost so far; `billed_seconds` is the cumulative elapsed billable duration, updated through the session |
+| `session_ended` | the connection closed; always the final event, carrying the last `billed_seconds` seen |
 
-The caller's own audio is transcribed only when the session asks for it: `input_transcription` is on by default, so the `input_transcript_delta` and `input_transcript_final` events arrive, and you can pass `input_transcription=False` to turn it off if you never read the caller-side transcript. The model's output transcript rides its audio for free; the input side is a separate opt-in that bills for the extra recognition. The voice loop is billed per second, so `session_ended` carries `billed_seconds` where the provider reports it on close. Everything KeyCall doesn't model can be passed as `provider_config={...}`, merged verbatim into the session-configuration message with a portability warning. `AsyncKeyCall.live()` is the same surface with `async for` over `events()`. Every provider but OpenAI (and custom targets) refuses `live()` with `UNSUPPORTED_OPERATION` before any connection; use `realtime()` for a half-duplex voice model.
+The caller's own audio transcript (`input_transcript_delta`) streams on its own, so you get the caller-side transcript without asking; `input_transcription` (off by default) sends a provisional extra request for it. The voice loop is billed per second, and gpt-live reports the cost incrementally: read `usage_updated.billed_seconds` for the running total, and `session_ended.billed_seconds` carries the last value seen. Everything KeyCall doesn't model can be passed as `provider_config={...}`, merged verbatim into the session-configuration message with a portability warning. `AsyncKeyCall.live()` is the same surface with `async for` over `events()`. Every provider but OpenAI (and custom targets) refuses `live()` with `UNSUPPORTED_OPERATION` before any connection; use `realtime()` for a half-duplex voice model.
 
-The gpt-live wire is provisional: gpt-live shipped 2026-09-10 and KeyCall has not yet run a live probe against `v1/live/sessions` (that needs a funded, gpt-live-1-entitled key, and the release gate is all-or-nothing over every live target). The normalized event taxonomy above is the stable surface a caller reads; the provider frame names mapping to it may be corrected once the probe records the endpoint's own vocabulary.
+The gpt-live wire has been probed against `v1/live/sessions` end to end (2026-09-12): the handshake, the delegated backend config, an audio turn, and the voiced response with both transcripts all match the endpoint's own vocabulary. A full release probe still has to pass before this ships (the release gate is all-or-nothing over every live target). The normalized event taxonomy above is the stable surface a caller reads.
 
 ## Streaming transcription
 
