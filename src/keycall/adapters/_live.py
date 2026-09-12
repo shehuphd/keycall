@@ -15,12 +15,14 @@ Responses stream arrives nested inside a ``response.event`` envelope (one
 backend event per envelope, under ``.event``), so this translator unwraps
 it and maps the inner Responses types, the backend's ``response.output_
 text.delta`` being the interviewer's words. That probe voiced nothing on a
-text-injected turn. Probe round 3 pinned why: gpt-live rejects the
-Realtime API's per-response ``response.output_modalities`` wrapper, so the
-output modality is set once on the session config beside the voice, and
-``response.create`` carries no arguments. Whether that voices the turn,
-and the live layer's own audio frames and turn/close event names, are
-still to be read at a later probe; those top-level mappings stay best-
+text-injected turn. Rounds 3 and 4 established that gpt-live has no
+``output_modalities`` key at all (rejected both nested under a per-response
+``response`` wrapper and as a top-level session field), so none is sent:
+audio output is governed by the ``audio.output`` block, and ``response.
+create`` carries no arguments. A text turn stays text-only under this
+wire, so voicing is expected on an audio-input turn (``send_audio``),
+which is the path still to be probed, along with the live layer's own
+audio frames and its turn/close event names; those mappings stay best-
 guesses. The normalized ``LiveEvent`` taxonomy this produces is the stable
 surface a caller sees; only the strings mapping to it move.
 
@@ -135,13 +137,14 @@ class OpenAILiveTranslator:
             audio["input"] = {"transcription": {}}
         if audio:
             session["audio"] = audio
-        # Ask for voiced output at the session, set once at open. Probe
-        # round 3 (2026-09-12): gpt-live answered a turn with text only
-        # until this was set, and it rejects the Realtime API's per-response
-        # ``response.output_modalities`` wrapper ("Unknown parameter:
-        # 'response'"), so the modality lives on the session config, beside
-        # the voice, the way OpenAI's docs place output audio config.
-        session["output_modalities"] = ["audio"]
+        # gpt-live has no ``output_modalities`` key: probe rounds 3 and 4
+        # (2026-09-12) had it rejected both nested under a per-response
+        # ``response`` wrapper and as a top-level session field, each
+        # erroring the whole session. Audio output is governed by the
+        # ``audio.output`` block alone (the voice above). A text-injected
+        # turn came back text-only under this wire (round 2), so voicing is
+        # expected on an audio-input turn, which is the path still to be
+        # probed; no modality field is sent.
         # Responses delegation: gpt-live hands reasoning and tool use to a
         # separate backend Responses model, billed separately. The config
         # rides delegation.responses (OpenAI's published shape), not a

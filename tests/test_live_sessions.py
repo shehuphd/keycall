@@ -93,9 +93,13 @@ def test_setup_opens_with_session_start_and_voice_under_audio_output():
     assert session["audio"]["output"] == {"voice": "marin"}
 
 
-def test_setup_asks_for_audio_output_on_the_session():
-    (message,) = live_translator().setup_messages()
-    assert json.loads(message)["session"]["output_modalities"] == ["audio"]
+def test_setup_sends_no_output_modalities_key():
+    # gpt-live rejects output_modalities at every placement tried (probe
+    # rounds 3-4); audio output is governed by the audio.output block.
+    (message,) = live_translator(voice="marin").setup_messages()
+    session = json.loads(message)["session"]
+    assert "output_modalities" not in session
+    assert session["audio"]["output"] == {"voice": "marin"}
 
 
 def test_setup_asks_for_input_transcription_by_default():
