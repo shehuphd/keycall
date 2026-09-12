@@ -931,37 +931,24 @@ def test_live_streamed_tool_search_every_supporting_target():
 def test_live_streaming_transcription_every_supporting_target():
     """A whole transcription round against each STT provider: spoken-word
     PCM in, interims, finals with word timings, and the session summary's
-    billable-audio duration out. Audio is synthesized on the fly with
-    macOS `say`, so the expected words are known and the assertion is on
-    recognition content, not just frame plumbing."""
+    billable-audio duration out. The audio is a committed PCM fixture of a
+    known sentence, so the expected words are known, the assertion is on
+    recognition content rather than frame plumbing, and the probe runs on
+    any machine or CI runner without a local synthesizer."""
     source = os.environ.get("KEYCALL_LIVE_SOURCE")
     if not source:
         pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
-    import shutil
-    import subprocess
-    import tempfile
     import threading
     import time as _time
+    from pathlib import Path
 
-    if not shutil.which("say") or not shutil.which("ffmpeg"):
-        pytest.skip("live transcription check needs `say` and `ffmpeg` to synthesize audio")
     from keycall import KeyCall
     from keycall._capabilities import STREAMING_TRANSCRIPTION_PROVIDERS
 
-    with tempfile.TemporaryDirectory() as tmp:
-        aiff = f"{tmp}/speech.aiff"
-        pcm_path = f"{tmp}/speech.pcm"
-        subprocess.run(
-            ["say", "-o", aiff, "The quick brown fox jumps over the lazy dog."],
-            check=True,
-        )
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", aiff, "-ar", "16000", "-ac", "1", "-f", "s16le", pcm_path],
-            check=True,
-            capture_output=True,
-        )
-        with open(pcm_path, "rb") as f:
-            pcm = f.read()
+    # A committed 16 kHz PCM16 clip of the known sentence, so the probe runs
+    # identically on any machine or CI runner without a local synthesizer.
+    fixture = Path(__file__).parent / "fixtures" / "stt_fox_16k_s16le.pcm"
+    pcm = fixture.read_bytes()
 
     preferred_model = {"deepgram": "nova-3"}  # its no-model default is a dated base model
     targets, _ = load_targets(source)
@@ -2223,37 +2210,21 @@ def test_live_streaming_diarization_still_holds():
     import base64
     import json
     import queue
-    import shutil
-    import subprocess
-    import tempfile
     import threading
     import time as _time
+    from pathlib import Path
 
-    if not shutil.which("say") or not shutil.which("ffmpeg"):
-        pytest.skip("streaming diarization check needs `say` and `ffmpeg` to synthesize audio")
     import httpx
     from httpx_ws import WebSocketDisconnect, WebSocketNetworkError, connect_ws
 
     from keycall import KeyCall
     from keycall._capabilities import STREAMING_DIARIZATION_PROVIDERS
 
-    with tempfile.TemporaryDirectory() as tmp:
-        parts = []
-        for voice, line in (
-            ("Alex", "The quick brown fox jumps over the lazy dog."),
-            ("Samantha", "Then the cat curled up and watched it happen."),
-        ):
-            aiff = f"{tmp}/{voice}.aiff"
-            subprocess.run(["say", "-v", voice, "-o", aiff, line], check=True)
-            parts.append(aiff)
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", parts[0], "-i", parts[1], "-filter_complex",
-             "[0:a][1:a]concat=n=2:v=0:a=1", "-ar", "16000", "-ac", "1",
-             "-f", "s16le", f"{tmp}/out.pcm"],
-            check=True, capture_output=True,
-        )
-        with open(f"{tmp}/out.pcm", "rb") as handle:
-            pcm = handle.read()
+    # A committed 16 kHz PCM16 clip of two speakers (one sentence each,
+    # concatenated), so the diarization probe runs on any machine or CI
+    # runner without a local synthesizer.
+    fixture = Path(__file__).parent / "fixtures" / "stt_diarize_2spk_16k_s16le.pcm"
+    pcm = fixture.read_bytes()
 
     targets, _ = load_targets(source)
     by_provider = {t.provider: t for t in targets}
@@ -2730,29 +2701,14 @@ def test_live_prerecorded_transcription_every_supporting_target():
     source = os.environ.get("KEYCALL_LIVE_SOURCE")
     if not source:
         pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
-    import shutil
-    import subprocess
-    import tempfile
     from pathlib import Path
 
-    if not shutil.which("say") or not shutil.which("ffmpeg"):
-        pytest.skip("live transcription check needs `say` and `ffmpeg` to synthesize audio")
     from keycall import KeyCall
     from keycall._registry import providers_with
 
-    with tempfile.TemporaryDirectory() as tmp:
-        aiff = str(Path(tmp) / "probe.aiff")
-        wav_path = str(Path(tmp) / "probe.wav")
-        subprocess.run(
-            ["say", "-o", aiff, "The quick brown fox jumps over the lazy dog."],
-            check=True,
-        )
-        subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-i", aiff, "-ar", "16000",
-             "-ac", "1", wav_path],
-            check=True,
-        )
-        wav = Path(wav_path).read_bytes()
+    # A committed 16 kHz mono WAV of a known sentence, so the probe runs on
+    # any machine or CI runner without a local synthesizer.
+    wav = (Path(__file__).parent / "fixtures" / "stt_fox_16k.wav").read_bytes()
 
     plans = {
         "openai": {"model": "whisper-1", "words_promised": True},
