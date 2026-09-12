@@ -4,6 +4,18 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] — 2026-09-12
+
+Highlights: `live()` adds full-duplex voice on OpenAI's gpt-live as a sibling of `realtime()`, with the model delegating reasoning to a separately-billed backend model and the running billed seconds reported through the session.
+
+### Added
+
+- **`live()`: full-duplex voice sessions on OpenAI's gpt-live.** A sibling of `realtime()`, not a replacement, over gpt-live's own `v1/live/sessions` WebSocket endpoint: the caller's audio and the model's audio overlap, the model endpoints the caller's turn itself, and it delegates reasoning and tool use to a separately-billed backend model (`backend_model`, `backend_tools`, OpenAI's Responses delegation). Audio streams up with `send_audio()`, and `send_text()` and `end_audio_turn()` remain for manual control. Events come back normalized: the caller's transcript, the model's audio and its output transcript, full-duplex barge-in, a running `usage_updated` carrying the cumulative billed seconds (the voice loop is billed per second), and a session-ended event carrying the last value on close. The caller-side transcript streams on its own; `input_transcription` (off by default) sends a provisional extra request for it. Sync and async, with the credential on the handshake headers and never in a URL. Every provider but OpenAI refuses `live()` with `UNSUPPORTED_OPERATION` before any connection, pointing at `realtime()` for half-duplex voice. `gpt-live-1` classifies into a new `ModelCategory.LIVE`.
+
+### Notes
+
+- **The gpt-live wire was probed end to end.** gpt-live shipped 2026-09-10, and on 2026-09-12 a full voiced turn worked against `v1/live/sessions`: the handshake opens with `session.start` carrying the config, reasoning delegation rides `delegation.responses`, caller audio is sent as `session.input_audio.append`, and the turn ends with `session.input_audio.mute` (gpt-live has its own client-event vocabulary, not the Realtime API's `input_audio_buffer.*` or `output_modalities`). The model voices back over top-level `session.*` frames: `session.output_audio.delta` (the voice), `session.output_transcript.delta` (its words), and `session.input_transcript.delta` (the caller's words, which stream without asking). Billing is incremental via `session.usage.updated`, surfaced as the `usage_updated` event and carried onto `session_ended` at close; the audio path sends no turn-complete frame, so detect turn end from the output going idle. The text-input path instead streams the delegated Responses events inside a `response.event` envelope, which the translator unwraps. The normalized event taxonomy a caller reads is the stable surface. A full release probe still has to pass before this ships (the release gate is all-or-nothing over every live target).
+
 ## [1.12.0] — 2026-09-10
 
 Highlights: Google Maps and LiveKit join as a new `service` provider kind, verified by live service probes instead of a model list; `reasoning_effort` starts working on DeepSeek; and the Playground's key and model lists narrow to only what the current selection can serve.
@@ -574,6 +586,7 @@ First release. Key validation, model discovery and filtering, and text generatio
 - Perplexity's Sonar models aren't API-discoverable and are maintained in the bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
+[1.13.0]: https://github.com/shehuphd/keycall/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/shehuphd/keycall/compare/v1.11.2...v1.12.0
 [1.11.2]: https://github.com/shehuphd/keycall/compare/v1.11.1...v1.11.2
 [1.11.1]: https://github.com/shehuphd/keycall/compare/v1.11.0...v1.11.1

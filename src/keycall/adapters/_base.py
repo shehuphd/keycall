@@ -878,6 +878,19 @@ class ProviderAdapter(ABC):
             operation="realtime",
         )
 
+    def live_plan(self, config: Any) -> tuple[str, Any]:
+        """The WebSocket path (host-rooted) and the frame translator for a
+        full-duplex live session, distinct from realtime. Providers without
+        a live-sessions endpoint refuse here, before any connection."""
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} has no live-sessions API; "
+            "live is supported on: "
+            + ", ".join(sorted(providers_with("live"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation="live",
+        )
+
     def require_streaming_diarization(self, config: Any) -> None:
         """Refuse a diarized session on a provider whose streaming wire
         carries no speaker label. Called by each transcription_plan before

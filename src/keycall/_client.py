@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 if TYPE_CHECKING:
     from typing_extensions import Self
 
+    from ._live import AsyncLiveSession, LiveSession
     from ._realtime import AsyncRealtimeSession, RealtimeSession
     from ._transcription import AsyncTranscriptionSession, TranscriptionSession
 
@@ -51,6 +52,7 @@ from ._types import (
     EmbeddingRequest,
     ImageGenerationRequest,
     InvocationResult,
+    LiveConfig,
     Message,
     Model,
     ModelDiscovery,
@@ -1820,6 +1822,48 @@ class KeyCall(_BaseClient):
             config=config,
         )
 
+    def live(
+        self,
+        *,
+        model: str,
+        voice: str | None = None,
+        instructions: str | None = None,
+        backend_model: str | None = None,
+        backend_tools: Sequence[Mapping[str, Any]] = (),
+        input_transcription: bool = False,
+        provider_config: Mapping[str, Any] | None = None,
+    ) -> LiveSession:
+        """A full-duplex live voice session (OpenAI's gpt-live). A sibling
+        of realtime() on its own endpoint: the caller's audio and the
+        model's overlap, and reasoning is delegated to a backend model
+        (backend_model plus backend_tools). Use as a context manager;
+        stream caller audio with send_audio and read normalized events
+        from events(). The model does its own endpointing, so no explicit
+        turn boundary is required. The caller-side transcript
+        (input-transcript events) streams on its own; input_transcription
+        (off by default) sends a provisional extra request for it."""
+        self._require_open()
+        self._require_model_not_retired(model)
+        config = LiveConfig(
+            model=model,
+            voice=voice,
+            instructions=instructions,
+            backend_model=backend_model,
+            backend_tools=tuple(backend_tools),
+            input_transcription=input_transcription,
+            provider_config=provider_config,
+        )
+        path, translator = self._adapter.live_plan(config)
+        from ._live import LiveSession
+
+        return LiveSession(
+            self._transport,
+            path=path,
+            translator=translator,
+            provider=self.provider,
+            config=config,
+        )
+
     def transcribe_stream(
         self,
         *,
@@ -2670,6 +2714,45 @@ class AsyncKeyCall(_BaseClient):
         from ._realtime import AsyncRealtimeSession
 
         return AsyncRealtimeSession(
+            self._transport,
+            path=path,
+            translator=translator,
+            provider=self.provider,
+            config=config,
+        )
+
+    def live(
+        self,
+        *,
+        model: str,
+        voice: str | None = None,
+        instructions: str | None = None,
+        backend_model: str | None = None,
+        backend_tools: Sequence[Mapping[str, Any]] = (),
+        input_transcription: bool = False,
+        provider_config: Mapping[str, Any] | None = None,
+    ) -> AsyncLiveSession:
+        """A full-duplex live voice session (OpenAI's gpt-live), the async
+        twin of KeyCall.live(). Use as an async context manager; stream
+        caller audio with send_audio and read normalized events with
+        `async for`. The caller-side transcript streams on its own;
+        input_transcription (off by default) sends a provisional extra
+        request for it."""
+        self._require_open()
+        self._require_model_not_retired(model)
+        config = LiveConfig(
+            model=model,
+            voice=voice,
+            instructions=instructions,
+            backend_model=backend_model,
+            backend_tools=tuple(backend_tools),
+            input_transcription=input_transcription,
+            provider_config=provider_config,
+        )
+        path, translator = self._adapter.live_plan(config)
+        from ._live import AsyncLiveSession
+
+        return AsyncLiveSession(
             self._transport,
             path=path,
             translator=translator,

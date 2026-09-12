@@ -11,6 +11,7 @@ from ._errors import (
     TranscriptionJobTimeout,
     VideoJobTimeout,
 )
+from ._live import AsyncLiveSession, LiveSession
 from ._realtime import AsyncRealtimeSession, RealtimeSession
 from ._transcription import AsyncTranscriptionSession, TranscriptionSession
 from ._types import (
@@ -36,6 +37,17 @@ from ._types import (
     InputPart,
     InterimTranscript,
     InvocationResult,
+    LiveAudioDelta,
+    LiveConfig,
+    LiveEvent,
+    LiveInputTranscriptDelta,
+    LiveInputTranscriptFinal,
+    LiveInterrupted,
+    LiveSessionEnded,
+    LiveSessionStarted,
+    LiveTranscriptDelta,
+    LiveTurnComplete,
+    LiveUsageUpdated,
     Message,
     MessageRole,
     Model,
@@ -76,6 +88,7 @@ from ._types import (
     TranscriptionSessionStarted,
     TranscriptOutput,
     TranscriptWord,
+    UnknownLiveEvent,
     UnknownOutput,
     UnknownRealtimeEvent,
     UnknownStreamEvent,
@@ -89,11 +102,12 @@ from ._types import (
     WithheldModel,
 )
 
-__version__ = "1.12.0"
+__version__ = "1.13.0"
 
 __all__ = [
     "AliasFact",
     "AsyncKeyCall",
+    "AsyncLiveSession",
     "AsyncRealtimeSession",
     "AsyncTextStream",
     "AsyncTranscriptionSession",
@@ -122,6 +136,18 @@ __all__ = [
     "InvocationResult",
     "KeyCall",
     "KeyCallError",
+    "LiveAudioDelta",
+    "LiveConfig",
+    "LiveEvent",
+    "LiveInputTranscriptDelta",
+    "LiveInputTranscriptFinal",
+    "LiveInterrupted",
+    "LiveSession",
+    "LiveSessionEnded",
+    "LiveSessionStarted",
+    "LiveTranscriptDelta",
+    "LiveTurnComplete",
+    "LiveUsageUpdated",
     "Message",
     "MessageRole",
     "Model",
@@ -169,6 +195,7 @@ __all__ = [
     "TranscriptionSession",
     "TranscriptionSessionEnded",
     "TranscriptionSessionStarted",
+    "UnknownLiveEvent",
     "UnknownOutput",
     "UnknownRealtimeEvent",
     "UnknownStreamEvent",

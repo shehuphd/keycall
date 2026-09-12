@@ -890,6 +890,149 @@ class RealtimeConfig:
             raise ValueError("model must be a non-empty string")
 
 
+# --- live events ------------------------------------------------------------
+#
+# gpt-live (OpenAI's v1/live/sessions endpoint) is full-duplex: the caller's
+# audio and the model's audio overlap, so the input transcript (what the
+# caller said) and the output transcript/audio (what the model said) both
+# stream. The wire event names are provisional until the live probe records
+# them; this normalized taxonomy is the stable surface.
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LiveSessionStarted:
+    """The provider accepted the live session, carrying its session id."""
+
+    provider_session_id: str | None = None
+    kind: Literal["session_started"] = "session_started"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LiveInputTranscriptDelta:
+    """An increment of the caller's own speech as the provider recognizes
+    it: the interim transcript, revised until it finalizes."""
+
+    text: str
+    kind: Literal["input_transcript_delta"] = "input_transcript_delta"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LiveInputTranscriptFinal:
+    """The settled transcript of one caller utterance."""
+
+    text: str
+    kind: Literal["input_transcript_final"] = "input_transcript_final"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LiveTranscriptDelta:
+    """An increment of the model's own spoken words (its output
+    transcript), which can trail the audio deltas it describes."""
+
+    text: str
+    kind: Literal["transcript_delta"] = "transcript_delta"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LiveAudioDelta:
+    """A chunk of the model's generated audio, decoded to raw bytes
+    (16-bit PCM in the session's output format)."""
+
+    data: bytes
+    kind: Literal["audio_delta"] = "audio_delta"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LiveTurnComplete:
+    """The model finished a response turn. ``usage`` carries the voice
+    session's own token usage where the provider reports it; the delegated
+    backend model's usage is billed and reported separately."""
+
+    usage: Usage
+    kind: Literal["turn_complete"] = "turn_complete"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LiveInterrupted:
+    """The turn in progress was cut off because the caller started
+    talking over it (full-duplex barge-in). Audio already emitted stands."""
+
+    kind: Literal["interrupted"] = "interrupted"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LiveUsageUpdated:
+    """The running cost of the session, updated as it proceeds.
+    ``billed_seconds`` is the elapsed billable duration so far (the voice
+    loop bills per second); the provider reports it incrementally through
+    the session rather than only on close, so the last value seen is the
+    session's cost to that point."""
+
+    billed_seconds: float | None = None
+    kind: Literal["usage_updated"] = "usage_updated"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LiveSessionEnded:
+    """The connection closed. ``billed_seconds`` is the session's elapsed
+    billable duration, carried from the last usage update seen (the voice
+    loop bills per second); ``reason`` is the provider's scrubbed close
+    message when it gave one."""
+
+    reason: str | None = None
+    billed_seconds: float | None = None
+    kind: Literal["session_ended"] = "session_ended"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UnknownLiveEvent:
+    """A live frame KeyCall doesn't recognize yet. Bounded provider kind
+    only, never a raw provider payload."""
+
+    provider_kind: str
+    kind: Literal["unknown"] = "unknown"
+
+
+LiveEvent = (
+    LiveSessionStarted
+    | LiveInputTranscriptDelta
+    | LiveInputTranscriptFinal
+    | LiveTranscriptDelta
+    | LiveAudioDelta
+    | LiveTurnComplete
+    | LiveInterrupted
+    | LiveUsageUpdated
+    | LiveSessionEnded
+    | UnknownLiveEvent
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LiveConfig:
+    """What a ``live()`` session asks of the provider: a full-duplex voice
+    loop plus the backend model and tools it delegates reasoning to
+    (OpenAI's Responses delegation). ``input_transcription`` sends a
+    provisional request to transcribe the caller's own audio; it is off by
+    default because on gpt-live's audio path the caller-side transcript
+    (``LiveInputTranscriptDelta``) already streams without asking, and the
+    request block is not yet probe-confirmed. ``provider_config`` is passed
+    through verbatim into the session-configuration message for anything
+    KeyCall does not model, reported with a warning so a portability seam
+    is never silent."""
+
+    model: str
+    voice: str | None = None
+    instructions: str | None = None
+    backend_model: str | None = None
+    backend_tools: tuple[Mapping[str, Any], ...] = ()
+    input_transcription: bool = False
+    provider_config: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if not self.model:
+            raise ValueError("model must be a non-empty string")
+
+
 # --- streaming transcription events ----------------------------------------
 
 

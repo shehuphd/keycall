@@ -789,6 +789,17 @@ class OpenAIAdapter(FileBatchDialect, ProviderAdapter):
         )
         return path, translator
 
+    def live_plan(self, config: Any) -> tuple[str, Any]:
+        if not self.resolved.capabilities.live or "live" not in self.resolved.operations:
+            return super().live_plan(config)
+        from ._live import OpenAILiveTranslator
+
+        # The model rides the session-config message (setup_messages), not
+        # the URL, so the path takes no query the way realtime's does.
+        path = self.resolved.operations["live"]["path"]
+        translator = OpenAILiveTranslator(config, provider=self.resolved.provider)
+        return path, translator
+
     def build_generation_spec(self, request: TextGenerationRequest) -> RequestSpec:
         self.validate_generation_request(request)
         op = self.resolved.operations["text_generation"]
