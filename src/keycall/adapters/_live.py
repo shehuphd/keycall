@@ -220,7 +220,10 @@ class OpenAILiveTranslator:
         # Close the session gracefully on the way out. gpt-live keeps the
         # socket open on its own timer and sends no session-ended frame, so
         # this is how the session is ended deliberately (session.close is on
-        # the client-event allowlist, probe round 5).
+        # the client-event allowlist, probe round 5). It is fire-and-forget:
+        # the endpoint sends no acknowledgement or terminal usage frame in
+        # reply (probe round 6), so billing is read from usage_updated, not
+        # from a close.
         return (json.dumps({"type": "session.close"}),)
 
     def _record_duration(self, container: dict[str, Any]) -> None:
