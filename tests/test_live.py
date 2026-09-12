@@ -1034,19 +1034,16 @@ def test_live_gpt_live_voices_end_to_end():
     both transcripts, and reports its per-second billing. The wire was
     converged over six raw-frame probe rounds (2026-09-12); this holds it
     to that shape so a provider change surfaces here rather than in a
-    caller's session. Audio is synthesized with macOS `say` at gpt-live's
-    own 24 kHz so the caller words are known."""
+    caller's session. The caller audio is a committed 24 kHz PCM16 fixture,
+    so the probe runs identically on any machine or CI runner without a
+    local speech synthesizer."""
     source = os.environ.get("KEYCALL_LIVE_SOURCE")
     if not source:
         pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
-    import shutil
-    import subprocess
-    import tempfile
     import threading
     import time as _time
+    from pathlib import Path
 
-    if not shutil.which("say") or not shutil.which("ffmpeg"):
-        pytest.skip("live gpt-live check needs `say` and `ffmpeg` to synthesize audio")
     from keycall import ErrorCode, KeyCall
 
     targets, _ = load_targets(source)
@@ -1054,20 +1051,8 @@ def test_live_gpt_live_voices_end_to_end():
     if openai_target is None:
         pytest.skip("no openai target in the live source; gpt-live is OpenAI-only")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        aiff = f"{tmp}/speech.aiff"
-        pcm_path = f"{tmp}/speech.pcm"
-        subprocess.run(
-            ["say", "-o", aiff, "Hi. I have about eight years of backend experience."],
-            check=True,
-        )
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", aiff, "-ar", "24000", "-ac", "1", "-f", "s16le", pcm_path],
-            check=True,
-            capture_output=True,
-        )
-        with open(pcm_path, "rb") as f:
-            pcm = f.read()
+    fixture = Path(__file__).parent / "fixtures" / "gpt_live_caller_24k_s16le.pcm"
+    pcm = fixture.read_bytes()
 
     client = KeyCall(provider=openai_target.provider, api_key=openai_target.key)
     try:
