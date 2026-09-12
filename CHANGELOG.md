@@ -14,7 +14,7 @@ Highlights: `live()` adds full-duplex voice on OpenAI's gpt-live as a sibling of
 
 ### Notes
 
-- **The gpt-live wire is provisional.** gpt-live shipped 2026-09-10 and this release has not yet run a live probe against `v1/live/sessions` (the probe needs a funded, gpt-live-1-entitled key, and the release gate is all-or-nothing over every live target). The normalized event taxonomy a caller reads is the stable surface; the provider frame names mapping to it may be corrected once the probe records the endpoint's own vocabulary, each a single-place edit in the translator.
+- **The gpt-live wire is partially probed.** gpt-live shipped 2026-09-10. A first live probe ran 2026-09-12 on a gpt-live-1-entitled key: the endpoint is reachable and entitled, the socket connects and authenticates, the model id is accepted, and the opening handshake is confirmed (the first client frame is `session.start` carrying the config, and reasoning delegation rides `delegation.responses`). The inbound event names and the audio-buffer frames are not yet probe-confirmed. The normalized event taxonomy a caller reads is the stable surface; the provider frame names mapping to it are corrected as later probes record them, each a single-place edit in the translator. A full live probe still needs to run against `v1/live/sessions` before release (the release gate is all-or-nothing over every live target).
 
 ## [1.12.0] — 2026-09-10
 

@@ -83,12 +83,11 @@ def live_translator(**config):
     return OpenAILiveTranslator(LiveConfig(model="gpt-live-1", **config), provider="openai")
 
 
-def test_setup_configures_a_live_session_with_voice_under_audio_output():
+def test_setup_opens_with_session_start_and_voice_under_audio_output():
     (message,) = live_translator(voice="marin", instructions="Be brief.").setup_messages()
     frame = json.loads(message)
-    assert frame["type"] == "session.update"
+    assert frame["type"] == "session.start"
     session = frame["session"]
-    assert session["type"] == "live"
     assert session["model"] == "gpt-live-1"
     assert session["instructions"] == "Be brief."
     assert session["audio"]["output"] == {"voice": "marin"}
@@ -109,15 +108,15 @@ def test_setup_delegates_reasoning_to_the_backend_responses_model():
         backend_model="gpt-5.1",
         backend_tools=[{"type": "web_search"}],
     ).setup_messages()
-    backend = json.loads(message)["session"]["backend"]
-    assert backend["type"] == "responses"
-    assert backend["model"] == "gpt-5.1"
-    assert backend["tools"] == [{"type": "web_search"}]
+    delegation = json.loads(message)["session"]["delegation"]
+    assert delegation["type"] == "responses"
+    assert delegation["responses"]["model"] == "gpt-5.1"
+    assert delegation["responses"]["tools"] == [{"type": "web_search"}]
 
 
-def test_setup_omits_the_backend_block_when_nothing_is_delegated():
+def test_setup_omits_the_delegation_block_when_nothing_is_delegated():
     (message,) = live_translator().setup_messages()
-    assert "backend" not in json.loads(message)["session"]
+    assert "delegation" not in json.loads(message)["session"]
 
 
 def test_provider_config_merges_into_the_session():
@@ -127,7 +126,7 @@ def test_provider_config_merges_into_the_session():
 
 def test_a_user_text_turn_is_item_create_plus_response_create():
     first, second = live_translator().user_text_messages("hi")
-    assert json.loads(first)["type"] == "conversation.item.create"
+    assert json.loads(first)["type"] == "response.item.create"
     assert json.loads(first)["item"]["content"] == [{"type": "input_text", "text": "hi"}]
     assert json.loads(second)["type"] == "response.create"
 
@@ -296,9 +295,9 @@ def test_a_session_configures_streams_events_and_reports_the_close():
         events = list(session.events())
 
     # Setup went first, then the text turn (item + response.create).
-    assert json.loads(wire.sent[0])["type"] == "session.update"
+    assert json.loads(wire.sent[0])["type"] == "session.start"
     assert [json.loads(m)["type"] for m in wire.sent[1:]] == [
-        "conversation.item.create",
+        "response.item.create",
         "response.create",
     ]
     kinds = [event.kind for event in events]

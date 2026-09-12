@@ -1,14 +1,20 @@
 """Live protocol translator for OpenAI's gpt-live (``v1/live/sessions``).
 
-PROVISIONAL WIRE. gpt-live shipped 2026-09-10 on its own full-duplex
-WebSocket endpoint, and KeyCall has not yet run a live probe against it
-(the probe needs a funded, gpt-live-1-entitled key, and the release gate
-is all-or-nothing over every live target). The session-config and event
-names below are built against OpenAI's published docs and the Realtime
-API's conventions; each is a single-place edit once the probe records the
-endpoint's own vocabulary. The normalized ``LiveEvent`` taxonomy this
-produces is the stable surface a caller sees; only the strings mapping to
-it are provisional.
+PARTIALLY PROBED. gpt-live shipped 2026-09-10 on its own full-duplex
+WebSocket endpoint. A first live probe against it ran 2026-09-12 (on a
+funded, gpt-live-1-entitled key): the endpoint is reachable and entitled,
+the socket connects and authenticates, the model id is accepted, and the
+opening handshake is corrected here from that probe. The first client
+frame is ``session.start`` (not the Realtime API's ``session.update``,
+which the endpoint rejects with "The first Live event must be
+session.start"), and reasoning delegation rides ``delegation.responses``
+(not a ``backend`` block), matching OpenAI's published config shape. The
+inbound event names and the audio-buffer frames are not yet probe-
+confirmed (the first probe only opened and sent a text turn); they stay
+best-guesses against OpenAI's docs and the Realtime conventions, each a
+single-place edit once a later probe reads them. The normalized
+``LiveEvent`` taxonomy this produces is the stable surface a caller sees;
+only the strings mapping to it move.
 
 The translator turns provider frames into normalized events and caller
 actions into provider messages. It never sees the credential; connection
@@ -93,7 +99,7 @@ class OpenAILiveTranslator:
         self.billed_seconds: float | None = None
 
     def setup_messages(self) -> tuple[str, ...]:
-        session: dict[str, Any] = {"type": "live", "model": self._config.model}
+        session: dict[str, Any] = {"model": self._config.model}
         if self._config.instructions is not None:
             session["instructions"] = self._config.instructions
         audio: dict[str, Any] = {}
@@ -103,29 +109,39 @@ class OpenAILiveTranslator:
         # for it: the model's output transcript rides its audio for free,
         # but the input transcript is a separate opt-in that bills for the
         # extra recognition. Without this the LiveInputTranscript* events
-        # never arrive. PROVISIONAL wire, confirm the shape at probe.
+        # never arrive. Not yet probe-confirmed (the first probe only sent
+        # a text turn); confirm the audio.input shape at a later probe.
         if self._config.input_transcription:
             audio["input"] = {"transcription": {}}
         if audio:
             session["audio"] = audio
         # Responses delegation: gpt-live hands reasoning and tool use to a
-        # separate backend model, billed separately.
-        backend: dict[str, Any] = {}
+        # separate backend Responses model, billed separately. The config
+        # rides delegation.responses (OpenAI's published shape), not a
+        # backend block.
+        responses: dict[str, Any] = {}
         if self._config.backend_model is not None:
-            backend["model"] = self._config.backend_model
+            responses["model"] = self._config.backend_model
         if self._config.backend_tools:
-            backend["tools"] = [dict(tool) for tool in self._config.backend_tools]
-        if backend:
-            session["backend"] = {"type": "responses", **backend}
+            responses["tools"] = [dict(tool) for tool in self._config.backend_tools]
+        if responses:
+            session["delegation"] = {"type": "responses", "responses": responses}
         if self._config.provider_config is not None:
             session.update(self._config.provider_config)
-        return (json.dumps({"type": "session.update", "session": session}),)
+        # The first client frame on v1/live/sessions must be session.start
+        # carrying the config (probe-confirmed 2026-09-12: session.update,
+        # the Realtime opener, is rejected outright).
+        return (json.dumps({"type": "session.start", "session": session}),)
 
     def user_text_messages(self, text: str) -> tuple[str, ...]:
+        # gpt-live creates the input item on the delegated Responses
+        # conversation: response.item.create, not the Realtime API's
+        # conversation.item.create (per OpenAI's docs; not yet probe-
+        # confirmed).
         return (
             json.dumps(
                 {
-                    "type": "conversation.item.create",
+                    "type": "response.item.create",
                     "item": {
                         "type": "message",
                         "role": "user",
