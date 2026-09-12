@@ -128,7 +128,10 @@ def test_a_user_text_turn_is_item_create_plus_response_create():
     first, second = live_translator().user_text_messages("hi")
     assert json.loads(first)["type"] == "response.item.create"
     assert json.loads(first)["item"]["content"] == [{"type": "input_text", "text": "hi"}]
-    assert json.loads(second)["type"] == "response.create"
+    respond = json.loads(second)
+    assert respond["type"] == "response.create"
+    # The turn must ask to be voiced, or the endpoint answers text only.
+    assert respond["response"]["output_modalities"] == ["audio"]
 
 
 def test_audio_chunks_append_and_the_turn_ends_with_commit():
@@ -167,18 +170,33 @@ def test_frames_translate_to_normalized_events():
     assert delta.kind == "audio_delta"
     assert delta.data == b"pcm-bytes"
 
+
+def test_the_backend_stream_is_unwrapped_from_the_response_event_envelope():
+    # Probe round 2: the delegated Responses stream rides inside a
+    # response.event envelope, one backend event per frame under .event.
+    t = live_translator()
+
     (words,) = t.events_for_frame(
-        json.dumps({"type": "response.output_audio_transcript.delta", "delta": "Ray"})
+        json.dumps(
+            {
+                "type": "response.event",
+                "delegation_id": "dg_1",
+                "event": {"type": "response.output_text.delta", "delta": "Ray"},
+            }
+        )
     )
     assert words.kind == "transcript_delta" and words.text == "Ray"
 
     (done,) = t.events_for_frame(
         json.dumps(
             {
-                "type": "response.done",
-                "response": {
-                    "status": "completed",
-                    "usage": {"input_tokens": 17, "output_tokens": 8, "total_tokens": 25},
+                "type": "response.event",
+                "event": {
+                    "type": "response.completed",
+                    "response": {
+                        "status": "completed",
+                        "usage": {"input_tokens": 17, "output_tokens": 8, "total_tokens": 25},
+                    },
                 },
             }
         )
@@ -190,7 +208,12 @@ def test_frames_translate_to_normalized_events():
 def test_a_cancelled_response_and_barge_in_are_interruptions():
     t = live_translator()
     (event,) = t.events_for_frame(
-        json.dumps({"type": "response.done", "response": {"status": "cancelled"}})
+        json.dumps(
+            {
+                "type": "response.event",
+                "event": {"type": "response.completed", "response": {"status": "cancelled"}},
+            }
+        )
     )
     assert event.kind == "interrupted"
     (event,) = t.events_for_frame(json.dumps({"type": "input_audio_buffer.speech_started"}))
@@ -203,8 +226,11 @@ def test_the_billed_duration_is_captured_from_the_turn_usage():
     t.events_for_frame(
         json.dumps(
             {
-                "type": "response.done",
-                "response": {"status": "completed", "usage": {"billed_seconds": 12.5}},
+                "type": "response.event",
+                "event": {
+                    "type": "response.completed",
+                    "response": {"status": "completed", "usage": {"billed_seconds": 12.5}},
+                },
             }
         )
     )
@@ -221,11 +247,28 @@ def test_the_billed_duration_is_captured_from_a_session_end_frame():
 
 def test_plumbing_frames_yield_nothing_and_unknown_frames_stay_bounded():
     t = live_translator()
+    # Top-level plumbing.
     assert t.events_for_frame(json.dumps({"type": "ping"})) == []
-    assert t.events_for_frame(json.dumps({"type": "response.created"})) == []
+    assert t.events_for_frame(json.dumps({"type": "session.delegation.created"})) == []
+    # Backend-stream lifecycle plumbing, inside the envelope.
+    assert (
+        t.events_for_frame(
+            json.dumps({"type": "response.event", "event": {"type": "response.created"}})
+        )
+        == []
+    )
     (unknown,) = t.events_for_frame(json.dumps({"type": "shiny.new.event", "blob": "x" * 9000}))
     assert unknown.kind == "unknown"
     assert unknown.provider_kind == "shiny.new.event"
+
+
+def test_an_unknown_backend_stream_event_keeps_the_envelope_prefix():
+    t = live_translator()
+    (unknown,) = t.events_for_frame(
+        json.dumps({"type": "response.event", "event": {"type": "response.brand_new"}})
+    )
+    assert unknown.kind == "unknown"
+    assert unknown.provider_kind == "response.event/response.brand_new"
 
 
 def test_an_error_frame_raises_a_typed_error():
@@ -280,11 +323,20 @@ def test_a_session_configures_streams_events_and_reports_the_close():
     wire = FakeWire(
         [
             json.dumps({"type": "session.created", "session": {"id": "s1"}}),
-            json.dumps({"type": "response.output_audio_transcript.delta", "delta": "Hi"}),
+            json.dumps({"type": "session.delegation.created"}),
             json.dumps(
                 {
-                    "type": "response.done",
-                    "response": {"status": "completed", "usage": {"billed_seconds": 3.0}},
+                    "type": "response.event",
+                    "event": {"type": "response.output_text.delta", "delta": "Hi"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "response.event",
+                    "event": {
+                        "type": "response.completed",
+                        "response": {"status": "completed", "usage": {"billed_seconds": 3.0}},
+                    },
                 }
             ),
             json.dumps({"type": "session.ended", "session": {"billed_seconds": 3.0}}),

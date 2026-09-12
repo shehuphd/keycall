@@ -8,13 +8,19 @@ opening handshake is corrected here from that probe. The first client
 frame is ``session.start`` (not the Realtime API's ``session.update``,
 which the endpoint rejects with "The first Live event must be
 session.start"), and reasoning delegation rides ``delegation.responses``
-(not a ``backend`` block), matching OpenAI's published config shape. The
-inbound event names and the audio-buffer frames are not yet probe-
-confirmed (the first probe only opened and sent a text turn); they stay
-best-guesses against OpenAI's docs and the Realtime conventions, each a
-single-place edit once a later probe reads them. The normalized
-``LiveEvent`` taxonomy this produces is the stable surface a caller sees;
-only the strings mapping to it move.
+(not a ``backend`` block), matching OpenAI's published config shape.
+
+Probe round 2 (2026-09-12) tapped the raw frames: the delegated backend's
+Responses stream arrives nested inside a ``response.event`` envelope (one
+backend event per envelope, under ``.event``), so this translator unwraps
+it and maps the inner Responses types, the backend's ``response.output_
+text.delta`` being the interviewer's words. That probe voiced nothing on a
+text-injected turn, so ``response.create`` now requests audio explicitly
+via ``output_modalities``. The live layer's own audio frames and its
+turn/close events are still to be read at a later probe (the audio-output
+path was only fixed after round 2); those top-level mappings stay best-
+guesses. The normalized ``LiveEvent`` taxonomy this produces is the stable
+surface a caller sees; only the strings mapping to it move.
 
 The translator turns provider frames into normalized events and caller
 actions into provider messages. It never sees the credential; connection
@@ -42,22 +48,34 @@ from .._types import (
     Usage,
 )
 
-# Frame types that are session plumbing, not caller-visible events.
-# PROVISIONAL, confirm at probe.
+# Top-level (session-layer) frame types that are plumbing, not caller-
+# visible events. Probe round 2 (2026-09-12) confirmed session.delegation.
+# created arrives at the top level when the backend delegation opens.
 _LIVE_PLUMBING = frozenset(
     {
         "session.updated",
-        "response.created",
-        "response.output_item.added",
-        "response.output_item.done",
-        "response.content_part.added",
-        "response.content_part.done",
-        "response.output_audio.done",
-        "response.output_audio_transcript.done",
+        "session.delegation.created",
         "input_audio_buffer.committed",
         "input_audio_buffer.speech_stopped",
         "ping",
         "rate_limits.updated",
+    }
+)
+
+# Event types inside the delegated Responses stream (unwrapped from a
+# response.event envelope) that are generation lifecycle, not caller-
+# visible. Observed in probe round 2 (2026-09-12).
+_RESPONSES_PLUMBING = frozenset(
+    {
+        "response.created",
+        "response.in_progress",
+        "response.output_item.added",
+        "response.output_item.done",
+        "response.content_part.added",
+        "response.content_part.done",
+        "response.output_text.done",
+        "response.output_audio.done",
+        "response.output_audio_transcript.done",
     }
 )
 
@@ -138,6 +156,11 @@ class OpenAILiveTranslator:
         # conversation: response.item.create, not the Realtime API's
         # conversation.item.create (per OpenAI's docs; not yet probe-
         # confirmed).
+        # Ask the response to be voiced: without output_modalities the
+        # endpoint answered a text-injected turn with text only and never
+        # spoke (probe round 2, 2026-09-12). The delegated backend still
+        # streams its text (the transcript) regardless, since that is what
+        # the live layer voices.
         return (
             json.dumps(
                 {
@@ -149,7 +172,9 @@ class OpenAILiveTranslator:
                     },
                 }
             ),
-            json.dumps({"type": "response.create"}),
+            json.dumps(
+                {"type": "response.create", "response": {"output_modalities": ["audio"]}}
+            ),
         )
 
     def audio_chunk_messages(self, pcm: bytes) -> tuple[str, ...]:
@@ -166,6 +191,40 @@ class OpenAILiveTranslator:
                 self.billed_seconds = float(value)
                 return
 
+    def _responses_stream_events(self, inner: dict[str, Any]) -> list[LiveEvent]:
+        """Map one event from the delegated Responses stream, unwrapped from
+        a response.event envelope. The backend model's text output is the
+        interviewer's words (there is no separate transcript frame), so it
+        becomes a transcript_delta; response.completed closes the turn and
+        carries the usage."""
+        inner_type = str(inner.get("type", ""))
+        if inner_type == "response.output_text.delta":
+            return [LiveTranscriptDelta(text=str(inner.get("delta", "")))]
+        if inner_type == "response.output_audio.delta":
+            return [LiveAudioDelta(data=base64.b64decode(inner.get("delta", "")))]
+        if inner_type == "response.output_audio_transcript.delta":
+            return [LiveTranscriptDelta(text=str(inner.get("delta", "")))]
+        if inner_type == "response.completed":
+            response = _as_dict(inner.get("response"))
+            if str(response.get("status", "")) == "cancelled":
+                return [LiveInterrupted()]
+            usage_raw = _as_dict(response.get("usage"))
+            self._record_duration(usage_raw)
+            return [
+                LiveTurnComplete(
+                    usage=Usage(
+                        input_tokens=usage_raw.get("input_tokens"),
+                        output_tokens=usage_raw.get("output_tokens"),
+                        total_tokens=usage_raw.get("total_tokens"),
+                    )
+                )
+            ]
+        if inner_type in _RESPONSES_PLUMBING:
+            return []
+        # Nested unknowns keep the envelope prefix so a reader can tell a
+        # backend-stream frame apart from a top-level one.
+        return [UnknownLiveEvent(provider_kind=f"response.event/{inner_type}"[:100])]
+
     def events_for_frame(self, payload: str | bytes) -> list[LiveEvent]:
         frame = _decode_frame(payload, provider=self._provider)
         frame_type = str(frame.get("type", ""))
@@ -177,6 +236,10 @@ class OpenAILiveTranslator:
                     provider_session_id=str(session_id) if session_id else None
                 )
             ]
+        if frame_type == "response.event":
+            # An envelope carrying one event of the delegated Responses
+            # stream under .event (probe round 2, 2026-09-12).
+            return self._responses_stream_events(_as_dict(frame.get("event")))
         if frame_type in (
             "input_audio_transcription.delta",
             "conversation.item.input_audio_transcription.delta",
@@ -193,21 +256,6 @@ class OpenAILiveTranslator:
             return [LiveTranscriptDelta(text=str(frame.get("delta", "")))]
         if frame_type == "input_audio_buffer.speech_started":
             return [LiveInterrupted()]
-        if frame_type == "response.done":
-            response = _as_dict(frame.get("response"))
-            if str(response.get("status", "")) == "cancelled":
-                return [LiveInterrupted()]
-            usage_raw = _as_dict(response.get("usage"))
-            self._record_duration(usage_raw)
-            return [
-                LiveTurnComplete(
-                    usage=Usage(
-                        input_tokens=usage_raw.get("input_tokens"),
-                        output_tokens=usage_raw.get("output_tokens"),
-                        total_tokens=usage_raw.get("total_tokens"),
-                    )
-                )
-            ]
         if frame_type in ("session.done", "session.ended"):
             # The session's own final usage arrives before the socket
             # closes; capture the billed duration so LiveSessionEnded can
