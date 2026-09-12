@@ -93,6 +93,11 @@ def test_setup_opens_with_session_start_and_voice_under_audio_output():
     assert session["audio"]["output"] == {"voice": "marin"}
 
 
+def test_setup_asks_for_audio_output_on_the_session():
+    (message,) = live_translator().setup_messages()
+    assert json.loads(message)["session"]["output_modalities"] == ["audio"]
+
+
 def test_setup_asks_for_input_transcription_by_default():
     (message,) = live_translator().setup_messages()
     assert json.loads(message)["session"]["audio"]["input"] == {"transcription": {}}
@@ -130,8 +135,9 @@ def test_a_user_text_turn_is_item_create_plus_response_create():
     assert json.loads(first)["item"]["content"] == [{"type": "input_text", "text": "hi"}]
     respond = json.loads(second)
     assert respond["type"] == "response.create"
-    # The turn must ask to be voiced, or the endpoint answers text only.
-    assert respond["response"]["output_modalities"] == ["audio"]
+    # response.create takes no arguments: gpt-live rejects the Realtime
+    # API's `response` wrapper; the modality is set on the session instead.
+    assert "response" not in respond
 
 
 def test_audio_chunks_append_and_the_turn_ends_with_commit():

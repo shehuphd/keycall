@@ -15,10 +15,12 @@ Responses stream arrives nested inside a ``response.event`` envelope (one
 backend event per envelope, under ``.event``), so this translator unwraps
 it and maps the inner Responses types, the backend's ``response.output_
 text.delta`` being the interviewer's words. That probe voiced nothing on a
-text-injected turn, so ``response.create`` now requests audio explicitly
-via ``output_modalities``. The live layer's own audio frames and its
-turn/close events are still to be read at a later probe (the audio-output
-path was only fixed after round 2); those top-level mappings stay best-
+text-injected turn. Probe round 3 pinned why: gpt-live rejects the
+Realtime API's per-response ``response.output_modalities`` wrapper, so the
+output modality is set once on the session config beside the voice, and
+``response.create`` carries no arguments. Whether that voices the turn,
+and the live layer's own audio frames and turn/close event names, are
+still to be read at a later probe; those top-level mappings stay best-
 guesses. The normalized ``LiveEvent`` taxonomy this produces is the stable
 surface a caller sees; only the strings mapping to it move.
 
@@ -133,6 +135,13 @@ class OpenAILiveTranslator:
             audio["input"] = {"transcription": {}}
         if audio:
             session["audio"] = audio
+        # Ask for voiced output at the session, set once at open. Probe
+        # round 3 (2026-09-12): gpt-live answered a turn with text only
+        # until this was set, and it rejects the Realtime API's per-response
+        # ``response.output_modalities`` wrapper ("Unknown parameter:
+        # 'response'"), so the modality lives on the session config, beside
+        # the voice, the way OpenAI's docs place output audio config.
+        session["output_modalities"] = ["audio"]
         # Responses delegation: gpt-live hands reasoning and tool use to a
         # separate backend Responses model, billed separately. The config
         # rides delegation.responses (OpenAI's published shape), not a
@@ -156,11 +165,10 @@ class OpenAILiveTranslator:
         # conversation: response.item.create, not the Realtime API's
         # conversation.item.create (per OpenAI's docs; not yet probe-
         # confirmed).
-        # Ask the response to be voiced: without output_modalities the
-        # endpoint answered a text-injected turn with text only and never
-        # spoke (probe round 2, 2026-09-12). The delegated backend still
-        # streams its text (the transcript) regardless, since that is what
-        # the live layer voices.
+        # response.create takes no arguments here: the output modality is
+        # set once on the session config (see setup_messages). gpt-live
+        # rejects the Realtime API's ``response`` wrapper on this frame
+        # (probe round 3, 2026-09-12).
         return (
             json.dumps(
                 {
@@ -172,9 +180,7 @@ class OpenAILiveTranslator:
                     },
                 }
             ),
-            json.dumps(
-                {"type": "response.create", "response": {"output_modalities": ["audio"]}}
-            ),
+            json.dumps({"type": "response.create"}),
         )
 
     def audio_chunk_messages(self, pcm: bytes) -> tuple[str, ...]:
