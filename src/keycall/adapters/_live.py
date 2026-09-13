@@ -1,6 +1,6 @@
 """Live protocol translator for OpenAI's gpt-live (``v1/live/sessions``).
 
-PARTIALLY PROBED. gpt-live shipped 2026-09-10 on its own full-duplex
+PROBED END TO END. gpt-live shipped 2026-09-10 on its own full-duplex
 WebSocket endpoint. A first live probe against it ran 2026-09-12 (on a
 funded, gpt-live-1-entitled key): the endpoint is reachable and entitled,
 the socket connects and authenticates, the model id is accepted, and the
@@ -37,6 +37,16 @@ billing is incremental through ``session.usage.updated`` (its
 ``LiveUsageUpdated`` and carried onto ``LiveSessionEnded`` at socket close.
 The session is ended deliberately with ``session.close`` on context exit. The normalized ``LiveEvent`` taxonomy this produces is the stable
 surface a caller sees; only the strings mapping to it move.
+
+Probe round 7 (2026-09-13) settled input transcription: gpt-live has no
+config field for it. Six candidate fields were each rejected with
+``unknown_parameter`` (``session.audio.input``,
+``session.input_audio_transcription``, ``session.transcription``,
+``session.audio.transcription``, and two more), so nothing is sent and the
+caller transcript streams free. The same round confirmed the audio path
+carries the caller transcript as ``session.input_transcript.delta`` only
+(each delta carrying ``start_ms``/``end_ms``), with no final frame, so
+``LiveInputTranscriptFinal`` does not fire on gpt-live.
 
 The translator turns provider frames into normalized events and caller
 actions into provider messages. It never sees the credential; connection
@@ -126,7 +136,7 @@ def _decode_frame(payload: str | bytes, *, provider: str) -> dict[str, Any]:
 
 
 class OpenAILiveTranslator:
-    """The gpt-live full-duplex dialect (PROVISIONAL, see module docstring)."""
+    """The gpt-live full-duplex dialect (probed end to end, see module docstring)."""
 
     def __init__(self, config: LiveConfig, *, provider: str) -> None:
         self._config = config

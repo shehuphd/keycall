@@ -895,8 +895,8 @@ class RealtimeConfig:
 # gpt-live (OpenAI's v1/live/sessions endpoint) is full-duplex: the caller's
 # audio and the model's audio overlap, so the input transcript (what the
 # caller said) and the output transcript/audio (what the model said) both
-# stream. The wire event names are provisional until the live probe records
-# them; this normalized taxonomy is the stable surface.
+# stream. The wire event names are probe-confirmed against gpt-live; this
+# normalized taxonomy is the stable surface a caller reads.
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
