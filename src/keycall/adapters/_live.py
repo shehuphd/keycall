@@ -1,6 +1,6 @@
 """Live protocol translator for OpenAI's gpt-live (``v1/live/sessions``).
 
-PARTIALLY PROBED. gpt-live shipped 2026-09-10 on its own full-duplex
+PROBED END TO END. gpt-live shipped 2026-09-10 on its own full-duplex
 WebSocket endpoint. A first live probe against it ran 2026-09-12 (on a
 funded, gpt-live-1-entitled key): the endpoint is reachable and entitled,
 the socket connects and authenticates, the model id is accepted, and the
@@ -37,6 +37,16 @@ billing is incremental through ``session.usage.updated`` (its
 ``LiveUsageUpdated`` and carried onto ``LiveSessionEnded`` at socket close.
 The session is ended deliberately with ``session.close`` on context exit. The normalized ``LiveEvent`` taxonomy this produces is the stable
 surface a caller sees; only the strings mapping to it move.
+
+Probe round 7 (2026-09-13) settled input transcription: gpt-live has no
+config field for it. Six candidate fields were each rejected with
+``unknown_parameter`` (``session.audio.input``,
+``session.input_audio_transcription``, ``session.transcription``,
+``session.audio.transcription``, and two more), so nothing is sent and the
+caller transcript streams free. The same round confirmed the audio path
+carries the caller transcript as ``session.input_transcript.delta`` only
+(each delta carrying ``start_ms``/``end_ms``), with no final frame, so
+``LiveInputTranscriptFinal`` does not fire on gpt-live.
 
 The translator turns provider frames into normalized events and caller
 actions into provider messages. It never sees the credential; connection
@@ -126,7 +136,7 @@ def _decode_frame(payload: str | bytes, *, provider: str) -> dict[str, Any]:
 
 
 class OpenAILiveTranslator:
-    """The gpt-live full-duplex dialect (PROVISIONAL, see module docstring)."""
+    """The gpt-live full-duplex dialect (probed end to end, see module docstring)."""
 
     def __init__(self, config: LiveConfig, *, provider: str) -> None:
         self._config = config
@@ -142,14 +152,11 @@ class OpenAILiveTranslator:
         audio: dict[str, Any] = {}
         if self._config.voice is not None:
             audio["output"] = {"voice": self._config.voice}
-        # The caller's own audio is transcribed only when the session asks
-        # for it: the model's output transcript rides its audio for free,
-        # but the input transcript is a separate opt-in that bills for the
-        # extra recognition. Without this the LiveInputTranscript* events
-        # never arrive. Not yet probe-confirmed (the first probe only sent
-        # a text turn); confirm the audio.input shape at a later probe.
-        if self._config.input_transcription:
-            audio["input"] = {"transcription": {}}
+        # No input-transcription opt-in is sent: gpt-live streams the caller's
+        # own words as session.input_transcript.delta for free (probe-confirmed
+        # 2026-09-13), and the endpoint rejects a session.audio.input block
+        # outright ("Unknown parameter: 'session.audio.input'"). The caller's
+        # transcript arrives regardless (see events_for_frame).
         if audio:
             session["audio"] = audio
         # gpt-live has no ``output_modalities`` key: probe rounds 3 and 4
@@ -308,6 +315,12 @@ class OpenAILiveTranslator:
             "input_audio_transcription.completed",
             "conversation.item.input_audio_transcription.completed",
         ):
+            # gpt-live's audio path sends the caller transcript as deltas only,
+            # with no final frame (probe 2026-09-13: one turn emitted
+            # session.input_transcript.delta with start_ms/end_ms but no
+            # completed/final). This mapping handles a possible future or a
+            # different provider shape, so LiveInputTranscriptFinal does not
+            # fire on gpt-live today.
             return [LiveInputTranscriptFinal(text=str(frame.get("transcript", "")))]
         if frame_type == "response.output_audio.delta":
             return [LiveAudioDelta(data=base64.b64decode(frame.get("delta", "")))]

@@ -612,8 +612,8 @@ Turns go up three ways: `send_audio(pcm)` streams caller audio in chunks (the mo
 | Event kind | Meaning |
 |---|---|
 | `session_started` | the provider accepted the session |
-| `input_transcript_delta` | an increment of the caller's own speech, revised until it finalizes |
-| `input_transcript_final` | the settled transcript of one caller utterance |
+| `input_transcript_delta` | an increment of the caller's own speech as they talk |
+| `input_transcript_final` | the settled transcript of one caller utterance, where a provider sends one; gpt-live streams deltas only and emits no final, so detect the caller's turn end from the model's reply |
 | `audio_delta` | a chunk of generated speech, decoded to raw PCM bytes |
 | `transcript_delta` | the model's own spoken words (can trail the audio it describes) |
 | `turn_complete` | a response turn finished; carries `usage`. Arrives on a text turn; on an audio turn the model sends no turn-complete frame, so detect turn end from the output going idle |
@@ -621,9 +621,9 @@ Turns go up three ways: `send_audio(pcm)` streams caller audio in chunks (the mo
 | `usage_updated` | the running cost so far; `billed_seconds` is the cumulative elapsed billable duration, updated through the session |
 | `session_ended` | the connection closed; always the final event, carrying the last `billed_seconds` seen |
 
-The caller's own audio transcript (`input_transcript_delta`) streams on its own, so you get the caller-side transcript without asking; `input_transcription` (off by default) sends a provisional extra request for it. The voice loop is billed per second, and gpt-live reports the cost incrementally: read `usage_updated.billed_seconds` for the running total, and `session_ended.billed_seconds` carries the last value seen. Everything KeyCall doesn't model can be passed as `provider_config={...}`, merged verbatim into the session-configuration message with a portability warning. `AsyncKeyCall.live()` is the same surface with `async for` over `events()`. Every provider but OpenAI (and custom targets) refuses `live()` with `UNSUPPORTED_OPERATION` before any connection; use `realtime()` for a half-duplex voice model.
+The caller's own audio transcript (`input_transcript_delta`) streams on its own, so you get the caller-side transcript without asking. The voice loop is billed per second, and gpt-live reports the cost incrementally: read `usage_updated.billed_seconds` for the running total, and `session_ended.billed_seconds` carries the last value seen. Everything KeyCall doesn't model can be passed as `provider_config={...}`, merged verbatim into the session-configuration message with a portability warning. `AsyncKeyCall.live()` is the same surface with `async for` over `events()`. Every provider but OpenAI (and custom targets) refuses `live()` with `UNSUPPORTED_OPERATION` before any connection; use `realtime()` for a half-duplex voice model.
 
-The gpt-live wire has been probed against `v1/live/sessions` end to end (2026-09-12): the handshake, the delegated backend config, an audio turn, and the voiced response with both transcripts all match the endpoint's own vocabulary. A full release probe still has to pass before this ships (the release gate is all-or-nothing over every live target). The normalized event taxonomy above is the stable surface a caller reads.
+The gpt-live wire is probed against `v1/live/sessions` end to end: the handshake, the delegated backend config, an audio turn, and the voiced response with both transcripts all match the endpoint's own vocabulary (2026-09-12), and gpt-live has no input-transcription config field, so the caller transcript streams free and needs no opt-in (2026-09-13, six candidate fields rejected). A committed PCM fixture drives a live drift probe that holds the wire to this shape on every release (the release gate is all-or-nothing over every live target). The normalized event taxonomy above is the stable surface a caller reads.
 
 ## Streaming transcription
 

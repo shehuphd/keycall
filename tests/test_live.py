@@ -1109,20 +1109,36 @@ def test_live_perplexity_tools_gate_still_correct():
     target = next((t for t in targets if t.provider == "perplexity"), None)
     if target is None:
         pytest.skip("no perplexity target in the live source")
-    response = httpx.post(
-        "https://api.perplexity.ai/chat/completions",
-        headers={"Authorization": f"Bearer {target.key}"},
-        json={
-            "model": "sonar",
-            "max_tokens": 16,
-            "messages": [{"role": "user", "content": "hi"}],
-            "tools": [{"type": "function", "function": {
-                "name": "noop", "description": "does nothing",
-                "parameters": {"type": "object", "properties": {}},
-            }}],
-        },
-        timeout=30,
-    )
+    def probe() -> httpx.Response:
+        return httpx.post(
+            "https://api.perplexity.ai/chat/completions",
+            headers={"Authorization": f"Bearer {target.key}"},
+            json={
+                "model": "sonar",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "function": {
+                    "name": "noop", "description": "does nothing",
+                    "parameters": {"type": "object", "properties": {}},
+                }}],
+            },
+            timeout=30,
+        )
+
+    # A TLS or socket failure says nothing about perplexity's tool handling, so
+    # it must not read as capability drift: a runner hit SSL WRONG_VERSION_NUMBER
+    # mid-connect and failed a release on 2026-09-12. Retry once, then leave the
+    # lane unverified for the run, the way the other raw probes do.
+    for attempt in (1, 2):
+        try:
+            response = probe()
+            break
+        except httpx.TransportError as exc:
+            if attempt == 2:
+                pytest.skip(
+                    f"perplexity unreachable from this runner ({type(exc).__name__}: {exc}); "
+                    "tool-gate evidence unverified this run"
+                )
     assert response.status_code == 400 and "not supported" in response.text.lower(), (
         f"capability drift: perplexity tools returned HTTP {response.status_code} "
         "instead of the known 'not supported' rejection — re-probe and update "
@@ -1162,16 +1178,25 @@ def test_live_moonshot_search_still_returns_no_citations():
     final = None
     with httpx.Client(timeout=180) as client:
         for _ in range(4):
-            response = client.post(
-                "https://api.moonshot.ai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {target.key}"},
-                json={
-                    "model": "kimi-k2.6",
-                    "messages": messages,
-                    "tools": tools,
-                    "max_tokens": 3000,
-                },
-            )
+            # A TLS or socket failure says nothing about Moonshot's search
+            # behaviour, so it leaves the lane unverified rather than reading as
+            # capability drift, the way the other raw probes do.
+            try:
+                response = client.post(
+                    "https://api.moonshot.ai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {target.key}"},
+                    json={
+                        "model": "kimi-k2.6",
+                        "messages": messages,
+                        "tools": tools,
+                        "max_tokens": 3000,
+                    },
+                )
+            except httpx.TransportError as exc:
+                pytest.skip(
+                    f"moonshot unreachable from this runner ({type(exc).__name__}: {exc}); "
+                    "citation-absence evidence unverified this run"
+                )
             assert response.status_code == 200, (
                 f"capability drift: the $web_search round answered HTTP "
                 f"{response.status_code} — re-probe the builtin flow"

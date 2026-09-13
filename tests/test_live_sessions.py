@@ -102,16 +102,13 @@ def test_setup_sends_no_output_modalities_key():
     assert session["audio"]["output"] == {"voice": "marin"}
 
 
-def test_input_transcription_is_off_by_default():
-    # The caller-side transcript streams free on the audio path, so the
-    # provisional request block is not sent unless asked for.
-    (message,) = live_translator().setup_messages()
+def test_setup_never_sends_an_audio_input_block():
+    # gpt-live rejects a session.audio.input block outright ("Unknown
+    # parameter: 'session.audio.input'", observed 2026-09-13), and the
+    # caller-side transcript streams free without one, so setup must never
+    # emit it. Sending it broke the whole session.
+    (message,) = live_translator(voice="marin").setup_messages()
     assert "input" not in json.loads(message)["session"].get("audio", {})
-
-
-def test_input_transcription_can_be_turned_on():
-    (message,) = live_translator(input_transcription=True).setup_messages()
-    assert json.loads(message)["session"]["audio"]["input"] == {"transcription": {}}
 
 
 def test_setup_delegates_reasoning_to_the_backend_responses_model():

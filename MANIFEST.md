@@ -46,7 +46,7 @@ Every current source file, with what it does and what it touches. A map for orie
 | `_perplexity.py` | Perplexity override: catalog-maintained Sonar models, the `max_output_tokens >= 16` floor gate, and the 400 "Invalid model"/"deprecated" mapping to `MODEL_NOT_AVAILABLE`. |
 | `_xai.py` | xAI override: `/v1/responses` routing for web search, reasoning effort, and code_interpreter, image and video generation, realtime sessions with Grok Voice appended from the catalog, the container batch dialect with counter-derived status and paginated results. |
 | `_realtime.py` | Realtime wire adapters (OpenAI, xAI, Gemini) mapping session events to normalized types. |
-| `_live.py` | The gpt-live full-duplex wire translator (OpenAI), mapping provisional session frames to normalized `LiveEvent`s. |
+| `_live.py` | The gpt-live full-duplex wire translator (OpenAI), mapping probe-confirmed session frames to normalized `LiveEvent`s. |
 | `_stt.py` | AssemblyAI and Deepgram: credential-validating discovery, streaming transcription frames to normalized events (including each provider's own speaker-label dialect under `diarize=True`), Deepgram's one-round-trip file transcription, and AssemblyAI's job-shaped one (upload, submit, poll). |
 | `_elevenlabs.py` | ElevenLabs: live speech-model discovery plus catalog STT entries, voice listing, speech generation, file transcription (multipart, or a source_url form), and a streaming-transcription translator over its JSON-message wire; a diarized session refuses, since its realtime wire never fills the speaker field. |
 
