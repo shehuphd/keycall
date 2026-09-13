@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "keycall"
-version = "1.13.0"
+version = "1.13.1"
 description = "One consistent interface for validating API keys across AI and service providers, listing and filtering their models, and making normalized calls."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "AGPL-3.0-or-later"
+license = "MIT"
 authors = [{ name = "Mo Shehu" }]
 keywords = [
     "llm",

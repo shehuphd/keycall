@@ -163,5 +163,5 @@ Built by [Mo Shehu](https://mohammedshehu.com).
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](https://github.com/shehuphd/keycall/blob/main/LICENSE).
+MIT. See [LICENSE](https://github.com/shehuphd/keycall/blob/main/LICENSE).
 
