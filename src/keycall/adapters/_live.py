@@ -142,14 +142,11 @@ class OpenAILiveTranslator:
         audio: dict[str, Any] = {}
         if self._config.voice is not None:
             audio["output"] = {"voice": self._config.voice}
-        # The caller's own audio is transcribed only when the session asks
-        # for it: the model's output transcript rides its audio for free,
-        # but the input transcript is a separate opt-in that bills for the
-        # extra recognition. Without this the LiveInputTranscript* events
-        # never arrive. Not yet probe-confirmed (the first probe only sent
-        # a text turn); confirm the audio.input shape at a later probe.
-        if self._config.input_transcription:
-            audio["input"] = {"transcription": {}}
+        # No input-transcription opt-in is sent: gpt-live streams the caller's
+        # own words as session.input_transcript.delta for free (probe-confirmed
+        # 2026-09-13), and the endpoint rejects a session.audio.input block
+        # outright ("Unknown parameter: 'session.audio.input'"). The caller's
+        # transcript arrives regardless (see events_for_frame).
         if audio:
             session["audio"] = audio
         # gpt-live has no ``output_modalities`` key: probe rounds 3 and 4

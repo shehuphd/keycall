@@ -1011,21 +1011,17 @@ LiveEvent = (
 class LiveConfig:
     """What a ``live()`` session asks of the provider: a full-duplex voice
     loop plus the backend model and tools it delegates reasoning to
-    (OpenAI's Responses delegation). ``input_transcription`` sends a
-    provisional request to transcribe the caller's own audio; it is off by
-    default because on gpt-live's audio path the caller-side transcript
-    (``LiveInputTranscriptDelta``) already streams without asking, and the
-    request block is not yet probe-confirmed. ``provider_config`` is passed
-    through verbatim into the session-configuration message for anything
-    KeyCall does not model, reported with a warning so a portability seam
-    is never silent."""
+    (OpenAI's Responses delegation). On gpt-live's audio path the caller-side
+    transcript (``LiveInputTranscriptDelta``) streams without asking, so no
+    opt-in is needed for it. ``provider_config`` is passed through verbatim
+    into the session-configuration message for anything KeyCall does not
+    model, reported with a warning so a portability seam is never silent."""
 
     model: str
     voice: str | None = None
     instructions: str | None = None
     backend_model: str | None = None
     backend_tools: tuple[Mapping[str, Any], ...] = ()
-    input_transcription: bool = False
     provider_config: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
