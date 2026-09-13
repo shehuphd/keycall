@@ -305,6 +305,12 @@ class OpenAILiveTranslator:
             "input_audio_transcription.completed",
             "conversation.item.input_audio_transcription.completed",
         ):
+            # gpt-live's audio path sends the caller transcript as deltas only,
+            # with no final frame (probe 2026-09-13: one turn emitted
+            # session.input_transcript.delta with start_ms/end_ms but no
+            # completed/final). This mapping handles a possible future or a
+            # different provider shape, so LiveInputTranscriptFinal does not
+            # fire on gpt-live today.
             return [LiveInputTranscriptFinal(text=str(frame.get("transcript", "")))]
         if frame_type == "response.output_audio.delta":
             return [LiveAudioDelta(data=base64.b64decode(frame.get("delta", "")))]
