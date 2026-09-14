@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 
+import _spend
 import pytest
 
 from keycall._errors import KeyCallError
@@ -60,6 +61,9 @@ def test_live_smoke_every_target_generates():
                 f"{attempt.classification_source})"
             )
         print(summary)
+        for attempt in result.attempts:
+            if attempt.ok and attempt.total_tokens:
+                _spend.record(result.provider, "text_generate", tokens=attempt.total_tokens)
         if result.generate_ok:
             verified.append(result.label)
         elif result.outcome == "rate_limited_unverified":
@@ -1089,6 +1093,7 @@ def test_live_gpt_live_voices_end_to_end():
     assert audio_frames, "gpt-live voiced nothing (no audio_delta frames)"
     assert billed, "gpt-live reported no billed seconds via usage_updated"
     assert not unknowns, f"gpt-live emitted unrecognized frames: {unknowns}"
+    _spend.record("openai", "gpt_live_voice", voice_seconds=billed)
     print(
         f"gpt-live voiced {audio_frames} audio frame(s), {billed}s billed; "
         f"interviewer said {''.join(them)!r}, heard {''.join(me)!r}"
@@ -2639,6 +2644,7 @@ def test_live_image_generation():
                 f"{target.display_name}: {len(raw)} byte {kind} from "
                 f"{models[target.provider]}, {result.usage.total_tokens} tokens"
             )
+            _spend.record(target.provider, "image_generate", images=1)
             checked.append(target.provider)
         finally:
             client.close()
@@ -2673,6 +2679,17 @@ def test_live_video_generation():
     source = os.environ.get("KEYCALL_LIVE_SOURCE")
     if not source:
         pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    # Video billing dwarfs every other operation in this suite (a run of the
+    # media tests is dollars, mostly this one), and the wire has held across
+    # releases, so it is opt-in: skipped unless KEYCALL_LIVE_VIDEO is set.
+    # MUST be run before any release that touches video code (generate_video,
+    # the video job flow, a video adapter path, or a catalog video entry) by
+    # setting KEYCALL_LIVE_VIDEO=1 for that release's live smoke pass.
+    if not os.environ.get("KEYCALL_LIVE_VIDEO"):
+        pytest.skip(
+            "video generation is billable and slow; set KEYCALL_LIVE_VIDEO=1 to run it "
+            "(required for any release that changes video code)"
+        )
     import base64
 
     from keycall import KeyCall, ModelCategory
@@ -2711,6 +2728,11 @@ def test_live_video_generation():
                 f"format (first bytes {raw[:16]!r})"
             )
             print(f"{target.display_name}: {len(raw)} bytes from {model}")
+            _spend.record(
+                target.provider,
+                "video_generate",
+                video_seconds=shortest_duration[target.provider],
+            )
             checked.append(target.provider)
         finally:
             client.close()

@@ -3,6 +3,21 @@ import os
 import pytest
 
 
+def pytest_terminal_summary(terminalreporter):
+    """Print the live-suite spend tally (usage exact, USD approximate) at the
+    end of a run that recorded any. No-op for an ordinary mocked run."""
+    try:
+        from _spend import summary_lines
+    except ImportError:
+        return
+    lines = summary_lines()
+    if not lines:
+        return
+    terminalreporter.write_line("")
+    for line in lines:
+        terminalreporter.write_line(line)
+
+
 def pytest_collection_finish(session):
     """Pre-flight for the live suite: before any test spends a billable call
     (batch submissions happen at session setup, then generates, streams, and
