@@ -114,7 +114,7 @@ both = client.list_models(
 )
 ```
 
-Categories: `TEXT_GENERATION`, `IMAGE_GENERATION`, `EMBEDDING`, `TRANSCRIPTION`, `SPEECH_GENERATION`, `VIDEO_GENERATION`, `REALTIME`, `UNKNOWN`. Models KeyCall can't classify are `UNKNOWN` and appear only when you request that category explicitly, never in the default text picker.
+Categories: `TEXT_GENERATION`, `IMAGE_GENERATION`, `EMBEDDING`, `TRANSCRIPTION`, `SPEECH_GENERATION`, `VIDEO_GENERATION`, `REALTIME`, `LIVE`, `UNKNOWN`. Models KeyCall can't classify are `UNKNOWN` and appear only when you request that category explicitly, never in the default text picker.
 
 `ModelDiscovery` fields: `provider`, `models`, `categories`, `fetched_at`, `from_cache`, `catalog_version`, `catalog_stale`, `warnings`, `withheld`. Each `Model` carries `id`, `provider`, `categories`, `display_name`, `lifecycle`, `released_at`, `context_limit`, `capabilities`, `classification_source`, `warnings`, and `alias`.
 
@@ -148,6 +148,24 @@ It returns an `AliasFact` only when the id matches a convention KeyCall's catalo
 Providers not in the table have no recorded convention, so every id returns `None` there. A recorded convention is dated evidence, re-verified by a live probe on every release.
 
 `list_models()` attaches the same fact to each model as `Model.alias`, populated only where a convention matches, and the viewer's Models tab badges those rows with the evidence a hover away. Whether to prefer, avoid, or exclude alias ids stays your decision — the fact says what the id is, never what to do with it.
+
+## Classifying a model id
+
+`classify_model_id()` maps a model id to its `ModelCategory` by identifier rules alone, with no credential, no client, and no network call. Use it to branch on what a model is before a session opens, so a caller who picked a model can route to the right path at launch without a discovery round trip:
+
+```python
+from keycall import classify_model_id, ModelCategory
+
+category = classify_model_id("gpt-live-1")
+if category is ModelCategory.LIVE:
+    ...        # open a live() full-duplex session
+elif category is ModelCategory.REALTIME:
+    ...        # open a realtime() session
+elif category is ModelCategory.TEXT_GENERATION:
+    ...        # generate_text()
+```
+
+It reads the id string, the same rules `list_models()` falls back to when a provider's raw listing carries no category. An id it can't place returns `ModelCategory.UNKNOWN` rather than a guess. Where a model is listed, the catalog's own `categories` on the `Model` is the authoritative source and needs the discovery call; `classify_model_id()` is the keyless offline answer for the "what kind of model is this id?" question.
 
 ## Retired models
 

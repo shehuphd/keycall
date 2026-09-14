@@ -40,3 +40,15 @@ CASES = [
 @pytest.mark.parametrize(("model_id", "expected"), CASES)
 def test_classification_rules(model_id, expected):
     assert classify_model_id(model_id) is expected
+
+
+def test_classify_model_id_is_publicly_exported():
+    # The engine-follows-model use: a consumer classifies a picked model id
+    # offline, with no client and no discovery call, to choose the live vs
+    # realtime vs text path at launch.
+    from keycall import classify_model_id as public_classify
+
+    assert public_classify is classify_model_id
+    assert public_classify("gpt-live-1") is ModelCategory.LIVE
+    assert public_classify("gpt-realtime-2.1") is ModelCategory.REALTIME
+    assert public_classify("gpt-4o") is ModelCategory.TEXT_GENERATION
