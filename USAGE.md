@@ -630,10 +630,10 @@ Turns go up three ways: `send_audio(pcm)` streams caller audio in chunks (the mo
 | Event kind | Meaning |
 |---|---|
 | `session_started` | the provider accepted the session |
-| `input_transcript_delta` | an increment of the caller's own speech as they talk |
+| `input_transcript_delta` | an increment of the caller's own speech as they talk; carries `start_ms`/`end_ms`, the provider's session-relative millisecond offsets, where the provider reports them (gpt-live does), `None` otherwise |
 | `input_transcript_final` | the settled transcript of one caller utterance, where a provider sends one; gpt-live streams deltas only and emits no final, so detect the caller's turn end from the model's reply |
 | `audio_delta` | a chunk of generated speech, decoded to raw PCM bytes |
-| `transcript_delta` | the model's own spoken words (can trail the audio it describes) |
+| `transcript_delta` | the model's own spoken words (can trail the audio it describes); carries `start_ms`/`end_ms` on the same terms as `input_transcript_delta` |
 | `turn_complete` | a response turn finished; carries `usage`. Arrives on a text turn; on an audio turn the model sends no turn-complete frame, so detect turn end from the output going idle |
 | `interrupted` | full-duplex barge-in: the caller talked over the model, or the turn was cancelled |
 | `usage_updated` | the running cost so far; `billed_seconds` is the cumulative elapsed billable duration, updated through the session |

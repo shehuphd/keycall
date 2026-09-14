@@ -910,9 +910,13 @@ class LiveSessionStarted:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LiveInputTranscriptDelta:
     """An increment of the caller's own speech as the provider recognizes
-    it: the interim transcript, revised until it finalizes."""
+    it: the interim transcript. ``start_ms``/``end_ms`` are the provider's
+    session-relative millisecond offsets for this increment, where the
+    provider reports them (gpt-live does), and ``None`` where it does not."""
 
     text: str
+    start_ms: int | None = None
+    end_ms: int | None = None
     kind: Literal["input_transcript_delta"] = "input_transcript_delta"
 
 
@@ -927,9 +931,14 @@ class LiveInputTranscriptFinal:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LiveTranscriptDelta:
     """An increment of the model's own spoken words (its output
-    transcript), which can trail the audio deltas it describes."""
+    transcript), which can trail the audio deltas it describes.
+    ``start_ms``/``end_ms`` are the provider's session-relative millisecond
+    offsets for this increment, where the provider reports them (gpt-live
+    does), and ``None`` where it does not."""
 
     text: str
+    start_ms: int | None = None
+    end_ms: int | None = None
     kind: Literal["transcript_delta"] = "transcript_delta"
 
 

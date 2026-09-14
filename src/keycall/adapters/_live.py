@@ -113,6 +113,24 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _delta_timing(source: dict[str, Any]) -> tuple[int | None, int | None]:
+    """The provider's session-relative millisecond offsets for a transcript
+    delta, where the frame carries them (gpt-live sends start_ms/end_ms on its
+    transcript deltas), coerced to int; None for each that's absent or not a
+    number, so a provider without the fields yields (None, None)."""
+
+    def one(key: str) -> int | None:
+        value = source.get(key)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    return one("start_ms"), one("end_ms")
+
+
 def _decode_frame(payload: str | bytes, *, provider: str) -> dict[str, Any]:
     if isinstance(payload, bytes):
         payload = payload.decode("utf-8", errors="replace")
@@ -248,11 +266,13 @@ class OpenAILiveTranslator:
         carries the usage."""
         inner_type = str(inner.get("type", ""))
         if inner_type == "response.output_text.delta":
-            return [LiveTranscriptDelta(text=str(inner.get("delta", "")))]
+            start_ms, end_ms = _delta_timing(inner)
+            return [LiveTranscriptDelta(text=str(inner.get("delta", "")), start_ms=start_ms, end_ms=end_ms)]
         if inner_type == "response.output_audio.delta":
             return [LiveAudioDelta(data=base64.b64decode(inner.get("delta", "")))]
         if inner_type == "response.output_audio_transcript.delta":
-            return [LiveTranscriptDelta(text=str(inner.get("delta", "")))]
+            start_ms, end_ms = _delta_timing(inner)
+            return [LiveTranscriptDelta(text=str(inner.get("delta", "")), start_ms=start_ms, end_ms=end_ms)]
         if inner_type == "response.completed":
             response = _as_dict(inner.get("response"))
             if str(response.get("status", "")) == "cancelled":
@@ -291,9 +311,11 @@ class OpenAILiveTranslator:
         if frame_type == "session.output_audio.delta":
             return [LiveAudioDelta(data=base64.b64decode(frame.get("delta", "")))]
         if frame_type == "session.output_transcript.delta":
-            return [LiveTranscriptDelta(text=str(frame.get("delta", "")))]
+            start_ms, end_ms = _delta_timing(frame)
+            return [LiveTranscriptDelta(text=str(frame.get("delta", "")), start_ms=start_ms, end_ms=end_ms)]
         if frame_type == "session.input_transcript.delta":
-            return [LiveInputTranscriptDelta(text=str(frame.get("delta", "")))]
+            start_ms, end_ms = _delta_timing(frame)
+            return [LiveInputTranscriptDelta(text=str(frame.get("delta", "")), start_ms=start_ms, end_ms=end_ms)]
         if frame_type == "session.usage.updated":
             # Cumulative billing, reported through the session rather than on
             # close; record the elapsed seconds so LiveSessionEnded can carry
@@ -310,7 +332,8 @@ class OpenAILiveTranslator:
             "input_audio_transcription.delta",
             "conversation.item.input_audio_transcription.delta",
         ):
-            return [LiveInputTranscriptDelta(text=str(frame.get("delta", "")))]
+            start_ms, end_ms = _delta_timing(frame)
+            return [LiveInputTranscriptDelta(text=str(frame.get("delta", "")), start_ms=start_ms, end_ms=end_ms)]
         if frame_type in (
             "input_audio_transcription.completed",
             "conversation.item.input_audio_transcription.completed",
@@ -325,7 +348,8 @@ class OpenAILiveTranslator:
         if frame_type == "response.output_audio.delta":
             return [LiveAudioDelta(data=base64.b64decode(frame.get("delta", "")))]
         if frame_type == "response.output_audio_transcript.delta":
-            return [LiveTranscriptDelta(text=str(frame.get("delta", "")))]
+            start_ms, end_ms = _delta_timing(frame)
+            return [LiveTranscriptDelta(text=str(frame.get("delta", "")), start_ms=start_ms, end_ms=end_ms)]
         if frame_type == "input_audio_buffer.speech_started":
             return [LiveInterrupted()]
         if frame_type in ("session.done", "session.ended"):
