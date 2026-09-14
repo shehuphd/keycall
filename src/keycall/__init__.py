@@ -1,7 +1,7 @@
 """KeyCall: one consistent interface for validating AI-provider API keys,
 listing and filtering their models, and making normalized calls."""
 
-from ._classify import alias_fact
+from ._classify import alias_fact, classify_model_id
 from ._client import AsyncKeyCall, AsyncTextStream, KeyCall, TextStream
 from ._enums import ModelCategory, Operation, ProviderProtocol
 from ._errors import (
@@ -102,7 +102,7 @@ from ._types import (
     WithheldModel,
 )
 
-__version__ = "1.13.1"
+__version__ = "1.14.0"
 
 __all__ = [
     "AliasFact",
@@ -210,4 +210,5 @@ __all__ = [
     "WithheldModel",
     "__version__",
     "alias_fact",
+    "classify_model_id",
 ]

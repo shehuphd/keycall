@@ -4,6 +4,12 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] — 2026-09-14
+
+### Added
+
+- **`classify_model_id()` is now public.** `from keycall import classify_model_id` maps a model id to its `ModelCategory` by identifier rules alone, with no credential and no network call, so a caller can branch on what a model is (live, realtime, text, image, and the rest) before opening a session, without a discovery round trip. It returns `ModelCategory.UNKNOWN` for an id it can't place. Where a model is listed, the catalog's per-model `categories` stays the authoritative source; this is the keyless offline classifier `list_models()` itself falls back to. The documented category list now also names `LIVE`, added when `live()` shipped.
+
 ## [1.13.1] — 2026-09-13
 
 ### Changed
@@ -592,6 +598,7 @@ First release. Key validation, model discovery and filtering, and text generatio
 - Perplexity's Sonar models aren't API-discoverable and are maintained in the bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
+[1.14.0]: https://github.com/shehuphd/keycall/compare/v1.13.1...v1.14.0
 [1.13.1]: https://github.com/shehuphd/keycall/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/shehuphd/keycall/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/shehuphd/keycall/compare/v1.11.2...v1.12.0
