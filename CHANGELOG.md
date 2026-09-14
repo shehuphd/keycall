@@ -4,6 +4,12 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.1] — 2026-09-13
+
+### Changed
+
+- **License changed from AGPL-3.0-or-later to MIT.** KeyCall is now under the MIT license, so it can be embedded in closed-source or commercially licensed software without the AGPL's network-copyleft terms. No code or runtime behavior changed in this release; the `LICENSE` file, the `pyproject.toml` license field, and the README carry the new license.
+
 ## [1.13.0] — 2026-09-12
 
 Highlights: `live()` adds full-duplex voice on OpenAI's gpt-live as a sibling of `realtime()`, with the model delegating reasoning to a separately-billed backend model and the running billed seconds reported through the session.
@@ -586,6 +592,7 @@ First release. Key validation, model discovery and filtering, and text generatio
 - Perplexity's Sonar models aren't API-discoverable and are maintained in the bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
+[1.13.1]: https://github.com/shehuphd/keycall/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/shehuphd/keycall/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/shehuphd/keycall/compare/v1.11.2...v1.12.0
 [1.11.2]: https://github.com/shehuphd/keycall/compare/v1.11.1...v1.11.2
