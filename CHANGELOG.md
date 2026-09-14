@@ -4,6 +4,12 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.0] — 2026-09-14
+
+### Added
+
+- **`live()` transcript deltas carry the provider's timing.** `LiveTranscriptDelta` and `LiveInputTranscriptDelta` now expose `start_ms` and `end_ms`, the provider's session-relative millisecond offsets for each increment, where the provider reports them (gpt-live sends both on every transcript delta), and `None` otherwise. A caller can build turn boundaries on the provider's own timing rather than on delta arrival wall-clock. Numeric-string offsets are coerced to `int`.
+
 ## [1.14.0] — 2026-09-14
 
 ### Added
@@ -598,6 +604,7 @@ First release. Key validation, model discovery and filtering, and text generatio
 - Perplexity's Sonar models aren't API-discoverable and are maintained in the bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
+[1.15.0]: https://github.com/shehuphd/keycall/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/shehuphd/keycall/compare/v1.13.1...v1.14.0
 [1.13.1]: https://github.com/shehuphd/keycall/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/shehuphd/keycall/compare/v1.12.0...v1.13.0

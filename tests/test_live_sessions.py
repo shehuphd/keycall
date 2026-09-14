@@ -430,3 +430,43 @@ def test_a_session_outside_its_context_refuses():
         session.send_text("hi")
     with pytest.raises(RuntimeError):
         next(session.events())
+
+
+def test_transcript_deltas_carry_provider_timing_when_present():
+    # gpt-live sends session-relative start_ms/end_ms on each transcript
+    # delta; the normalized events surface them so a caller can build turn
+    # boundaries on the provider's own timing.
+    t = live_translator()
+
+    (me,) = t.events_for_frame(
+        json.dumps(
+            {
+                "type": "session.input_transcript.delta",
+                "delta": "8 years",
+                "start_ms": 200,
+                "end_ms": 400,
+            }
+        )
+    )
+    assert me.kind == "input_transcript_delta" and me.text == "8 years"
+    assert me.start_ms == 200 and me.end_ms == 400
+
+    # A provider may send the offsets as numeric strings; they are coerced.
+    (them,) = t.events_for_frame(
+        json.dumps(
+            {
+                "type": "session.output_transcript.delta",
+                "delta": "Tell me",
+                "start_ms": "5600",
+                "end_ms": "5800",
+            }
+        )
+    )
+    assert them.kind == "transcript_delta"
+    assert them.start_ms == 5600 and them.end_ms == 5800
+
+    # A delta without timing yields None on both, never a crash.
+    (bare,) = t.events_for_frame(
+        json.dumps({"type": "session.input_transcript.delta", "delta": "hi"})
+    )
+    assert bare.start_ms is None and bare.end_ms is None
