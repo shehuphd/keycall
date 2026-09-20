@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.09.12.1",
+  "catalog_version": "2026.09.17.1",
   "verified_at": "2026-08-10T00:00:00Z",
   "providers": {
     "openai": {
@@ -1710,6 +1710,11 @@
         "transcription_status": {
           "method": "GET",
           "path": "/v2/transcript/{transcript_id}"
+        },
+        "dictation": {
+          "method": "POST",
+          "host": "dictation.assemblyai.com",
+          "path": "/v1/transcribe/live"
         }
       },
       "provider_request_id_header": null,
@@ -1748,7 +1753,9 @@
         "transcription_url_input": true,
         "transcription_diarization": true,
         "streaming_diarization": true,
-        "streaming_diarization_note": "Streaming diarization rides the v3 socket as speaker_labels=true (with an optional max_speakers, 1-10); each finalized word in a Turn frame carries a `speaker` string. Live-probed 2026-09-08 on two-voice audio: words came back labelled 'A' and 'B'."
+        "streaming_diarization_note": "Streaming diarization rides the v3 socket as speaker_labels=true (with an optional max_speakers, 1-10); each finalized word in a Turn frame carries a `speaker` string. Live-probed 2026-09-08 on two-voice audio: words came back labelled 'A' and 'B'.",
+        "dictation": true,
+        "dictation_note": "One-shot dictation over dictation.assemblyai.com (a different host again, carried in the dictation op), bare key in the Authorization header. Live-probed 2026-09-17: a multipart POST with a JSON config part and a wav/pcm audio part (<=120s) answers in one round trip with text (verbatim, never LLM-altered), words[] carrying per-word confidence but no timing, overall confidence, audio_duration_ms, session_id, request_time_ms, and llm_response/llm_error (the cleaned rewrite, on by default, null on a 5s rewrite timeout while text still returns). Config takes optional language_codes, stt_prompt (context), keyterms_prompt, and llm_instruction; an unknown config field is rejected with a 400 naming it. Compressed audio is refused with 415."
       }
     },
     "deepgram": {

@@ -49,6 +49,8 @@ from ._types import (
     BatchJob,
     BatchRequest,
     BatchResult,
+    DictationRequest,
+    DictationResult,
     EmbeddingRequest,
     ImageGenerationRequest,
     InvocationResult,
@@ -755,6 +757,25 @@ class _BaseClient:
             code=ErrorCode.UNSUPPORTED_OPERATION,
             provider=self.provider,
             operation=Operation.TRANSCRIPTION.value,
+        )
+
+    def _dictation_request(
+        self,
+        *,
+        audio: bytes,
+        media_type: str | None,
+        context_prompt: str | None,
+        keyterms: Sequence[str],
+        language: str | None,
+        cleanup_instruction: str | None,
+    ) -> DictationRequest:
+        return DictationRequest(
+            data=audio,
+            media_type=media_type,
+            context_prompt=context_prompt,
+            keyterms=tuple(keyterms),
+            language=language,
+            cleanup_instruction=cleanup_instruction,
         )
 
     def _raise_video_failure(self, job: VideoJob) -> NoReturn:
@@ -1975,6 +1996,61 @@ class KeyCall(_BaseClient):
             )
             return parsed
 
+    def dictate(
+        self,
+        *,
+        audio: bytes,
+        media_type: str | None = None,
+        context_prompt: str | None = None,
+        keyterms: Sequence[str] = (),
+        language: str | None = None,
+        cleanup_instruction: str | None = None,
+    ) -> DictationResult:
+        """Dictate a short spoken utterance (AssemblyAI). One round trip
+        returns both the verbatim transcript and a cleaned rewrite. Pass
+        ``audio`` as 16-bit PCM bytes (WAV, or raw PCM with
+        media_type='audio/pcm'); compressed formats refuse before the
+        call. ``context_prompt`` describes the subject, ``keyterms`` primes
+        specific words, ``language`` is a single ISO code, and
+        ``cleanup_instruction`` overrides the default rewrite prompt. A
+        provider without a dictation endpoint refuses, naming the ones that
+        have it."""
+        self._require_open()
+        request = self._dictation_request(
+            audio=audio, media_type=media_type, context_prompt=context_prompt,
+            keyterms=keyterms, language=language,
+            cleanup_instruction=cleanup_instruction,
+        )
+        with _tracing.span(
+            "keycall.dictation", provider=self.provider, operation="dictation"
+        ) as trace:
+            spec = self._adapter.build_dictation_spec(request)
+            result = self._transport.request(
+                spec,
+                operation=Operation.DICTATION.value,
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            parsed = self._adapter.parse_dictation_response(
+                result.payload,
+                headers=result.headers,
+                round_trip_duration_ms=result.duration_ms,
+            )
+            trace.event(
+                "model",
+                operation="dictation",
+                target=self.provider,
+                status="ok",
+                duration_ms=result.duration_ms,
+                provider=self.provider,
+                result={
+                    "words": len(parsed.words),
+                    "audio_ms": parsed.audio_duration_ms,
+                    "cleaned": parsed.cleaned is not None,
+                },
+            )
+            return parsed
+
     def start_transcription(
         self,
         *,
@@ -2853,6 +2929,53 @@ class AsyncKeyCall(_BaseClient):
                 result={
                     "words": len(parsed.words),
                     "audio_seconds": parsed.audio_duration_seconds,
+                },
+            )
+            return parsed
+
+    async def dictate(
+        self,
+        *,
+        audio: bytes,
+        media_type: str | None = None,
+        context_prompt: str | None = None,
+        keyterms: Sequence[str] = (),
+        language: str | None = None,
+        cleanup_instruction: str | None = None,
+    ) -> DictationResult:
+        """Async twin of KeyCall.dictate()."""
+        self._require_open()
+        request = self._dictation_request(
+            audio=audio, media_type=media_type, context_prompt=context_prompt,
+            keyterms=keyterms, language=language,
+            cleanup_instruction=cleanup_instruction,
+        )
+        with _tracing.span(
+            "keycall.dictation", provider=self.provider, operation="dictation"
+        ) as trace:
+            spec = self._adapter.build_dictation_spec(request)
+            result = await self._transport.request(
+                spec,
+                operation=Operation.DICTATION.value,
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            parsed = self._adapter.parse_dictation_response(
+                result.payload,
+                headers=result.headers,
+                round_trip_duration_ms=result.duration_ms,
+            )
+            trace.event(
+                "model",
+                operation="dictation",
+                target=self.provider,
+                status="ok",
+                duration_ms=result.duration_ms,
+                provider=self.provider,
+                result={
+                    "words": len(parsed.words),
+                    "audio_ms": parsed.audio_duration_ms,
+                    "cleaned": parsed.cleaned is not None,
                 },
             )
             return parsed

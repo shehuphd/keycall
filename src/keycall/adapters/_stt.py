@@ -25,6 +25,9 @@ from .._enums import ModelCategory, Operation
 from .._errors import ErrorCode, KeyCallError
 from .._transport import RequestSpec
 from .._types import (
+    DictationRequest,
+    DictationResult,
+    DictationWord,
     FinalTranscript,
     InterimTranscript,
     InvocationResult,
@@ -39,7 +42,7 @@ from .._types import (
     TranscriptWord,
     UnknownTranscriptionEvent,
 )
-from ._base import ProviderAdapter
+from ._base import ProviderAdapter, media_type_for
 
 
 class _SttAdapter(ProviderAdapter):
@@ -381,6 +384,120 @@ class AssemblyAIAdapter(_SttAdapter):
             audio_duration_seconds=float(duration) if duration is not None else None,
             confidence=payload.get("confidence"),
             provider_request_id=str(payload.get("id") or "") or None,
+        )
+
+    # --- dictation (one-shot verbatim + cleaned rewrite) ---
+    #
+    # Live-probed 2026-09-17 against dictation.assemblyai.com (a different
+    # host from the REST and streaming APIs, carried in the catalog op):
+    # a multipart POST with a JSON config part and a wav/pcm audio part
+    # answers, in one round trip, `text` (the verbatim transcript, never
+    # LLM-altered), `words` with per-word confidence but no timing,
+    # overall `confidence`, `audio_duration_ms`, `session_id`, the
+    # server-side `request_time_ms`, and `llm_response`/`llm_error` (the
+    # cleaned rewrite, which runs by default and returns null on a rewrite
+    # timeout while the transcript still returns). Unknown config fields
+    # are rejected with a 400 naming the field.
+
+    _DICTATION_AUDIO_TYPES = ("audio/wav", "audio/pcm")
+
+    def build_dictation_spec(self, request: DictationRequest) -> RequestSpec:
+        media_type = media_type_for(
+            request, kind="audio", provider=self.resolved.provider
+        )
+        if media_type not in self._DICTATION_AUDIO_TYPES:
+            raise KeyCallError(
+                f"{self.resolved.provider}'s dictation endpoint takes 16-bit "
+                "PCM audio only, as audio/wav or audio/pcm; it refuses "
+                f"compressed formats (got {media_type!r}). Decode to WAV or "
+                "raw PCM, or pass media_type='audio/pcm' for a raw stream",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.resolved.provider,
+                operation=Operation.DICTATION.value,
+            )
+        config: dict[str, Any] = {}
+        if request.language:
+            config["language_codes"] = [request.language]
+        if request.context_prompt:
+            config["stt_prompt"] = request.context_prompt
+        if request.keyterms:
+            config["keyterms_prompt"] = list(request.keyterms)
+        if request.cleanup_instruction:
+            config["llm_instruction"] = request.cleanup_instruction
+        op = self.resolved.operations["dictation"]
+        filename = "audio." + (media_type.split("/")[-1] or "bin")
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"],
+            host=op.get("host"),
+            multipart=(
+                ("config", None, json.dumps(config).encode(), "application/json"),
+                ("audio", filename, request.data, media_type),
+            ),
+        )
+
+    def translate_error(self, status_code: int, payload: Any) -> tuple[Any, bool, str]:
+        # The dictation host reports errors as {status, title, detail}, not
+        # the {error: {message}} shape the base translator reads, so its
+        # actionable text (an over-long clip, a rejected config field) would
+        # otherwise be dropped for a bare "unexpected status". Keep the
+        # base's status->code mapping; prefer the provider's own detail for
+        # the message where it sends one.
+        code, retryable, message = super().translate_error(status_code, payload)
+        if isinstance(payload, dict):
+            detail = payload.get("detail")
+            if isinstance(detail, str) and detail:
+                title = payload.get("title")
+                message = (
+                    f"{title}: {detail}" if isinstance(title, str) and title else detail
+                )
+        return code, retryable, message
+
+    def parse_dictation_response(
+        self,
+        payload: Any,
+        *,
+        headers: Any,
+        round_trip_duration_ms: float,
+    ) -> DictationResult:
+        if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+            raise KeyCallError(
+                "dictation response carried no transcript",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.resolved.provider,
+                operation=Operation.DICTATION.value,
+            )
+        words = tuple(
+            DictationWord(
+                text=str(word.get("text", "")),
+                confidence=word.get("confidence"),
+            )
+            for word in payload.get("words") or []
+            if isinstance(word, dict)
+        )
+        cleaned = payload.get("llm_response")
+        cleanup_error = payload.get("llm_error")
+        warnings: tuple[str, ...] = ()
+        if cleaned is None and cleanup_error:
+            warnings = (
+                (
+                    f"the provider's cleanup rewrite failed ({cleanup_error}); the "
+                    "verbatim transcript is present, the cleaned text is not"
+                ),
+            )
+        duration = payload.get("audio_duration_ms")
+        processing = payload.get("request_time_ms")
+        return DictationResult(
+            verbatim=payload["text"],
+            cleaned=str(cleaned) if isinstance(cleaned, str) else None,
+            cleanup_error=str(cleanup_error) if cleanup_error else None,
+            words=words,
+            confidence=payload.get("confidence"),
+            audio_duration_ms=int(duration) if duration is not None else None,
+            provider_request_id=str(payload.get("session_id") or "") or None,
+            provider_processing_ms=float(processing) if processing is not None else None,
+            round_trip_duration_ms=round_trip_duration_ms,
+            warnings=warnings,
         )
 
 

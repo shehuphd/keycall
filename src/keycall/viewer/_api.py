@@ -47,6 +47,7 @@ __all__ = [
     "browse_models",
     "check_target",
     "clear_conversations",
+    "dictate",
     "error_body",
     "generate",
     "generate_image",
@@ -89,6 +90,45 @@ def _transcription_wires(provider: str) -> dict[str, list[str]]:
     return wires if (wires["streaming"] or wires["prerecorded"]) else {}
 
 
+def _capability_flags(caps: Any) -> dict[str, Any]:
+    """The per-provider flags the Playground gates its controls on, read
+    from the same catalog capabilities the adapters gate on, so a control
+    can disable itself on a key switch instead of failing after a billable
+    round trip."""
+    return {
+        "web_search": caps.web_search,
+        "tool_calling": caps.tool_calling,
+        "image_generation": caps.image_generation,
+        "video_generation": caps.video_generation,
+        "reasoning_effort": caps.reasoning_effort,
+        # Whether the provider accepts the narrower "minimal" level, a
+        # subset of reasoning_effort that not every reasoning provider
+        # takes (OpenAI and DeepSeek do).
+        "reasoning_effort_minimal": caps.reasoning_effort_minimal,
+        "prompt_caching": caps.prompt_caching,
+        "realtime": caps.realtime,
+        "speech_generation": caps.speech_generation,
+        # Whether the provider's generation API takes a seed at all.
+        # Provider-level, so the seed input gates on a key switch.
+        "supports_seed": caps.supports_seed,
+        # Keyed by the model category name rather than the capability
+        # flag's, so the page can use one string for both the provider
+        # gate and the model-list filter, the same way "realtime" already
+        # doubles for voice.
+        "transcription": caps.streaming_transcription,
+        # File transcription is its own flag: a provider can serve one
+        # transcription wire and not the other (OpenAI has no streaming
+        # STT), and the two Playground tasks gate on their own wire.
+        "file_transcription": caps.transcription,
+        "transcription_url_input": caps.transcription_url_input,
+        "transcription_diarization": caps.transcription_diarization,
+        # One-shot dictation (verbatim plus a cleaned rewrite), its own
+        # flag: it has no model to pick, so the task gates on the provider
+        # alone.
+        "dictation": caps.dictation,
+    }
+
+
 def error_body(error: KeyCallError) -> dict[str, Any]:
     return {
         "error": {
@@ -114,38 +154,24 @@ def list_targets(registry: Registry) -> dict[str, Any]:
         # Per-provider capability flags, read from the same catalog the
         # adapters gate on, so every Playground control can gate itself on
         # a key switch instead of failing after a billable round trip.
+        # Every catalog provider, plus each loaded custom target under its
+        # own provider name: a custom endpoint has a fixed, mostly-off
+        # profile (text and tools), and leaving it out of this map read as
+        # "unknown, serves everything", so it was offered for tasks it can
+        # never run.
         "provider_capabilities": {
-            name: {
-                "web_search": caps.web_search,
-                "tool_calling": caps.tool_calling,
-                "image_generation": caps.image_generation,
-                "video_generation": caps.video_generation,
-                "reasoning_effort": caps.reasoning_effort,
-                # Whether the provider accepts the narrower "minimal" level,
-                # a subset of reasoning_effort that not every reasoning
-                # provider takes (OpenAI and DeepSeek do).
-                "reasoning_effort_minimal": caps.reasoning_effort_minimal,
-                "prompt_caching": caps.prompt_caching,
-                "realtime": caps.realtime,
-                "speech_generation": caps.speech_generation,
-                # Whether the provider's generation API takes a seed at all.
-                # Provider-level, so the seed input gates on a key switch.
-                "supports_seed": caps.supports_seed,
-                # Keyed by the model category name rather than the
-                # capability flag's, so the page can use one string for
-                # both the provider gate and the model-list filter, the
-                # same way "realtime" already doubles for voice.
-                "transcription": caps.streaming_transcription,
-                # File transcription is its own flag: a provider can serve
-                # one transcription wire and not the other (OpenAI has no
-                # streaming STT), and the two Playground tasks gate on
-                # their own wire.
-                "file_transcription": caps.transcription,
-                "transcription_url_input": caps.transcription_url_input,
-                "transcription_diarization": caps.transcription_diarization,
-            }
-            for name in supported_providers()
-            for caps in (resolve_provider(name).capabilities,)
+            **{
+                name: _capability_flags(resolve_provider(name).capabilities)
+                for name in supported_providers()
+            },
+            **{
+                view.provider: _capability_flags(
+                    registry.client(view.id)._resolved.capabilities
+                )
+                for view in registry.views()
+                if view.provider not in supported_providers()
+                and view.kind != "service"
+            },
         },
         # Which wire each catalog transcription model serves, for the two
         # transcribe tasks' model pickers: the model category alone can't
@@ -882,6 +908,64 @@ def transcribe_file(registry: Registry, target_id: int, body: dict[str, Any]) ->
         "confidence": result.confidence,
         "usage": dataclasses.asdict(result.usage) if result.usage else None,
         "provider_request_id": result.provider_request_id,
+        "round_trip_duration_ms": result.round_trip_duration_ms,
+        "warnings": list(result.warnings),
+    }
+
+
+def dictate(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """One short recording in, its verbatim transcript and cleaned rewrite
+    out, through the same `client.dictate()` a library caller uses. One
+    round trip on the one provider that serves it; there is no model to
+    pick, so the body carries the audio and the optional steering inputs
+    only."""
+    try:
+        client = registry.client(target_id)
+    except KeyError:
+        return {"error": {"code": "not_found", "message": "unknown target id"}}
+
+    encoded = body.get("audio_base64")
+    if not encoded or not isinstance(encoded, str):
+        return {"error": {"code": "bad_request", "message": "audio_base64 is required"}}
+    try:
+        audio = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, TypeError, ValueError) as error:
+        return {"error": {"code": "bad_request", "message": f"audio_base64: {error}"}}
+
+    context_prompt = body.get("context_prompt")
+    if context_prompt is not None and not isinstance(context_prompt, str):
+        return {"error": {"code": "bad_request", "message": "context_prompt must be a string"}}
+    raw_terms = body.get("keyterms") or []
+    if not isinstance(raw_terms, list) or any(not isinstance(t, str) for t in raw_terms):
+        return {"error": {"code": "bad_request", "message": "keyterms must be a list of strings"}}
+    keyterms = [t.strip() for t in raw_terms if t.strip()]
+    media_type = body.get("media_type")
+    if media_type is not None and not isinstance(media_type, str):
+        return {"error": {"code": "bad_request", "message": "media_type must be a string"}}
+
+    try:
+        result = client.dictate(
+            audio=audio,
+            media_type=media_type or None,
+            context_prompt=context_prompt or None,
+            keyterms=keyterms,
+        )
+    except (ValueError, TypeError) as error:
+        return {"error": {"code": "bad_request", "message": str(error)}}
+    except KeyCallError as error:
+        return error_body(error)
+
+    return {
+        "verbatim": result.verbatim,
+        "cleaned": result.cleaned,
+        "cleanup_error": result.cleanup_error,
+        "words": [
+            {"text": word.text, "confidence": word.confidence} for word in result.words
+        ],
+        "confidence": result.confidence,
+        "audio_duration_ms": result.audio_duration_ms,
+        "provider_request_id": result.provider_request_id,
+        "provider_processing_ms": result.provider_processing_ms,
         "round_trip_duration_ms": result.round_trip_duration_ms,
         "warnings": list(result.warnings),
     }

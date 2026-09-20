@@ -114,6 +114,15 @@ class RequestSpec:
     # header is dropped so the HTTP client can set the multipart boundary.
     file_upload: tuple[str, str, bytes, str] | None = None
     form_fields: Mapping[str, str] = field(default_factory=dict)
+    # A general multipart/form-data body: an ordered tuple of parts, each
+    # (field name, filename or None, content bytes, content type or None).
+    # A None filename renders a plain field; a content type is emitted when
+    # set (AssemblyAI's dictation sends a JSON config part beside the audio
+    # part, each with its own type). When set, json_body must be None and
+    # the JSON Content-Type header is dropped so the client sets the
+    # multipart boundary. Mutually exclusive with json_body, file_upload,
+    # binary_body, and form_fields.
+    multipart: tuple[tuple[str, str | None, bytes, str | None], ...] | None = None
     # A raw binary request body as (content bytes, content type) — the
     # shape Deepgram's prerecorded listen and AssemblyAI's upload take.
     # Mutually exclusive with json_body and file_upload.
@@ -285,7 +294,21 @@ def _build_request_kwargs(
         "params": dict(spec.params) or None,
         "headers": headers,
     }
-    if spec.file_upload is not None:
+    if spec.multipart is not None:
+        headers.pop("Content-Type", None)
+        # A list of (name, tuple) pairs, not a dict: the parts keep their
+        # order (some endpoints require the config part first) and two
+        # parts may share a field name.
+        kwargs["files"] = [
+            (
+                name,
+                (filename, content, content_type)
+                if content_type is not None
+                else (filename, content),
+            )
+            for name, filename, content, content_type in spec.multipart
+        ]
+    elif spec.file_upload is not None:
         field_name, filename, content, media_type = spec.file_upload
         headers.pop("Content-Type", None)
         kwargs["files"] = {field_name: (filename, content, media_type)}

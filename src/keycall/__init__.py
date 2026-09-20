@@ -26,6 +26,9 @@ from ._types import (
     Citation,
     CitationFound,
     CodeExecutionOutput,
+    DictationRequest,
+    DictationResult,
+    DictationWord,
     EmbeddingOutput,
     EmbeddingRequest,
     FileInput,
@@ -102,7 +105,7 @@ from ._types import (
     WithheldModel,
 )
 
-__version__ = "1.15.0"
+__version__ = "1.16.0"
 
 __all__ = [
     "AliasFact",
@@ -122,6 +125,9 @@ __all__ = [
     "Citation",
     "CitationFound",
     "CodeExecutionOutput",
+    "DictationRequest",
+    "DictationResult",
+    "DictationWord",
     "EmbeddingOutput",
     "EmbeddingRequest",
     "ErrorCode",

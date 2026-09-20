@@ -93,6 +93,10 @@ class ProviderCapabilities:
     transcription_url_input: bool = False
     transcription_diarization: bool = False
     streaming_diarization: bool = False
+    # One-shot dictation: a short utterance answered in a single request
+    # with a verbatim transcript and a cleaned rewrite (AssemblyAI's
+    # dictation endpoint), served by dictate().
+    dictation: bool = False
     embeddings: bool = False
     image_generation: bool = False
     speech_generation: bool = False
@@ -254,6 +258,7 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
         transcription_url_input=bool(raw.get("transcription_url_input", False)),
         transcription_diarization=bool(raw.get("transcription_diarization", False)),
         streaming_diarization=bool(raw.get("streaming_diarization", False)),
+        dictation=bool(raw.get("dictation", False)),
         prompt_caching=bool(raw.get("prompt_caching", False)),
         schema_enforcement=raw.get("schema_enforcement"),
         sampling_constraints=tuple(

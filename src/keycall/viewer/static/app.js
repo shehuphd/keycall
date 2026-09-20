@@ -617,9 +617,12 @@ function modeCategory(mode) {
 // The provider capability flag the task gates on. Usually the category
 // name itself; the two transcribe tasks share one model category but gate
 // on their own wire's flag (OpenAI transcribes files and has no streaming
-// STT at all).
+// STT at all). Dictation has no model category at all (the endpoint has
+// one fixed model), so it gates on the provider flag alone.
 function modeCapability(mode) {
-  return mode === "transcribe-file" ? "file_transcription" : modeCategory(mode);
+  return mode === "transcribe-file" ? "file_transcription"
+    : mode === "dictate" ? "dictation"
+    : modeCategory(mode);
 }
 
 // "targetId:category" -> whether that key's own model list has at least
@@ -960,6 +963,21 @@ async function loadPlaygroundModels() {
     sel.disabled = true;
     updateSendEnabled();
     updateSttRunEnabled();
+    updateDictateRunEnabled();
+    return;
+  }
+  if (currentMode() === "dictate") {
+    // Nothing to fetch: the dictation endpoint has one fixed model and no
+    // choice to offer. The row is hidden by applyMode; the select still
+    // holds a placeholder so nothing reads a stale model id off it.
+    const sel = el("pg-model");
+    clear(sel);
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "—";
+    sel.appendChild(none);
+    sel.disabled = true;
+    updateDictateRunEnabled();
     return;
   }
   const category = modeCategory(currentMode()) || "text_generation";
@@ -1212,25 +1230,30 @@ async function applyMode() {
   const voice = currentMode() === "voice";
   const transcribe = currentMode() === "transcribe";
   const sttFile = currentMode() === "transcribe-file";
-  el("pg-extras").hidden = image || video || speech || voice || transcribe || sttFile;
-  el("pg-maxtok-row").hidden = image || video || speech || voice || transcribe || sttFile;
+  const dictate = currentMode() === "dictate";
+  const nonText = image || video || speech || voice || transcribe || sttFile || dictate;
+  el("pg-extras").hidden = nonText;
+  el("pg-maxtok-row").hidden = nonText;
   // Neither generate_image() nor generate_video() sends reasoning_effort
   // at all (their requests are model + prompt, nothing else), so the
   // control would silently do nothing if left up rather than refusing.
-  el("pg-reasoning-row").hidden = image || video || speech || voice || transcribe || sttFile;
+  el("pg-reasoning-row").hidden = nonText;
   // Temperature and seed ride generate_text/stream_text only; the picture,
-  // video, speech, voice, and transcription tasks build their own requests
-  // without them, so the controls would do nothing if left up.
-  const nonText = image || video || speech || voice || transcribe || sttFile;
+  // video, speech, voice, transcription, and dictation tasks build their
+  // own requests without them, so the controls would do nothing if left up.
   el("pg-temperature-row").hidden = nonText;
   el("pg-seed-row").hidden = nonText;
-  // Transcription has no instructions either: the session takes audio in
-  // and gives words back, with no prompt anywhere in it.
-  el("pg-system-row").hidden = image || video || speech || transcribe || sttFile;
+  // Transcription and dictation have no instructions either: audio in,
+  // words back, with no prompt anywhere in it (dictation's steering
+  // fields are its own, below).
+  el("pg-system-row").hidden = image || video || speech || transcribe || sttFile || dictate;
   // The cache marker only reaches generate_text/stream_text; voice runs
   // over its own realtime connection, a different protocol the marker
   // never touches, so the toggle would silently do nothing there.
-  el("pg-cache-row").hidden = image || video || speech || voice || transcribe || sttFile;
+  el("pg-cache-row").hidden = nonText;
+  // Dictation has no model to pick: the endpoint has one. Hiding the row
+  // beats a disabled select with nothing in it.
+  el("pg-model-row").hidden = dictate;
   el("pg-image-mode-note").hidden = !image;
   el("pg-speech-mode-note").hidden = !speech;
   el("pg-voice-row").hidden = !speech;
@@ -1239,26 +1262,32 @@ async function applyMode() {
   el("pg-transcribe-mode-note").hidden = !transcribe;
   el("pg-stt-mode-note").hidden = !sttFile;
   el("pg-stt-diarize-row").hidden = !sttFile;
+  el("pg-dictate-mode-note").hidden = !dictate;
+  el("pg-dictate-context-row").hidden = !dictate;
+  el("pg-dictate-keyterms-row").hidden = !dictate;
   el("pg-video-duration-row").hidden = !video;
   if (!video) el("pg-video-duration-warning").hidden = true;
   // An image or video model takes a description and nothing else, so a
   // microphone in the composer would only offer something that cannot be
-  // sent. Voice and transcribe sessions each have their own microphone
+  // sent. Voice, transcribe, and dictate each have their own microphone
   // control, in their own panel.
-  el("pg-mic").hidden = image || video || speech || voice || transcribe || sttFile;
-  el("pg-composer").hidden = voice || transcribe || sttFile;
-  el("pg-composer-hint").hidden = voice || transcribe || sttFile;
+  el("pg-mic").hidden = nonText;
+  el("pg-composer").hidden = voice || transcribe || sttFile || dictate;
+  el("pg-composer-hint").hidden = voice || transcribe || sttFile || dictate;
   el("pg-voice-panel").hidden = !voice;
   el("pg-transcribe-panel").hidden = !transcribe;
   el("pg-stt-panel").hidden = !sttFile;
+  el("pg-dictate-panel").hidden = !dictate;
   // Leaving a session mode ends any session in progress rather than
   // leaving a WebSocket open behind a panel nothing points at any more.
   if (!voice) endVoiceSession();
   if (!transcribe) endTranscribeSession();
-  // A clip queued for file transcription belongs to that task; leaving it
-  // behind an invisible panel would silently resend it on return.
+  // A clip queued for file transcription or dictation belongs to that
+  // task; leaving it behind an invisible panel would silently resend it
+  // on return.
   if (!sttFile) clearSttSource();
-  if ((image || video || speech || voice || transcribe || sttFile) && REC) discardRecording();
+  if (!dictate) clearDictateSource();
+  if (nonText && REC) discardRecording();
   el("pg-prompt").placeholder = image
     ? `Describe the picture you want. Press Send, or ${MOD_KEY}+Enter.`
     : video
@@ -2415,6 +2444,188 @@ function addTranscriptBubble(result) {
   return bubble;
 }
 
+// --- dictation -------------------------------------------------------------
+
+// The one clip queued for dictation, same shape as PG_STT_FILE. A recording
+// carries its measured envelope; a picked WAV gets no invented contour.
+let PG_DICTATE_FILE = null;
+
+function setDictateStatus(text) {
+  el("pg-dictate-status").textContent = text;
+}
+
+function showDictateAttached(blob, label) {
+  const preview = el("pg-dictate-preview");
+  if (preview.src) URL.revokeObjectURL(preview.src);
+  preview.src = URL.createObjectURL(blob);
+  el("pg-dictate-attached").hidden = false;
+  el("pg-dictate-attached").querySelector(".pg-attached-label").textContent = label;
+}
+
+function clearDictateSource() {
+  PG_DICTATE_FILE = null;
+  el("pg-dictate-file").value = "";
+  const preview = el("pg-dictate-preview");
+  if (preview.src) URL.revokeObjectURL(preview.src);
+  preview.removeAttribute("src");
+  el("pg-dictate-attached").hidden = true;
+  updateDictateRunEnabled();
+}
+
+el("pg-dictate-file").addEventListener("change", () => {
+  const file = el("pg-dictate-file").files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const encoded = String(reader.result).split(",")[1] || "";
+    PG_DICTATE_FILE = {
+      data_base64: encoded,
+      media_type: file.type || undefined,
+      label: `${file.name} · ${humanSize(file.size)}`,
+      shape: null,
+    };
+    showDictateAttached(file, `${file.name} · ${humanSize(file.size)}`);
+    setDictateStatus("file ready — press Dictate");
+    updateDictateRunEnabled();
+  };
+  reader.onerror = () => {
+    PG_DICTATE_FILE = null;
+    setDictateStatus("could not read that file — pick it again");
+  };
+  reader.readAsDataURL(file);
+});
+
+el("pg-dictate-mic").addEventListener("click", () => {
+  if (!REC) startRecording();
+});
+
+el("pg-dictate-remove").addEventListener("click", () => {
+  clearDictateSource();
+  setDictateStatus("Tap the microphone and say your note, or pick a WAV file.");
+});
+
+el("pg-dictate-new").addEventListener("click", startNewConversation);
+el("pg-dictate-run").addEventListener("click", runDictation);
+
+function updateDictateRunEnabled() {
+  const btn = el("pg-dictate-run");
+  const hasKey = Boolean(el("pg-target").value);
+  const hasSource = Boolean(PG_DICTATE_FILE);
+  btn.disabled = !hasKey || !hasSource;
+  btn.title = !hasKey
+    ? "Pick a key on the left first"
+    : !hasSource
+    ? "Record a note or pick a WAV file first"
+    : "";
+}
+
+// "a, b,, c" -> ["a", "b", "c"]: the comma-separated field, trimmed, with
+// blanks dropped, so a trailing comma never sends an empty term.
+function dictateKeyterms() {
+  return el("pg-dictate-keyterms").value
+    .split(",")
+    .map((term) => term.trim())
+    .filter(Boolean);
+}
+
+async function runDictation() {
+  const targetId = el("pg-target").value;
+  if (!targetId) {
+    setDictateStatus("pick a key first");
+    return;
+  }
+  if (!PG_DICTATE_FILE) {
+    setDictateStatus("record a note or pick a WAV file first");
+    return;
+  }
+  clearTranscriptPlaceholder();
+  const turn = addBubble("user");
+  turn.appendChild(playableWaveform(PG_DICTATE_FILE.shape, PG_DICTATE_FILE));
+  const note = document.createElement("div");
+  note.className = "meta";
+  note.textContent = PG_DICTATE_FILE.label;
+  turn.appendChild(note);
+
+  const btn = el("pg-dictate-run");
+  working(btn, "Dictating…");
+  // No model is asked for, so there is none to mark refused on a
+  // model-scoped error; the refused-model memory has nothing to learn here.
+  PG_LAST_REQUEST = null;
+  const placeholder = addBubble("model");
+  placeholder.textContent = "Dictating…";
+  const body = {
+    target: Number(targetId),
+    audio_base64: PG_DICTATE_FILE.data_base64,
+    media_type: PG_DICTATE_FILE.media_type,
+    context_prompt: el("pg-dictate-context").value.trim() || null,
+    keyterms: dictateKeyterms(),
+  };
+  const data = await api("/api/dictate", { method: "POST", body });
+  placeholder.remove();
+  done(btn);
+  if (data.error) {
+    renderGeneration(addBubble("model"), data);
+    setDictateStatus("that didn't work — the reply above says why");
+    updateDictateRunEnabled();
+    return;
+  }
+  addDictationBubble(data);
+  // The clip belongs to the turn just sent; the steering fields stay for
+  // the next note.
+  clearDictateSource();
+  setDictateStatus("done — record another note");
+  saveCurrentConversation(data.cleaned || data.verbatim);
+}
+
+// Two outputs from one call. The cleaned rewrite leads, since it is the
+// one a person would paste somewhere; the words as spoken follow, labelled,
+// so the two can be compared. When the rewrite failed the verbatim text
+// leads alone and the result's own warning says why.
+function addDictationBubble(result) {
+  const bubble = addBubble("model");
+  const cleaned = typeof result.cleaned === "string" && result.cleaned;
+  const verbatim = result.verbatim || "(no words recognized)";
+
+  const lead = document.createElement("div");
+  lead.className = "result-text";
+  lead.textContent = cleaned || verbatim;
+  bubble.appendChild(lead);
+
+  if (cleaned) {
+    const spoken = document.createElement("div");
+    spoken.className = "pg-dictation-spoken";
+    const label = document.createElement("strong");
+    label.textContent = "As spoken: ";
+    spoken.appendChild(label);
+    spoken.appendChild(document.createTextNode(verbatim));
+    bubble.appendChild(spoken);
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const parts = [cleaned ? "cleaned" : "as spoken only"];
+  if (result.round_trip_duration_ms != null) {
+    parts.push(formatDuration(result.round_trip_duration_ms));
+  }
+  if (result.audio_duration_ms != null) {
+    parts.push(`${(result.audio_duration_ms / 1000).toFixed(1)}s of audio billed`);
+  }
+  if (typeof result.confidence === "number") {
+    parts.push(`confidence ${(result.confidence * 100).toFixed(0)}%`);
+  }
+  const words = result.words || [];
+  if (words.length) parts.push(`${words.length} word${words.length === 1 ? "" : "s"}`);
+  meta.textContent = parts.join(" · ");
+  bubble.appendChild(meta);
+  (result.warnings || []).forEach((warning) => {
+    const note = document.createElement("div");
+    note.className = "meta";
+    note.textContent = warning;
+    bubble.appendChild(note);
+  });
+  return bubble;
+}
+
 function openLightbox(source) {
   const overlay = document.createElement("div");
   overlay.className = "lightbox";
@@ -2905,10 +3116,12 @@ let REC = null; // {stream, context, node, source, analyser, chunks, started, ti
 // The composer and the recording bar occupy the same place and never show at
 // once: while recording, the only two things to decide are keep or discard.
 function recordingUI(active) {
-  // In the file-transcription task the recorder replaces that task's own
-  // panel instead; the composer is hidden there either way.
+  // In the file-transcription and dictation tasks the recorder replaces
+  // that task's own panel instead; the composer is hidden there either way.
   if (currentMode() === "transcribe-file") {
     el("pg-stt-panel").hidden = active;
+  } else if (currentMode() === "dictate") {
+    el("pg-dictate-panel").hidden = active;
   } else {
     el("pg-composer").hidden = active;
     el("pg-composer-hint").hidden = active;
@@ -2917,6 +3130,7 @@ function recordingUI(active) {
   // Picking a file mid-recording would leave two sources of truth.
   el("pg-audio-file").disabled = active;
   el("pg-stt-file").disabled = active;
+  el("pg-dictate-file").disabled = active;
   if (active) el("pg-rec-accept").focus();
 }
 
@@ -2946,13 +3160,18 @@ async function startRecording() {
     });
   } catch (err) {
     // Denied, dismissed, or no microphone at all. Say which, because "it
-    // didn't work" leaves someone poking at the button.
-    el("pg-audio-status").textContent =
+    // didn't work" leaves someone poking at the button. Written to the
+    // status line of whichever panel holds the microphone that was
+    // tapped, so the message lands where the person is looking.
+    const message =
       err && err.name === "NotAllowedError"
         ? "your browser blocked microphone access, allow it for this page and try again"
         : err && err.name === "NotFoundError"
           ? "no microphone found on this computer"
           : `could not start recording (${(err && err.name) || "unknown error"})`;
+    if (currentMode() === "transcribe-file") setSttStatus(message);
+    else if (currentMode() === "dictate") setDictateStatus(message);
+    else el("pg-audio-status").textContent = message;
     return;
   }
   const context = new (window.AudioContext || window.webkitAudioContext)();
@@ -3078,7 +3297,10 @@ function stopRecording() {
 
   const samples = downsample(flatten(chunks), rate, REC_SAMPLE_RATE);
   if (!samples.length) {
-    el("pg-audio-status").textContent = "nothing was recorded — try again";
+    const message = "nothing was recorded — try again";
+    if (currentMode() === "transcribe-file") setSttStatus(message);
+    else if (currentMode() === "dictate") setDictateStatus(message);
+    else el("pg-audio-status").textContent = message;
     return;
   }
   const wav = encodeWav(samples, REC_SAMPLE_RATE);
@@ -3100,6 +3322,24 @@ function stopRecording() {
     );
     setSttStatus("recording ready — press Transcribe");
     updateSttRunEnabled();
+    return;
+  }
+  if (currentMode() === "dictate") {
+    // Same shape as the file-transcription slot: the clip is this task's
+    // input, not a chat attachment.
+    PG_DICTATE_FILE = {
+      data_base64: base64OfBytes(wav),
+      media_type: "audio/wav",
+      label: `recording · ${clockText(Math.round(seconds))}`,
+      shape: envelopeOf(samples),
+    };
+    el("pg-dictate-file").value = "";
+    showDictateAttached(
+      new Blob([wav], { type: "audio/wav" }),
+      `Recording attached · ${clockText(Math.round(seconds))} · ${humanSize(wav.byteLength)}`
+    );
+    setDictateStatus("recording ready — press Dictate");
+    updateDictateRunEnabled();
     return;
   }
   PG_MEDIA.audio = { data_base64: base64OfBytes(wav), media_type: "audio/wav" };
@@ -3593,6 +3833,7 @@ function gateCapabilities(off) {
   taskGate("voice", "realtime", "hold a voice conversation");
   taskGate("transcribe", "transcription", "transcribe speech live");
   taskGate("transcribe-file", "file_transcription", "transcribe a recording");
+  taskGate("dictate", "dictation", "dictate a short note");
 }
 
 // One pass over everything a key switch can invalidate, ending in a
@@ -3602,6 +3843,9 @@ function applyKeyGates() {
   gateAttachments(off);
   gateCapabilities(off);
   gateSttControls(off);
+  // Dictation has no per-provider sub-controls to gate, only a Dictate
+  // button that needs a key on the left.
+  updateDictateRunEnabled();
   if (off.length) {
     const target = TARGETS.find((t) => String(t.id) === el("pg-target").value);
     const who = target ? `this ${target.provider} key` : "this key";
@@ -3657,7 +3901,7 @@ let PG_CONVERSATION_TITLE = null;
 // writing its id back over the conversation now open.
 let PG_CONVERSATION_EPOCH = 0;
 
-const PG_MODE_LABELS = { text: "Text", image: "Picture", video: "Video", speech: "Speech", voice: "Voice", transcribe: "Live transcript", "transcribe-file": "Transcript" };
+const PG_MODE_LABELS = { text: "Text", image: "Picture", video: "Video", speech: "Speech", voice: "Voice", transcribe: "Live transcript", "transcribe-file": "Transcript", dictate: "Dictation" };
 
 function deriveConversationTitle(promptText) {
   const text = (promptText || "").trim();
@@ -4452,6 +4696,7 @@ const TRACE_ROUTE_LABELS = {
   "/api/generate/speech": "Speech",
   "/api/generate/video": "Video",
   "/api/transcribe/file": "File transcription",
+  "/api/dictate": "Dictation",
   "/api/verify": "Verify",
   "/api/models": "Model list",
 };

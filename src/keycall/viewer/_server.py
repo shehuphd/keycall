@@ -19,6 +19,8 @@ Routes (all under the base "/"):
   POST /api/generate/speech      {target, model, text, voice?} -> InvocationResult
   POST /api/transcribe/file      {target, model, audio_base64|url, diarize?}
                                   -> transcript with word timings and billing
+  POST /api/dictate              {target, audio_base64, context_prompt?, keyterms?}
+                                  -> verbatim transcript plus a cleaned rewrite
   GET  /api/voices?target=       the target's voices for the speech task's picker
   GET  /api/traces               every request outcome this run has logged
   GET  /api/realtime?target=&model=&voice=&instructions=   WebSocket upgrade;
@@ -740,6 +742,11 @@ class _Handler(BaseHTTPRequestHandler):
             # within the same call.
             started = time.monotonic()
             result = _api.transcribe_file(self._registry, target_id, body)
+            self._record(route=route, method="POST", started=started, body=body, result=result)
+            self._send_json(result)
+        elif route == "/api/dictate":
+            started = time.monotonic()
+            result = _api.dictate(self._registry, target_id, body)
             self._record(route=route, method="POST", started=started, body=body, result=result)
             self._send_json(result)
         elif route == "/api/generate/stream":

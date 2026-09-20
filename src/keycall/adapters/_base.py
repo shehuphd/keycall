@@ -24,6 +24,8 @@ from .._types import (
     BatchJob,
     Citation,
     CodeExecutionOutput,
+    DictationRequest,
+    DictationResult,
     EmbeddingOutput,
     ImageOutput,
     InvocationResult,
@@ -1038,6 +1040,35 @@ class ProviderAdapter(ABC):
         self, payload: Any, *, job: TranscriptionJob
     ) -> TranscriptionResult:
         raise self._transcription_gate()
+
+    # --- dictation ---
+    #
+    # One HTTP round trip: a short utterance answered with a verbatim
+    # transcript and a cleaned rewrite in a single response. Distinct from
+    # transcription, which serves a stored file and reports word timings;
+    # dictation is tuned for a live typed-input feel and reports none.
+
+    def _dictation_gate(self) -> KeyCallError:
+        return KeyCallError(
+            f"provider {self.resolved.provider!r} has no dictation API; "
+            "dictate is supported on: "
+            + ", ".join(sorted(providers_with("dictation"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.DICTATION.value,
+        )
+
+    def build_dictation_spec(self, request: DictationRequest) -> RequestSpec:
+        raise self._dictation_gate()
+
+    def parse_dictation_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+    ) -> DictationResult:
+        raise self._dictation_gate()
 
     def video_result(
         self,

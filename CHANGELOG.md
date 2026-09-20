@@ -4,6 +4,23 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] — 2026-09-17
+
+### Added
+
+- **`dictate()`: one-shot dictation on AssemblyAI.** A short spoken utterance comes back in a single round trip as both a verbatim transcript and a cleaned rewrite. `client.dictate(audio=..., context_prompt=..., keyterms=[...], language=..., cleanup_instruction=...)` takes 16-bit PCM audio (WAV, or raw PCM with `media_type="audio/pcm"`), primes recognition with a context description and keyterm list, and returns a `DictationResult`: `verbatim` (the words as spoken, never altered), `cleaned` (the provider's rewrite, present by default), `words` with per-word confidence, an overall `confidence`, `audio_duration_ms`, and the provider's own request id and processing time. A cleanup that fails leaves `cleaned` as `None`, sets `cleanup_error`, and adds a warning while `verbatim` still returns. Sync and async. Compressed audio refuses before the call, naming the accepted formats; every provider without the endpoint refuses toward AssemblyAI. New public types: `DictationRequest`, `DictationResult`, `DictationWord`.
+- **The Playground has a Dictate a short note task.** Tap the microphone and say a note (up to two minutes), or pick a WAV file, press Dictate, and the reply shows the cleaned rewrite with the words as spoken beneath it, plus the confidence and the seconds of audio billed. Two optional fields describe what the note is about and list words to listen for. There is no model to pick, so the task gates its keys on the provider alone.
+
+### Fixed
+
+- **A custom endpoint's key no longer appears for tasks it can't run.** The viewer's per-provider capability map covered catalog providers only, so a custom openai-compatible target read as "unknown, serves everything" and was offered for picture, video, voice, transcription, and dictation tasks that would have failed after a round trip. The map now carries a row for every loaded custom target, from its own profile.
+- **The viewer fits a phone.** At 375px the Playground laid out at about 600px and the whole page scrolled sideways: the stacked layout's column took its minimum width from a composer row that can't wrap, and the five tab labels ran off the edge. The column now floors at zero, composer rows wrap on a phone (the input takes the full width, the buttons follow beneath), the tab bar scrolls inside itself, the stacked order reads settings, then conversation, then history (the wide layout still puts history on the left), and every icon button is a 44px touch target.
+- **Microphone errors land in the panel that was tapped.** A blocked or missing microphone in the Transcribe a recording task wrote its message to the hidden chat composer; it now reaches that task's own status line, and the same holds for dictation.
+
+### Notes
+
+- **The dictation wire was probed end to end.** AssemblyAI's dictation endpoint shipped 2026-09-17, and that day a full request worked against `dictation.assemblyai.com/v1/transcribe/live` (a different host from the REST and streaming APIs, carried in the catalog): a multipart POST with a JSON config part and a wav/pcm audio part (up to 120 seconds) answers `text` (verbatim), `words[]` carrying per-word confidence but no timing, overall `confidence`, `audio_duration_ms`, `session_id`, `request_time_ms`, and `llm_response`/`llm_error` (the cleaned rewrite, on by default, `null` on a five-second rewrite timeout while the transcript still returns). The config takes optional `language_codes`, `stt_prompt`, `keyterms_prompt`, and `llm_instruction`; an unknown config field is rejected with a `400` naming it, which a committed-fixture drift probe uses to hold the wire to this shape on every release.
+
 ## [1.15.0] — 2026-09-14
 
 ### Added
@@ -604,6 +621,7 @@ First release. Key validation, model discovery and filtering, and text generatio
 - Perplexity's Sonar models aren't API-discoverable and are maintained in the bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
+[1.16.0]: https://github.com/shehuphd/keycall/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/shehuphd/keycall/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/shehuphd/keycall/compare/v1.13.1...v1.14.0
 [1.13.1]: https://github.com/shehuphd/keycall/compare/v1.13.0...v1.13.1

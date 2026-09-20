@@ -17,6 +17,7 @@ from keycall.viewer import Token
 from keycall.viewer._api import (
     browse_models,
     check_target,
+    dictate,
     generate,
     generate_image,
     generate_stream_events,
@@ -2282,6 +2283,139 @@ def test_transcribe_file_job_provider_polls_to_a_result():
     assert result["text"] == "The quick brown fox."
     assert result["audio_duration_seconds"] == 3
     assert result["words"][0]["speaker"] == "A"
+
+
+# --- dictation ---
+
+
+def test_list_targets_reports_dictation_for_catalog_and_custom_targets():
+    """The dictation task gates on the provider alone (no model to pick),
+    so every loaded key needs a flag: catalog providers from the catalog,
+    and a custom openai-compatible target from its own resolved profile,
+    which used to be missing and so read as "unknown, serves everything"."""
+    reg = Registry(
+        [
+            Target(provider="assemblyai", key=CANARY, name="aai"),
+            Target(provider="openai", key=CANARY + "-2", name="oa"),
+            Target(
+                provider="mycustom",
+                key=CANARY + "-3",
+                name="custom",
+                protocol="openai-compatible",
+                base_url="https://llm.example/v1",
+            ),
+        ],
+        httpx_transport=httpx.MockTransport(openai_handler),
+    )
+    try:
+        caps = list_targets(reg)["provider_capabilities"]
+    finally:
+        reg.close()
+    assert caps["assemblyai"]["dictation"] is True
+    assert caps["openai"]["dictation"] is False
+    # The custom target now carries its own row, with the profile a custom
+    # endpoint gets (text and tools, nothing else).
+    assert caps["mycustom"]["dictation"] is False
+    assert caps["mycustom"]["tool_calling"] is True
+    assert caps["mycustom"]["file_transcription"] is False
+
+
+@pytest.mark.parametrize(
+    ("body", "fragment"),
+    [
+        ({}, "audio_base64 is required"),
+        ({"audio_base64": "not-base64!!"}, "audio_base64"),
+        ({"audio_base64": "aGk=", "keyterms": "fox"}, "keyterms"),
+        ({"audio_base64": "aGk=", "context_prompt": 3}, "context_prompt"),
+    ],
+)
+def test_dictate_bad_bodies(body, fragment):
+    reg = Registry(
+        [Target(provider="assemblyai", key=CANARY, name="aai")],
+        httpx_transport=httpx.MockTransport(openai_handler),
+    )
+    try:
+        result = dictate(reg, 0, body)
+    finally:
+        reg.close()
+    assert result["error"]["code"] == "bad_request"
+    assert fragment in result["error"]["message"]
+
+
+def test_dictate_unknown_target():
+    reg = make_registry()
+    try:
+        result = dictate(reg, 99, {"audio_base64": "aGk="})
+    finally:
+        reg.close()
+    assert result["error"]["code"] == "not_found"
+
+
+def test_dictate_refuses_on_a_provider_without_the_endpoint():
+    reg = make_registry()  # openai, anthropic
+    try:
+        result = dictate(reg, 0, {"audio_base64": base64.b64encode(WAV).decode()})
+    finally:
+        reg.close()
+    assert result["error"]["code"] == "unsupported_operation"
+    assert "assemblyai" in result["error"]["message"]
+
+
+def test_dictate_round_trip_carries_both_outputs():
+    """One multipart POST to the dictation host; the route hands back the
+    verbatim text and the cleaned rewrite side by side, with the steering
+    inputs forwarded and blank keyterms dropped."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["host"] = request.url.host
+        captured["path"] = request.url.path
+        captured["body"] = request.content
+        return httpx.Response(
+            200,
+            json={
+                "text": "The quick brown fox jumps over the lazy dog.",
+                "llm_response": "The quick brown fox jumps over the lazy dog.",
+                "llm_error": None,
+                "words": [{"text": "The", "confidence": 0.99}],
+                "confidence": 0.996,
+                "audio_duration_ms": 2645,
+                "session_id": "sess-1",
+                "request_time_ms": 212.5,
+            },
+        )
+
+    reg = Registry(
+        [Target(provider="assemblyai", key=CANARY, name="aai")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = dictate(
+            reg,
+            0,
+            {
+                "audio_base64": base64.b64encode(WAV).decode(),
+                "context_prompt": "a fox",
+                "keyterms": ["quick brown fox", "  ", "lazy dog"],
+            },
+        )
+    finally:
+        reg.close()
+
+    assert captured["host"] == "dictation.assemblyai.com"
+    assert captured["path"] == "/v1/transcribe/live"
+    assert b'"stt_prompt": "a fox"' in captured["body"]
+    assert b'"keyterms_prompt": ["quick brown fox", "lazy dog"]' in captured["body"]
+    assert result["verbatim"] == "The quick brown fox jumps over the lazy dog."
+    assert result["cleaned"] == "The quick brown fox jumps over the lazy dog."
+    assert result["cleanup_error"] is None
+    assert result["words"] == [{"text": "The", "confidence": 0.99}]
+    assert result["confidence"] == 0.996
+    assert result["audio_duration_ms"] == 2645
+    assert result["provider_request_id"] == "sess-1"
+    assert result["provider_processing_ms"] == 212.5
+    assert result["warnings"] == []
+    assert CANARY not in json.dumps(result)
 
 
 def test_transcribe_file_url_input():

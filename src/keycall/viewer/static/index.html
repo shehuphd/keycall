@@ -137,19 +137,6 @@
 
     <section id="playground" class="tab">
       <div class="pg-layout">
-        <aside class="pg-history">
-          <div class="pg-group">
-            <div class="pg-history-head">
-              <h3>History</h3>
-              <button id="pg-history-clear" class="secondary danger" type="button" disabled
-                      title="Nothing saved yet — send a message to start a conversation">Clear</button>
-            </div>
-            <div id="pg-history-list" class="pg-history-list">
-              <p class="hint" id="pg-history-empty">Conversations appear here once they have a reply. Cleared when the server stops, kept through a page reload.</p>
-            </div>
-          </div>
-        </aside>
-
         <aside class="pg-side">
           <div class="pg-group">
             <h3>Key and model</h3>
@@ -163,13 +150,14 @@
                 <option value="voice">Have a voice conversation</option>
                 <option value="transcribe">Transcribe speech live</option>
                 <option value="transcribe-file">Transcribe a recording</option>
+                <option value="dictate">Dictate a short note</option>
               </select>
             </div>
             <div class="pg-row">
               <label for="pg-target">Key</label>
               <select id="pg-target"></select>
             </div>
-            <div class="pg-row">
+            <div class="pg-row" id="pg-model-row">
               <label for="pg-model">Model</label>
               <select id="pg-model"></select>
             </div>
@@ -270,6 +258,22 @@
                 <span class="switch" aria-hidden="true"></span>
               </label>
               <p class="hint pg-unavailable" id="pg-stt-diarize-unavailable" hidden></p>
+            </div>
+            <p class="hint" id="pg-dictate-mode-note" hidden>
+              Say a short note (up to two minutes) and get it back two ways:
+              word for word as spoken, and cleaned up ready to send. There is
+              no model to pick; the dictation endpoint has one. The two
+              fields below are optional and steer recognition.
+            </p>
+            <div class="pg-row stacked" id="pg-dictate-context-row" hidden>
+              <label for="pg-dictate-context" title="A sentence describing what the note is about, so unusual words are recognised the right way.">What the note is about</label>
+              <input id="pg-dictate-context" type="text"
+                     placeholder="Optional, e.g. &quot;a doctor dictating a patient note&quot;">
+            </div>
+            <div class="pg-row stacked" id="pg-dictate-keyterms-row" hidden>
+              <label for="pg-dictate-keyterms" title="Names, jargon, or product terms you expect to say, separated by commas, so they come back spelled right.">Words to listen for</label>
+              <input id="pg-dictate-keyterms" type="text"
+                     placeholder="Optional, comma-separated, e.g. &quot;metoprolol, KeyCall&quot;">
             </div>
           </div>
 
@@ -459,6 +463,33 @@
             <input id="pg-stt-url" type="text" placeholder="…or paste a link to an audio file">
             <p class="hint pg-unavailable" id="pg-stt-url-unavailable" hidden></p>
           </div>
+          <!-- Replaces the composer in the dictation task: record a short
+               note (or pick a WAV), then one button sends it. No link input:
+               the dictation endpoint takes audio bytes only. -->
+          <div class="pg-voice-panel" id="pg-dictate-panel" hidden>
+            <div class="pg-voice-status" id="pg-dictate-status">Tap the microphone and say your note, or pick a WAV file.</div>
+            <div class="pg-attached" id="pg-dictate-attached" hidden>
+              <span class="pg-attached-label">Recording attached</span>
+              <audio id="pg-dictate-preview" controls></audio>
+              <button id="pg-dictate-remove" class="secondary danger" type="button"
+                      aria-label="Remove the recording">Remove</button>
+            </div>
+            <div class="pg-composer" id="pg-dictate-composer">
+              <input id="pg-dictate-file" type="file" accept="audio/wav,.wav"
+                     aria-label="Pick a WAV file">
+              <button id="pg-dictate-mic" type="button" class="icon-btn"
+                      title="Record from your microphone" aria-label="Record from your microphone">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z"/>
+                  <path fill="currentColor" d="M18 11a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.91V19H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.09A6 6 0 0 0 18 11Z"/>
+                </svg>
+              </button>
+              <button id="pg-dictate-run" disabled
+                      title="Record a note or pick a WAV file first">Dictate</button>
+              <button id="pg-dictate-new" type="button" class="secondary"
+                      title="Clear the notes and start a new conversation">New chat</button>
+            </div>
+          </div>
           <div class="pg-recorder" id="pg-recorder" hidden>
             <span class="rec-dot" aria-hidden="true"></span>
             <span id="pg-rec-time" class="pg-rec-time">0:00</span>
@@ -479,6 +510,18 @@
             </button>
           </div>
         </div>
+        <aside class="pg-history">
+          <div class="pg-group">
+            <div class="pg-history-head">
+              <h3>History</h3>
+              <button id="pg-history-clear" class="secondary danger" type="button" disabled
+                      title="Nothing saved yet — send a message to start a conversation">Clear</button>
+            </div>
+            <div id="pg-history-list" class="pg-history-list">
+              <p class="hint" id="pg-history-empty">Conversations appear here once they have a reply. Cleared when the server stops, kept through a page reload.</p>
+            </div>
+          </div>
+        </aside>
       </div>
       <div id="pg-result" hidden></div>
     </section>

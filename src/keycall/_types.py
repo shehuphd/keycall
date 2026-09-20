@@ -27,6 +27,9 @@ __all__ = [
     "Citation",
     "CitationFound",
     "CodeExecutionOutput",
+    "DictationRequest",
+    "DictationResult",
+    "DictationWord",
     "EmbeddingOutput",
     "EmbeddingRequest",
     "FileInput",
@@ -1223,6 +1226,73 @@ class TranscriptionResult:
     confidence: float | None = None
     usage: Usage | None = None
     provider_request_id: str | None = None
+    round_trip_duration_ms: float | None = None
+    warnings: tuple[str, ...] = ()
+
+
+# --- dictation -------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DictationWord:
+    """One recognized word inside a dictation's verbatim transcript, with
+    the provider's own 0-1 ``confidence`` where reported. Unlike
+    ``TranscriptWord``, a dictation word carries no timing: the dictation
+    endpoint reports per-word confidence but no start/end offsets, so none
+    is invented here."""
+
+    text: str
+    confidence: float | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DictationRequest:
+    """A short spoken utterance to dictate (AssemblyAI). ``data`` is the
+    audio bytes; the media type is read from the content, with
+    ``media_type`` as the label for a raw-PCM stream the bytes can't
+    identify. ``context_prompt`` describes the subject so recognition
+    leans the right way; ``keyterms`` primes specific words or phrases;
+    ``language`` is a single ISO code (the endpoint defaults to English);
+    ``cleanup_instruction`` replaces the provider's default rewrite prompt
+    for the cleaned output. The dictation endpoint takes audio as bytes
+    only, in one short request, so there is no URL form and no model
+    choice."""
+
+    data: bytes
+    media_type: str | None = None
+    context_prompt: str | None = None
+    keyterms: tuple[str, ...] = ()
+    language: str | None = None
+    cleanup_instruction: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.data:
+            raise ValueError("data must not be empty")
+        if any(not term or not term.strip() for term in self.keyterms):
+            raise ValueError("keyterms must not contain empty strings")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DictationResult:
+    """A finished dictation. ``verbatim`` is the transcript word for word
+    as spoken, never altered. ``cleaned`` is the provider's rewritten,
+    ready-to-send version, or None when the rewrite failed — in which case
+    ``cleanup_error`` carries the provider's own reason ("timeout" or
+    "error") and ``verbatim`` still holds. ``words`` carry per-word
+    confidence with no timing; ``confidence`` is the overall 0-1 score.
+    ``audio_duration_ms`` is the provider's count of audio processed;
+    ``provider_processing_ms`` is the provider's own server-side time,
+    distinct from ``round_trip_duration_ms``, the elapsed wall time of the
+    call."""
+
+    verbatim: str
+    cleaned: str | None = None
+    cleanup_error: str | None = None
+    words: tuple[DictationWord, ...] = ()
+    confidence: float | None = None
+    audio_duration_ms: int | None = None
+    provider_request_id: str | None = None
+    provider_processing_ms: float | None = None
     round_trip_duration_ms: float | None = None
     warnings: tuple[str, ...] = ()
 

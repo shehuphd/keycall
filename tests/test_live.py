@@ -1019,6 +1019,97 @@ def test_live_streaming_transcription_every_supporting_target():
     assert not failures, "\n".join(failures)
 
 
+def test_live_dictation_on_assemblyai():
+    """A whole dictation round on AssemblyAI: a committed wav clip of a
+    known sentence in, and both the verbatim transcript and the cleaned
+    rewrite out in one round trip, with per-word confidence and the
+    provider's own audio duration. The wire was probed end to end
+    2026-09-17; this holds it to that shape so a provider change surfaces
+    here rather than in a caller's call. A second raw probe asserts the
+    strict-config 400 the drift discipline rests on — dictate()'s own
+    surface can't send an unknown field, so the guarantee that an unknown
+    field is rejected is checked directly."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from pathlib import Path
+
+    import httpx
+
+    from keycall import KeyCall
+
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider == "assemblyai"), None)
+    if target is None:
+        pytest.skip("no assemblyai target in the live source")
+
+    # A committed 16 kHz WAV clip of the known sentence, so the probe runs
+    # identically on any machine or CI runner without a local synthesizer.
+    wav = (Path(__file__).parent / "fixtures" / "stt_fox_16k.wav").read_bytes()
+
+    client = KeyCall(provider="assemblyai", api_key=target.key)
+    try:
+        result = client.dictate(
+            audio=wav,
+            context_prompt="A short sentence about a fox and a dog.",
+            keyterms=["quick brown fox"],
+        )
+        text = result.verbatim.lower()
+        assert "fox" in text and "dog" in text, (
+            f"dictation missed the spoken words, got {result.verbatim!r}"
+        )
+        assert result.cleaned, "the cleaned rewrite was empty (it runs by default)"
+        assert result.cleanup_error is None, (
+            f"cleanup failed unexpectedly: {result.cleanup_error}"
+        )
+        assert result.words and result.words[0].confidence is not None, (
+            "dictation reported no per-word confidence"
+        )
+        assert result.confidence is not None, "no overall confidence reported"
+        assert result.audio_duration_ms, "no audio duration reported"
+        if result.audio_duration_ms:
+            _spend.record(
+                "assemblyai", "dictate",
+                audio_seconds=result.audio_duration_ms / 1000.0,
+            )
+        print(
+            f"assemblyai dictation: verbatim {result.verbatim!r}, "
+            f"cleaned {result.cleaned!r} ({result.audio_duration_ms}ms audio)"
+        )
+    finally:
+        client.close()
+
+    # Drift probe: the strict-config rejection the build gate rests on.
+    def probe() -> httpx.Response:
+        return httpx.post(
+            "https://dictation.assemblyai.com/v1/transcribe/live",
+            headers={"Authorization": target.key},
+            files={
+                "config": (None, '{"not_a_real_field": true}', "application/json"),
+                "audio": ("clip.wav", wav, "audio/wav"),
+            },
+            timeout=90,
+        )
+
+    for attempt in (1, 2):
+        try:
+            response = probe()
+            break
+        except httpx.TransportError as exc:
+            if attempt == 2:
+                pytest.skip(
+                    f"assemblyai dictation unreachable from this runner "
+                    f"({type(exc).__name__}: {exc}); strict-config evidence "
+                    "unverified this run"
+                )
+    assert response.status_code == 400 and "not permitted" in response.text.lower(), (
+        f"capability drift: an unknown dictation config field returned HTTP "
+        f"{response.status_code} instead of the known 400 rejection — re-probe "
+        "and update the dictation adapter and this test"
+    )
+    print("assemblyai dictation: unknown config field still rejected (gate evidence current)")
+
+
 def test_live_gpt_live_voices_end_to_end():
     """A whole gpt-live full-duplex turn on OpenAI: stream spoken-word PCM
     in via live(), and confirm the model voices a reply (audio out), names

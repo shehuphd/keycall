@@ -61,4 +61,5 @@ class Operation(str, Enum):
     VIDEO_GENERATION = "video_generation"
     TRANSCRIPTION = "transcription"
     STREAMING_TRANSCRIPTION = "streaming_transcription"
+    DICTATION = "dictation"
     SERVICE_PROBE = "service_probe"

@@ -1,6 +1,6 @@
 # Manifest
 
-Last updated: 2026-09-14 12:52:31 UTC
+Last updated: 2026-09-17 00:00:00 UTC
 
 Every current source file, with what it does and what it touches. A map for orienting in the codebase, not a second copy of the docstrings.
 
@@ -9,10 +9,10 @@ Every current source file, with what it does and what it touches. A map for orie
 | File | What it does |
 |---|---|
 | `__init__.py` | Public surface: exports every public name, holds `__version__`. |
-| `_client.py` | `KeyCall`/`AsyncKeyCall`: binds provider + credential + protocol at construction, drives discovery pagination and caching, category filtering, the server-tool round loop, the video, batch, and transcription job flows (submit, poll, fetch, cancel where offered, and the timeout-bounded wrappers), the one-round-trip transcription path, the retired-model pre-flight gate and listing withholding, `probe_services()` for service providers, and tracing spans. Network via `_transport.py` only. |
+| `_client.py` | `KeyCall`/`AsyncKeyCall`: binds provider + credential + protocol at construction, drives discovery pagination and caching, category filtering, the server-tool round loop, the video, batch, and transcription job flows (submit, poll, fetch, cancel where offered, and the timeout-bounded wrappers), the one-round-trip transcription path, the one-shot dictation path (`dictate()`), the retired-model pre-flight gate and listing withholding, `probe_services()` for service providers, and tracing spans. Network via `_transport.py` only. |
 | `_registry.py` | Resolves a provider name to endpoints, auth scheme, operations, kind (model or service, with credential fields and service categories), and dated capability evidence from the bundled catalog; validates custom and required-at-construction base URLs; `retired_model_fact()` looks a model id up in a provider's retired-model records, alias spellings included. |
 | `_catalog/catalog.json` | The dated per-provider evidence itself: endpoints, capabilities (including `supports_seed`), sampling and tool-choice constraints, alias conventions, service-provider entries (kind, credential fields, category endpoints), model lists for providers without a list endpoint (transcription models carry per-wire facts), retired-model records per provider (id, aliases, date, replacement, evidence note). Versioned by `catalog_version`. |
-| `_transport.py` | All HTTP and WebSocket execution: retries, response size cap, redirect refusal, header construction (including the per-request HS256 mint for jwt_hs256 providers and the catalog-host override for multi-host service categories), multipart file upload (with file-less form-only variants), raw binary request bodies, JSONL/text success-body passthrough, download-plan enforcement, and the fail-closed refusal when a proxy env var would route a custom target around the DNS-rebinding guard. The only module that performs I/O. |
+| `_transport.py` | All HTTP and WebSocket execution: retries, response size cap, redirect refusal, header construction (including the per-request HS256 mint for jwt_hs256 providers and the catalog-host override for multi-host service categories), multipart file upload (with file-less form-only and typed-part variants, the latter carrying dictation's JSON config part beside its audio part), raw binary request bodies, JSONL/text success-body passthrough, download-plan enforcement, and the fail-closed refusal when a proxy env var would route a custom target around the DNS-rebinding guard. The only module that performs I/O. |
 | `_cli.py` | The `keycall` command: `verify` and `view`, the no-command welcome, plain-language usage errors with one confident suggestion, pasted-key hiding, category-only color gated on a terminal and `NO_COLOR`. |
 | `_verify_core.py` | The verify walk shared by the CLI and the viewer: candidate ordering, per-attempt reporting, outcome classification. |
 | `_sources.py` | Credential-source loading: TXT/JSON/TOML files, `env:` references, the hidden interactive prompt; git-exposure and permission warnings. Malformed JSON and TOML report the parser's own position so an unreadable source can be placed. Reads key files, never writes them. |
@@ -26,7 +26,7 @@ Every current source file, with what it does and what it touches. A map for orie
 | `_live.py` | Sync/async live full-duplex voice session sequencing over the same wire (OpenAI's gpt-live), an additive sibling of the realtime session. |
 | `_transcription.py` | Sync/async streaming speech-to-text session sequencing over the same wire. |
 | `_tracing.py` | Optional TraceAct spans with capture off and both redaction layers pinned on. |
-| `_types.py` | Public frozen records: content parts, messages, requests, results, `Usage`, `AliasFact`, `Model`, `Voice`, the batch records (`BatchRequest`, `BatchJob`, `BatchCounts`, `BatchResult`), the prerecorded-transcription records (`TranscriptionRequest`, `TranscriptionJob`, `TranscriptionResult`), the service-probe records (`ServiceReport`, `ServiceStatus`), the live-session records (`LiveConfig` and the `LiveEvent` family), and `WithheldModel` for a listing's filtered-out retired models. |
+| `_types.py` | Public frozen records: content parts, messages, requests, results, `Usage`, `AliasFact`, `Model`, `Voice`, the batch records (`BatchRequest`, `BatchJob`, `BatchCounts`, `BatchResult`), the prerecorded-transcription records (`TranscriptionRequest`, `TranscriptionJob`, `TranscriptionResult`), the dictation records (`DictationRequest`, `DictationResult`, `DictationWord`), the service-probe records (`ServiceReport`, `ServiceStatus`), the live-session records (`LiveConfig` and the `LiveEvent` family), and `WithheldModel` for a listing's filtered-out retired models. |
 | `_enums.py` | Public closed enums: model categories, wire protocols, operations. |
 | `_errors.py` | `KeyCallError` with the typed `ErrorCode` discriminator, plus `VideoJobTimeout`, `BatchJobTimeout`, and `TranscriptionJobTimeout`, each carrying the still-valid job handle. |
 
@@ -47,7 +47,7 @@ Every current source file, with what it does and what it touches. A map for orie
 | `_xai.py` | xAI override: `/v1/responses` routing for web search, reasoning effort, and code_interpreter, image and video generation, realtime sessions with Grok Voice appended from the catalog, the container batch dialect with counter-derived status and paginated results. |
 | `_realtime.py` | Realtime wire adapters (OpenAI, xAI, Gemini) mapping session events to normalized types. |
 | `_live.py` | The gpt-live full-duplex wire translator (OpenAI), mapping probe-confirmed session frames to normalized `LiveEvent`s. |
-| `_stt.py` | AssemblyAI and Deepgram: credential-validating discovery, streaming transcription frames to normalized events (including each provider's own speaker-label dialect under `diarize=True`), Deepgram's one-round-trip file transcription, and AssemblyAI's job-shaped one (upload, submit, poll). |
+| `_stt.py` | AssemblyAI and Deepgram: credential-validating discovery, streaming transcription frames to normalized events (including each provider's own speaker-label dialect under `diarize=True`), Deepgram's one-round-trip file transcription, AssemblyAI's job-shaped one (upload, submit, poll), and AssemblyAI's one-shot dictation (verbatim transcript plus cleaned rewrite). |
 | `_elevenlabs.py` | ElevenLabs: live speech-model discovery plus catalog STT entries, voice listing, speech generation, file transcription (multipart, or a source_url form), and a streaming-transcription translator over its JSON-message wire; a diarized session refuses, since its realtime wire never fills the speaker field. |
 
 ## Viewer (`src/keycall/viewer/`)
@@ -56,7 +56,7 @@ Every current source file, with what it does and what it touches. A map for orie
 |---|---|
 | `__init__.py` | `run()`: starts the server, prints the tokened URL, opens the browser, optional `--reload` restart loop. |
 | `_server.py` | Localhost stdlib HTTP server: token handshake to an httpOnly cookie, CSRF checks, static files with `no-store`, WebSocket upgrade. |
-| `_api.py` | Every `/api/*` route: key checks, model listing, playground generation, file transcription, verify runs, settings, conversations, serialization. |
+| `_api.py` | Every `/api/*` route: key checks, model listing, playground generation, file transcription, dictation, verify runs, settings, conversations, serialization; the per-provider capability map covers loaded custom targets too. |
 | `_registry.py` | Server-side target registry mapping integer ids to live clients; conversation store; read-timeout rebuilds. |
 | `_traces.py` | In-memory request-outcome log for the Traces tab (timing and status only). |
 | `_realtime_bridge.py` | Bridges the browser's voice WebSocket to a `realtime()` session. |
@@ -64,13 +64,13 @@ Every current source file, with what it does and what it touches. A map for orie
 | `_ws.py` | Minimal WebSocket frame codec for the bridges. |
 | `auth.py` | Per-run token generation and constant-time comparison. |
 | `static/index.html` | The single page: five tabs, dialogs, composer. |
-| `static/app.js` | All frontend behavior: tabs and URL routing, playground tasks, gating, history, traces, voice/transcribe audio, file transcription. |
+| `static/app.js` | All frontend behavior: tabs and URL routing, playground tasks, gating, history, traces, voice/transcribe audio, file transcription, dictation. |
 | `static/markdown.js` | The reply renderer's small markdown subset. |
 | `static/styles.css` | All styling, including the alias badge's instant hover tooltip. |
 
 ## Tests (`tests/`)
 
-One file per surface, adversarial-first. `test_live.py` (deselected by default, `-m live`) holds the live smokes and capability-drift probes; `test_docs.py` is the docs-hygiene guard; `tests/js/markdown.test.mjs` covers the frontend renderer via `node --test`. The rest mock the wire per feature: adapters, client, CLI, streaming, tools, caching, realtime, live full-duplex sessions (`test_live_sessions.py`), transcription, viewer, sources, transport, types, tracing, hardening, alias facts, classification, credential, registry, embeddings, image/speech/video generation, batch generation (`test_batch.py`), prerecorded transcription (`test_transcribe.py`), structured output, web search, hosted code execution (`test_code_interpreter.py`), reasoning effort, async parity, the retired-model gate, listing filter, and catalog invariants (`test_retired_models.py`), the sampling and seed gates (`test_hardening.py`), the ElevenLabs adapter with voice listing (`test_elevenlabs.py`), the service providers end to end (`test_service_providers.py`), and the docs-vs-code release gate (`test_shiplock.py`).
+One file per surface, adversarial-first. `test_live.py` (deselected by default, `-m live`) holds the live smokes and capability-drift probes; `test_docs.py` is the docs-hygiene guard; `tests/js/markdown.test.mjs` covers the frontend renderer via `node --test`. The rest mock the wire per feature: adapters, client, CLI, streaming, tools, caching, realtime, live full-duplex sessions (`test_live_sessions.py`), transcription, viewer, sources, transport, types, tracing, hardening, alias facts, classification, credential, registry, embeddings, image/speech/video generation, batch generation (`test_batch.py`), prerecorded transcription (`test_transcribe.py`), one-shot dictation (`test_dictate.py`), structured output, web search, hosted code execution (`test_code_interpreter.py`), reasoning effort, async parity, the retired-model gate, listing filter, and catalog invariants (`test_retired_models.py`), the sampling and seed gates (`test_hardening.py`), the ElevenLabs adapter with voice listing (`test_elevenlabs.py`), the service providers end to end (`test_service_providers.py`), and the docs-vs-code release gate (`test_shiplock.py`).
 
 ## Everything else
 
