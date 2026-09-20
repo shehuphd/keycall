@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.09.17.1",
+  "catalog_version": "2026.09.20.1",
   "verified_at": "2026-08-10T00:00:00Z",
   "providers": {
     "openai": {
@@ -1906,6 +1906,46 @@
         "transcription_diarization": true,
         "streaming_diarization": false,
         "streaming_diarization_note": "The realtime socket takes no diarization parameter and never fills the field: committed_transcript_with_timestamps words carry a speaker_id key that stayed null for every word, with and without a diarize param (live-probed 2026-09-08, 18 words, scribe_v2_realtime). Prerecorded diarization is unaffected and still reports speaker ids."
+      }
+    },
+    "typesafe": {
+      "aliases": [],
+      "protocol": "typesafe",
+      "base_url": "https://api.typesafe.ai",
+      "auth": {
+        "scheme": "bearer",
+        "header": "Authorization"
+      },
+      "operations": {
+        "list_models": {
+          "method": "GET",
+          "path": "/v1/models"
+        },
+        "judgment": {
+          "method": "POST",
+          "path": "/v1/systemone"
+        }
+      },
+      "provider_request_id_header": "x-typesafe-request-id",
+      "model_discovery_note": "GET /v1/models lists rolling aliases only ({models: [{name, description, release_date}]}; jev-latest and jev-preview, live 2026-09-20), not every accepted id: the versioned jev-1.13.0 was accepted on the wire in the same run while absent from the listing. Never refuse a model for being unlisted; a pinned versioned id is validated by calling it.",
+      "alias_conventions": [
+        {
+          "suffix": "-latest",
+          "maintained": true,
+          "verified": "2026-09-20",
+          "note": "jev-latest answered live 2026-09-20 and resolved to jev-1.13.0; the response body's model field carries the resolved id on every call."
+        },
+        {
+          "suffix": "-preview",
+          "maintained": null,
+          "verified": "2026-09-20",
+          "note": "Listed by GET /v1/models as a preview of jev-latest; liveness not separately verified."
+        }
+      ],
+      "capabilities": {
+        "judgment": true,
+        "judgment_note": "POST /v1/systemone, live-verified 2026-09-20: body {state, model, questions}, where state is a string or JSON and each question is {type, instructions, criteria?}. Choice criteria is a mapping of option name to description (a list is rejected 422; empty descriptions are accepted), at most 255 options (enforced: 400 'Too many choices'); score criteria is the ordered level list. Answers come back per question id: noul as {noul} (a 0-1 probability, no confidence field), choice as {choice, confidence, probabilities keyed by option}, score as {score, confidence, legend and probabilities keyed by stringified 0-based level index}. The response's model field carries the resolved id (jev-latest resolved to jev-1.13.0); usage reports input_tokens/output_tokens, and x-envoy-upstream-service-time carries server-side ms. No temperature, seed, or max-output-tokens parameter exists on this wire. Validation failures return 422 with a pydantic detail list ({loc, msg}); usage errors return 400 with {detail: {error_type, message}}, including unknown models ('Unknown model: ...') and the organisation-gated fourth question type bounding_box, whose message text has drifted between probes, so the gate is asserted by status and error_type, never by its sentence.",
+        "verified": "2026-09-20"
       }
     },
     "google_maps": {

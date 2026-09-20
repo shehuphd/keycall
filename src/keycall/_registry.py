@@ -97,6 +97,10 @@ class ProviderCapabilities:
     # with a verbatim transcript and a cleaned rewrite (AssemblyAI's
     # dictation endpoint), served by dictate().
     dictation: bool = False
+    # Typed judgments with calibrated probabilities (TypeSafe's System One
+    # endpoint), served by judge(). Not text generation: the model answers
+    # fixed-shape questions and never writes prose.
+    judgment: bool = False
     embeddings: bool = False
     image_generation: bool = False
     speech_generation: bool = False
@@ -259,6 +263,7 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
         transcription_diarization=bool(raw.get("transcription_diarization", False)),
         streaming_diarization=bool(raw.get("streaming_diarization", False)),
         dictation=bool(raw.get("dictation", False)),
+        judgment=bool(raw.get("judgment", False)),
         prompt_caching=bool(raw.get("prompt_caching", False)),
         schema_enforcement=raw.get("schema_enforcement"),
         sampling_constraints=tuple(

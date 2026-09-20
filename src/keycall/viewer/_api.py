@@ -126,6 +126,10 @@ def _capability_flags(caps: Any) -> dict[str, Any]:
         # flag: it has no model to pick, so the task gates on the provider
         # alone.
         "dictation": caps.dictation,
+        # Typed judgments (TypeSafe): keyed by the capability name, which
+        # matches the "decision" model category through the judge()
+        # operation rather than by spelling.
+        "judgment": caps.judgment,
     }
 
 

@@ -35,6 +35,9 @@ TEXT_PER_1M: dict[str, float] = {
     "perplexity": 3.0,
     "moonshot": 2.0,
     "xai": 5.0,
+    # TypeSafe bills input only ($0.042/M, billing page 2026-09-17);
+    # output tokens are free, so the blended rate is the input rate.
+    "typesafe": 0.042,
 }
 TEXT_DEFAULT_PER_1M = 4.0
 

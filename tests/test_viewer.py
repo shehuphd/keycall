@@ -2318,6 +2318,11 @@ def test_list_targets_reports_dictation_for_catalog_and_custom_targets():
     assert caps["mycustom"]["dictation"] is False
     assert caps["mycustom"]["tool_calling"] is True
     assert caps["mycustom"]["file_transcription"] is False
+    # Judgment rides the same map: on for the one catalog provider with
+    # the endpoint, off everywhere else, custom targets included.
+    assert caps["typesafe"]["judgment"] is True
+    assert caps["openai"]["judgment"] is False
+    assert caps["mycustom"]["judgment"] is False
 
 
 @pytest.mark.parametrize(

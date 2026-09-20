@@ -25,6 +25,8 @@ provider=xai key=REPLACE-ME name=grok-test
 provider=assemblyai key=REPLACE-ME name=assemblyai-test
 provider=deepgram key=REPLACE-ME name=deepgram-test
 provider=elevenlabs key=REPLACE-ME name=elevenlabs-test
+# Judgment provider: --generate proves the key with one minimal judgment.
+provider=typesafe key=REPLACE-ME name=typesafe-test
 # Service providers: no models, so verification probes each service category.
 provider=google_maps key=REPLACE-ME name=maps-test
 provider=livekit key=API-REPLACE-ME secret=REPLACE-ME base_url=https://my-project-abc123.livekit.cloud name=livekit-test

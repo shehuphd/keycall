@@ -229,6 +229,12 @@ BAD_KEY_RESPONSES = {
         },
     ),
     "deepgram": (401, {"err_code": "INVALID_AUTH", "err_msg": "Invalid credentials."}),
+    # Live-probed 2026-09-20: detail is an object for usage/auth errors
+    # (validation failures carry a pydantic list instead).
+    "typesafe": (
+        401,
+        {"detail": {"error_type": "authentication_error", "message": "Invalid API key."}},
+    ),
 }
 
 

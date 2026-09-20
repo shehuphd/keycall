@@ -4,6 +4,17 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] — 2026-09-20
+
+### Added
+
+- **`judge()`: typed judgments with calibrated probabilities, on TypeSafe.** `client.judge(model=..., state=..., questions={...})` sends a state (a string or any JSON-serializable structure) plus a map of typed questions in one round trip and returns a `JudgmentResult` with typed answers under the caller's own question ids: a `NoulQuestion` (yes/no) answers as a 0-1 probability, a `ChoiceQuestion` (one of a fixed set, each option with an optional description) answers with the selected option, per-option probabilities, and a confidence, and a `ScoreQuestion` (a position on an ordered rubric) answers as a float that can fall between levels, with the rubric echoed in order and probabilities aligned to it. One call carries every question about a state at once, which is far cheaper and faster than a call per question. The result reports the resolved model id (`jev-latest` answers as its current versioned model), the provider's request id and server-side time, and token usage (output tokens are billed at zero). Sync and async; a choice past the provider's 255-option cap refuses before the network, and every provider without the endpoint refuses toward TypeSafe. New public types: `NoulQuestion`, `ChoiceQuestion`, `ScoreQuestion`, `NoulAnswer`, `ChoiceAnswer`, `ScoreAnswer`, `JudgmentRequest`, `JudgmentResult`.
+- **TypeSafe is a supported provider.** `KeyCall(provider="typesafe", api_key=...)` resolves from the catalog (Bearer auth on `api.typesafe.ai`), `list_models()` returns its rolling aliases as `decision`-category models, `classify_model_id()` places `jev` ids in the new `ModelCategory.DECISION`, and `keycall verify --generate` proves a TypeSafe key with one minimal judgment instead of a text call (reported as outcome `judged`, with the model count shown as decision models). The listing is deliberately not treated as exhaustive: explicit versioned ids (`jev-1.13.0`) stay callable without appearing in it, so nothing refuses a model for being unlisted.
+
+### Notes
+
+- **The judgment wire was probed end to end.** Live against `jev-1.13.0` (2026-09-20): `POST /v1/systemone` takes `{state, model, questions}`, where choice criteria go as a mapping of option name to description (a bare list is rejected with a 422, empty descriptions are accepted) and score criteria as the ordered level list; answers come back per question id with score legends and probabilities keyed by stringified level index, normalized back into rubric order. Validation failures return a 422 with the field path, surfaced in the error message; an unknown model returns a 400 mapped to `MODEL_NOT_AVAILABLE`; the organisation-gated `bounding_box` question type returns a 400 whose message text has already drifted between probes, so the release-suite drift probe asserts it by status and error type only. No temperature, seed, or max-output-tokens parameter exists on this wire, and `judge()` takes none.
+
 ## [1.16.0] — 2026-09-17
 
 ### Added
@@ -621,6 +632,7 @@ First release. Key validation, model discovery and filtering, and text generatio
 - Perplexity's Sonar models aren't API-discoverable and are maintained in the bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
+[1.17.0]: https://github.com/shehuphd/keycall/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/shehuphd/keycall/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/shehuphd/keycall/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/shehuphd/keycall/compare/v1.13.1...v1.14.0

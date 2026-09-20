@@ -59,6 +59,11 @@ _RULES: tuple[tuple[tuple[str, ...], ModelCategory], ...] = (
     # gpt-live is OpenAI's full-duplex voice model on its own
     # v1/live/sessions endpoint (not the Realtime API), served by live().
     (("gpt-live",), ModelCategory.LIVE),
+    # TypeSafe's System One judgment family (jev-latest, jev-1.13.0):
+    # typed answers with probabilities, no text generation, served by
+    # judge(). The identifier is the signal; the provider's listing
+    # carries no category metadata.
+    (("jev",), ModelCategory.DECISION),
     # Ambiguous or out-of-taxonomy families stay unknown rather than
     # guessing: moderation/reranking/guard models, audio-hybrid previews.
     (("moderation", "rerank", "guard", "audio"), ModelCategory.UNKNOWN),

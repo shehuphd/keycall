@@ -21,6 +21,10 @@ class ModelCategory(str, Enum):
     # reasoning to a separate backend model (OpenAI's gpt-live on
     # /v1/live/sessions), distinct from the Realtime API that REALTIME covers.
     LIVE = "live"
+    # Typed judgments with calibrated probabilities (TypeSafe's jev family):
+    # the model answers fixed-shape questions about a state and never
+    # generates text, so it must not enter the default text picker.
+    DECISION = "decision"
     UNKNOWN = "unknown"
 
 
@@ -46,6 +50,10 @@ class ProviderProtocol(str, Enum):
     # these protocols either.
     GOOGLE_MAPS = "google_maps"
     LIVEKIT = "livekit"
+    # TypeSafe's System One judgment wire (POST /v1/systemone): typed
+    # questions in, typed answers with probabilities out. Single-vendor,
+    # so custom targets cannot claim this protocol either.
+    TYPESAFE = "typesafe"
 
 
 class Operation(str, Enum):
@@ -62,4 +70,5 @@ class Operation(str, Enum):
     TRANSCRIPTION = "transcription"
     STREAMING_TRANSCRIPTION = "streaming_transcription"
     DICTATION = "dictation"
+    JUDGMENT = "judgment"
     SERVICE_PROBE = "service_probe"

@@ -1110,6 +1110,151 @@ def test_live_dictation_on_assemblyai():
     print("assemblyai dictation: unknown config field still rejected (gate evidence current)")
 
 
+def test_live_judgment_on_typesafe():
+    """A whole judgment round on TypeSafe: one call carrying all three
+    question types at once (the batching rule this surface is built
+    around), answers checked for shape and bounds, then the resolved
+    versioned id called directly to hold the listing-not-exhaustive fact.
+    A raw probe asserts the bounding_box organisation gate by status and
+    error_type only — its message text drifted between the 2026-09-17 and
+    2026-09-20 probes, so the sentence is not evidence."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import httpx
+
+    from keycall import ChoiceQuestion, KeyCall, NoulQuestion, ScoreQuestion
+
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider == "typesafe"), None)
+    if target is None:
+        pytest.skip("no typesafe target in the live source")
+
+    state = (
+        "Customer message: 'My payouts have failed for 3 days and support "
+        "has not replied. I am considering switching providers.'"
+    )
+    questions = {
+        "is_urgent": NoulQuestion(instructions="Does this convey urgency?"),
+        "route": ChoiceQuestion(
+            instructions="Which team should handle this?",
+            options={
+                "billing": "payment and payout problems",
+                "technical": "bugs and outages",
+                "retention": "customers threatening to leave",
+            },
+        ),
+        "anger": ScoreQuestion(
+            instructions="How angry is the customer?",
+            levels=["calm", "frustrated", "angry", "furious"],
+        ),
+    }
+
+    client = KeyCall(provider="typesafe", api_key=target.key)
+    try:
+        result = client.judge(model="jev-latest", state=state, questions=questions)
+        assert result.model.startswith("jev"), (
+            f"resolved model {result.model!r} is not a jev id"
+        )
+        assert result.model != "jev-latest", (
+            "the response's model field no longer resolves the alias to a "
+            "versioned id — re-probe and update the adapter's contract"
+        )
+        assert set(result.answers) == set(questions), (
+            f"answers missing for {set(questions) - set(result.answers)}"
+        )
+        urgent = result.answers["is_urgent"]
+        assert 0.0 <= urgent.probability <= 1.0
+        route = result.answers["route"]
+        assert route.choice in questions["route"].options
+        assert route.probabilities and set(route.probabilities) == set(
+            questions["route"].options
+        )
+        anger = result.answers["anger"]
+        assert anger.levels == ("calm", "frustrated", "angry", "furious")
+        assert 0.0 <= anger.score <= 3.0
+        assert result.usage is not None and result.usage.input_tokens, (
+            "no usage reported"
+        )
+        assert result.provider_request_id, "no x-typesafe-request-id header"
+        assert result.provider_processing_ms is not None, (
+            "no x-envoy-upstream-service-time header"
+        )
+        _spend.record(
+            "typesafe", "judge",
+            tokens=(result.usage.input_tokens or 0) + (result.usage.output_tokens or 0),
+        )
+        print(
+            f"typesafe judgment: resolved {result.model}, urgent {urgent.probability}, "
+            f"route {route.choice}, anger {anger.score} "
+            f"({result.usage.input_tokens} tokens in, "
+            f"{result.provider_processing_ms:.0f}ms server)"
+        )
+
+        # The listing-not-exhaustive fact: the resolved versioned id is
+        # callable directly even when GET /v1/models omits it (it listed
+        # only the two rolling aliases on 2026-09-20). A gate that checked
+        # a pinned version against the listing would wrongly refuse it.
+        listed = {model.id for model in client.list_models(refresh=True).models}
+        pinned = client.judge(
+            model=result.model,
+            state="The quick brown fox jumps over the lazy dog.",
+            questions={"check": NoulQuestion(instructions="Is this sentence in English?")},
+        )
+        assert pinned.model == result.model
+        if pinned.usage is not None:
+            _spend.record(
+                "typesafe", "judge",
+                tokens=(pinned.usage.input_tokens or 0) + (pinned.usage.output_tokens or 0),
+            )
+        print(
+            f"typesafe pinned id {result.model} answered "
+            f"({'listed' if result.model in listed else 'unlisted'} in /v1/models)"
+        )
+    finally:
+        client.close()
+
+    # Drift probe: the bounding_box organisation gate, asserted by status
+    # and error_type only. judge() cannot send this type, so the raw wire
+    # is probed directly.
+    def probe() -> httpx.Response:
+        return httpx.post(
+            "https://api.typesafe.ai/v1/systemone",
+            headers={"Authorization": f"Bearer {target.key}"},
+            json={
+                "state": "A photo of a street.",
+                "model": "jev-latest",
+                "questions": {
+                    "find_cars": {
+                        "type": "bounding_box",
+                        "instructions": "Locate every car.",
+                    }
+                },
+            },
+            timeout=30,
+        )
+
+    for attempt in (1, 2):
+        try:
+            response = probe()
+            break
+        except httpx.TransportError as exc:
+            if attempt == 2:
+                pytest.skip(
+                    f"typesafe unreachable from this runner "
+                    f"({type(exc).__name__}: {exc}); bounding_box gate "
+                    "evidence unverified this run"
+                )
+    detail = response.json().get("detail") or {}
+    assert response.status_code == 400 and detail.get("error_type") == "api_usage_error", (
+        f"capability drift: the bounding_box gate returned HTTP "
+        f"{response.status_code} / {detail.get('error_type')!r} instead of the "
+        "known 400 api_usage_error — the type may have been enabled for this "
+        "organisation; re-probe and revisit the judgment surface"
+    )
+    print("typesafe bounding_box: still organisation-gated (gate evidence current)")
+
+
 def test_live_gpt_live_voices_end_to_end():
     """A whole gpt-live full-duplex turn on OpenAI: stream spoken-word PCM
     in via live(), and confirm the model voices a reply (audio out), names

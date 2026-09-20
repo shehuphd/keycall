@@ -63,6 +63,14 @@ provider = "elevenlabs"
 key = "REPLACE-ME"
 name = "elevenlabs-test"
 
+# Judgment provider: --generate proves the key with one minimal
+# judgment instead of a text call.
+
+[[targets]]
+provider = "typesafe"
+key = "REPLACE-ME"
+name = "typesafe-test"
+
 # Service providers: no models, so verification probes each service
 # category instead (--generate adds nothing here).
 

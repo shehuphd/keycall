@@ -29,6 +29,8 @@ from .._types import (
     EmbeddingOutput,
     ImageOutput,
     InvocationResult,
+    JudgmentRequest,
+    JudgmentResult,
     Model,
     OutputPart,
     ServiceStatus,
@@ -1069,6 +1071,35 @@ class ProviderAdapter(ABC):
         round_trip_duration_ms: float,
     ) -> DictationResult:
         raise self._dictation_gate()
+
+    # --- judgment ---
+    #
+    # One HTTP round trip: a state plus a map of typed questions answered
+    # with typed judgments and calibrated probabilities (TypeSafe's System
+    # One endpoint). Not text generation: no prose comes back, so the
+    # result is its own type rather than an InvocationResult.
+
+    def _judgment_gate(self) -> KeyCallError:
+        return KeyCallError(
+            f"provider {self.resolved.provider!r} has no judgment API; "
+            "judge is supported on: "
+            + ", ".join(sorted(providers_with("judgment"))),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.JUDGMENT.value,
+        )
+
+    def build_judgment_spec(self, request: JudgmentRequest) -> RequestSpec:
+        raise self._judgment_gate()
+
+    def parse_judgment_response(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+    ) -> JudgmentResult:
+        raise self._judgment_gate()
 
     def video_result(
         self,

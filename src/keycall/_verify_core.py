@@ -19,7 +19,7 @@ from ._enums import ModelCategory
 from ._errors import ErrorCode, KeyCallError
 from ._sanitize import safe_display_name
 from ._sources import Target
-from ._types import Message, Model, ServiceStatus, TextInput
+from ._types import Message, Model, NoulQuestion, ServiceStatus, TextInput
 
 __all__ = [
     "ModelAttempt",
@@ -32,6 +32,11 @@ __all__ = [
 DEFAULT_GENERATION_PROMPT = "Reply with the single word: ok"
 DEFAULT_GENERATION_MAX_TOKENS = 16
 DEFAULT_ATTEMPTS = 8
+
+# The cheapest live call a judgment provider answers: one Noul about a
+# one-sentence state. The judgment twin of the ok-prompt above.
+DEFAULT_JUDGMENT_STATE = "The quick brown fox jumps over the lazy dog."
+DEFAULT_JUDGMENT_QUESTION = "Is this sentence written in English?"
 
 # Bumped whenever the candidate-selection procedure changes, so an old
 # report can be read against the rule that produced it. "1" selected the
@@ -141,9 +146,14 @@ class VerifyResult:
     selection_rule_version: str = SELECTION_RULE_VERSION
     # A service target's per-category standings; empty for model targets.
     services: tuple[ServiceStatus, ...] = ()
-    # "listed" | "generated" | "no_text_models" | "credential_rejected" |
-    # "rate_limited_unverified" | "no_model_invocable" | "list_failed" |
-    # "services_probed" | "unresolvable_target"
+    # A judgment provider's model count; None for every other provider.
+    # Kept apart from text_model_count so neither number lies about what
+    # kind of call verified it.
+    decision_model_count: int | None = None
+    # "listed" | "generated" | "judged" | "no_text_models" |
+    # "credential_rejected" | "rate_limited_unverified" |
+    # "no_model_invocable" | "list_failed" | "services_probed" |
+    # "unresolvable_target"
     outcome: str = "listed"
 
 
@@ -245,16 +255,36 @@ def run_verify(
         # provider's original order stays reconstructable from the report.
         rank = candidate_rank([model for _, model in text_models])
         text_models.sort(key=lambda entry: rank(entry[1]))
+        # A judgment provider (TypeSafe) advertises decision models and no
+        # text ones; its generate-mode proof is one minimal Noul through
+        # judge(), the cheapest call the provider answers.
+        decision_models = [
+            (raw_position, model)
+            for raw_position, model in enumerate(discovery.models)
+            if ModelCategory.DECISION in model.categories
+        ]
+        judgment_capable = bool(decision_models) and (
+            client._resolved.capabilities.judgment
+        )
         if not generate:
             return VerifyResult(
                 label=label,
                 provider=client.provider,
                 listed_ok=True,
                 text_model_count=len(text_models),
+                decision_model_count=(len(decision_models) if judgment_capable else None),
                 model_list_digest=digest,
                 outcome="listed",
             )
         if not text_models:
+            if judgment_capable:
+                return _run_judgment_walk(
+                    client,
+                    label=label,
+                    digest=digest,
+                    decision_models=decision_models,
+                    attempts=attempts,
+                )
             return VerifyResult(
                 label=label,
                 provider=client.provider,
@@ -340,3 +370,98 @@ def run_verify(
     finally:
         if owns_client:
             client.close()
+
+
+def _run_judgment_walk(
+    client: KeyCall,
+    *,
+    label: str,
+    digest: str,
+    decision_models: list[tuple[int, Model]],
+    attempts: int,
+) -> VerifyResult:
+    """The generate-mode walk for a judgment provider: one minimal Noul
+    per candidate until one answers. Candidates stay in the provider's
+    own listing order — it leads with its primary rolling alias, and the
+    release dates on the aliases say when the pointer appeared, not which
+    model is current, so recency would reorder on the wrong evidence."""
+    collected: list[ModelAttempt] = []
+    rate_limited = False
+    total = len(decision_models)
+    for position, (raw_position, candidate) in enumerate(decision_models[:attempts]):
+        try:
+            result = client.judge(
+                model=candidate.id,
+                state=DEFAULT_JUDGMENT_STATE,
+                questions={"check": NoulQuestion(instructions=DEFAULT_JUDGMENT_QUESTION)},
+            )
+        except KeyCallError as error:
+            collected.append(
+                ModelAttempt(
+                    model_id=candidate.id,
+                    position=position,
+                    raw_position=raw_position,
+                    classification_source=candidate.classification_source,
+                    ok=False,
+                    error_code=error.code.value,
+                    error_message=error.message,
+                    retryable=error.retryable,
+                )
+            )
+            if error.code in _CREDENTIAL_FAILURES:
+                return VerifyResult(
+                    label=label,
+                    provider=client.provider,
+                    listed_ok=True,
+                    text_model_count=0,
+                    decision_model_count=total,
+                    generate_requested=True,
+                    attempts=tuple(collected),
+                    model_list_digest=digest,
+                    outcome="credential_rejected",
+                )
+            if error.code is ErrorCode.RATE_LIMITED:
+                rate_limited = True
+            continue
+
+        usage = result.usage
+        tokens = None
+        if usage is not None and (
+            usage.input_tokens is not None or usage.output_tokens is not None
+        ):
+            tokens = (usage.input_tokens or 0) + (usage.output_tokens or 0)
+        collected.append(
+            ModelAttempt(
+                model_id=candidate.id,
+                position=position,
+                raw_position=raw_position,
+                classification_source=candidate.classification_source,
+                ok=True,
+                round_trip_duration_ms=result.round_trip_duration_ms,
+                total_tokens=tokens,
+            )
+        )
+        return VerifyResult(
+            label=label,
+            provider=client.provider,
+            listed_ok=True,
+            text_model_count=0,
+            decision_model_count=total,
+            generate_requested=True,
+            generate_ok=True,
+            attempts=tuple(collected),
+            model_list_digest=digest,
+            outcome="judged",
+        )
+
+    return VerifyResult(
+        label=label,
+        provider=client.provider,
+        listed_ok=True,
+        text_model_count=0,
+        decision_model_count=total,
+        generate_requested=True,
+        attempts=tuple(collected),
+        model_list_digest=digest,
+        outcome="rate_limited_unverified" if rate_limited else "no_model_invocable",
+    )

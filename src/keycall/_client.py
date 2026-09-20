@@ -54,6 +54,9 @@ from ._types import (
     EmbeddingRequest,
     ImageGenerationRequest,
     InvocationResult,
+    JudgmentQuestion,
+    JudgmentRequest,
+    JudgmentResult,
     LiveConfig,
     Message,
     Model,
@@ -777,6 +780,16 @@ class _BaseClient:
             language=language,
             cleanup_instruction=cleanup_instruction,
         )
+
+    def _judgment_request(
+        self,
+        *,
+        model: str,
+        state: Any,
+        questions: Mapping[str, JudgmentQuestion],
+    ) -> JudgmentRequest:
+        self._require_model_not_retired(model)
+        return JudgmentRequest(model=model, state=state, questions=questions)
 
     def _raise_video_failure(self, job: VideoJob) -> NoReturn:
         detail = job.error_message or "no detail from the provider"
@@ -2051,6 +2064,59 @@ class KeyCall(_BaseClient):
             )
             return parsed
 
+    def judge(
+        self,
+        *,
+        model: str,
+        state: Any,
+        questions: Mapping[str, JudgmentQuestion],
+    ) -> JudgmentResult:
+        """Ask typed questions about a ``state`` and get typed answers
+        with calibrated probabilities (TypeSafe). One round trip carries
+        every question at once — batching is dramatically cheaper and
+        faster than a call per question, so ask everything about a state
+        together and make a second call only when a question's inputs
+        depend on an earlier answer. ``state`` is a string or any
+        JSON-serializable structure; ``questions`` maps caller-chosen ids
+        to :class:`NoulQuestion`, :class:`ChoiceQuestion`, or
+        :class:`ScoreQuestion`, and the result's ``answers`` come back
+        under the same ids. The result's ``model`` is the resolved id the
+        provider reports, which is what a rolling alias like
+        ``jev-latest`` answered as. A provider without a judgment
+        endpoint refuses, naming the ones that have it."""
+        self._require_open()
+        request = self._judgment_request(model=model, state=state, questions=questions)
+        with _tracing.span(
+            "keycall.judgment", provider=self.provider, operation="judgment"
+        ) as trace:
+            spec = self._adapter.build_judgment_spec(request)
+            result = self._transport.request(
+                spec,
+                operation=Operation.JUDGMENT.value,
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            parsed = self._adapter.parse_judgment_response(
+                result.payload,
+                headers=result.headers,
+                round_trip_duration_ms=result.duration_ms,
+            )
+            trace.event(
+                "model",
+                operation="judgment",
+                target=request.model,
+                status="ok",
+                duration_ms=result.duration_ms,
+                provider=self.provider,
+                result={
+                    "questions": len(request.questions),
+                    "answers": len(parsed.answers),
+                    "resolved_model": parsed.model,
+                    "tokens": (parsed.usage.input_tokens if parsed.usage else None),
+                },
+            )
+            return parsed
+
     def start_transcription(
         self,
         *,
@@ -2976,6 +3042,47 @@ class AsyncKeyCall(_BaseClient):
                     "words": len(parsed.words),
                     "audio_ms": parsed.audio_duration_ms,
                     "cleaned": parsed.cleaned is not None,
+                },
+            )
+            return parsed
+
+    async def judge(
+        self,
+        *,
+        model: str,
+        state: Any,
+        questions: Mapping[str, JudgmentQuestion],
+    ) -> JudgmentResult:
+        """Async twin of KeyCall.judge()."""
+        self._require_open()
+        request = self._judgment_request(model=model, state=state, questions=questions)
+        with _tracing.span(
+            "keycall.judgment", provider=self.provider, operation="judgment"
+        ) as trace:
+            spec = self._adapter.build_judgment_spec(request)
+            result = await self._transport.request(
+                spec,
+                operation=Operation.JUDGMENT.value,
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            parsed = self._adapter.parse_judgment_response(
+                result.payload,
+                headers=result.headers,
+                round_trip_duration_ms=result.duration_ms,
+            )
+            trace.event(
+                "model",
+                operation="judgment",
+                target=request.model,
+                status="ok",
+                duration_ms=result.duration_ms,
+                provider=self.provider,
+                result={
+                    "questions": len(request.questions),
+                    "answers": len(parsed.answers),
+                    "resolved_model": parsed.model,
+                    "tokens": (parsed.usage.input_tokens if parsed.usage else None),
                 },
             )
             return parsed

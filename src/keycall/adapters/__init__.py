@@ -13,6 +13,7 @@ from ._openai import OpenAIAdapter
 from ._openai_compat import OpenAICompatibleAdapter
 from ._perplexity import PerplexityAdapter
 from ._stt import AssemblyAIAdapter, DeepgramAdapter
+from ._typesafe import TypeSafeAdapter
 from ._xai import XAIAdapter
 
 __all__ = ["ProviderAdapter", "adapter_for"]
@@ -25,6 +26,7 @@ _BY_PROTOCOL: dict[ProviderProtocol, type[ProviderAdapter]] = {
     ProviderProtocol.ELEVENLABS: ElevenLabsAdapter,
     ProviderProtocol.GOOGLE_MAPS: GoogleMapsAdapter,
     ProviderProtocol.LIVEKIT: LiveKitAdapter,
+    ProviderProtocol.TYPESAFE: TypeSafeAdapter,
     # No generic STT entry: each STT provider speaks its own dialect, and
     # resolve_provider already refuses custom targets on this protocol, so
     # the named overrides below are the only way to reach an STT adapter.

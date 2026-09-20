@@ -21,7 +21,7 @@ keycall verify
 ```
 
 ```
-Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram, elevenlabs, google_maps): openai
+Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram, elevenlabs, typesafe, google_maps): openai
 API key:
 ✓ openai (openai): key accepted, 79 text model(s), list digest 6d356bc3f4c24389, selection rule v4
 ```
@@ -43,7 +43,7 @@ Then open the same key in the local viewer and click around: a live dashboard, a
 keycall view --provider openai --source env:OPENAI_API_KEY
 ```
 
-Swap `openai` for `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, or `xai`; an `assemblyai`, `deepgram`, or `elevenlabs` key verifies too, with `--generate` left off, since a speech provider has no text models to generate with. To load several keys at once, put them in a file and use `--source ./keys.toml` instead; see [`keycall-test-keys.example.toml`](keycall-test-keys.example.toml) for the format. The rest of this document is the full reference.
+Swap `openai` for `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, or `xai`; an `assemblyai`, `deepgram`, or `elevenlabs` key verifies too, with `--generate` left off, since a speech provider has no text models to generate with. A `typesafe` key takes `--generate` as well: its billable proof is one minimal judgment instead of a text call. To load several keys at once, put them in a file and use `--source ./keys.toml` instead; see [`keycall-test-keys.example.toml`](keycall-test-keys.example.toml) for the format. The rest of this document is the full reference.
 
 ## Clients
 
@@ -65,7 +65,7 @@ async with AsyncKeyCall(provider="anthropic", api_key=secret) as client:
     discovery = await client.list_models()
 ```
 
-Supported provider names: `openai`, `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, `xai`, the speech-to-text providers `assemblyai` and `deepgram`, the speech platform `elevenlabs`, and the service providers `google_maps` and `livekit` (see [Service providers](#service-providers)). Aliases: `claude`, `google`, `google-gemini`, `pplx`, `kimi`, `grok`, `x-ai`, `eleven-labs`, `11labs`, `maps`, `googlemaps`.
+Supported provider names: `openai`, `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, `xai`, the speech-to-text providers `assemblyai` and `deepgram`, the speech platform `elevenlabs`, the judgment provider `typesafe` (see [Judgments](#judgments)), and the service providers `google_maps` and `livekit` (see [Service providers](#service-providers)). Aliases: `claude`, `google`, `google-gemini`, `pplx`, `kimi`, `grok`, `x-ai`, `eleven-labs`, `11labs`, `maps`, `googlemaps`.
 
 ### Custom OpenAI-compatible endpoints
 
@@ -765,6 +765,58 @@ result = client.dictate(
 - **Dictation reports confidence, not timing.** Each `DictationWord` carries the provider's per-word confidence but no start/end offset, so none is invented. For word timings, use [`transcribe()`](#transcribing-audio-files) (stored files) or [`transcribe_stream()`](#streaming-transcription) (live) instead.
 - **Compressed audio refuses before the call.** MP3, OGG, and the rest are rejected with a message naming the two accepted forms, rather than reaching the provider for a 415. `result.audio_duration_ms` and `result.provider_processing_ms` carry the provider's own audio length and server-side time; `result.round_trip_duration_ms` is the elapsed wall time.
 - **This is dictation, not transcription.** It is tuned for a live typed-input feel on a short utterance, distinct from [`transcribe()`](#transcribing-audio-files), which serves a stored file and reports word timings. `AsyncKeyCall.dictate()` is the awaitable twin.
+
+## Judgments
+
+`judge()` asks typed questions about a state and returns typed answers with calibrated probabilities, on TypeSafe. It doesn't generate text: each question has a fixed answer shape, and the probabilities are the point.
+
+```python
+from keycall import ChoiceQuestion, KeyCall, NoulQuestion, ScoreQuestion
+
+with KeyCall(provider="typesafe", api_key=secret) as client:
+    result = client.judge(
+        model="jev-latest",
+        state="Customer message: 'My payouts have failed for 3 days.'",
+        questions={
+            "is_urgent": NoulQuestion(instructions="Does this convey urgency?"),
+            "route": ChoiceQuestion(
+                instructions="Which team should handle this?",
+                options={
+                    "billing": "payment and payout problems",
+                    "technical": "bugs and outages",
+                    "retention": "customers threatening to leave",
+                },
+            ),
+            "anger": ScoreQuestion(
+                instructions="How angry is the customer?",
+                levels=["calm", "frustrated", "angry", "furious"],
+            ),
+        },
+    )
+
+result.model                                  # the resolved id ("jev-1.13.0"), not the alias sent
+result.answers["is_urgent"].probability       # 0-1 probability that the answer is yes
+result.answers["route"].choice                # one option name
+result.answers["route"].probabilities         # per-option probabilities
+result.answers["anger"].score                 # a float on the rubric's 0-based scale
+result.answers["anger"].levels                # the rubric, echoed in order
+result.usage.input_tokens                     # output tokens are billed at zero
+```
+
+`state` is a string or any JSON-serializable structure; reference nested fields from a question's `instructions` with dot-and-index paths (`` `ticket.messages[0].text` ``). Question ids are yours: the answers come back under them, and the model never sees them, so the full question belongs in `instructions`.
+
+| Question | Answer | Fields |
+|---|---|---|
+| `NoulQuestion` (yes/no) | `NoulAnswer` | `probability` — 0-1 that the answer is yes; the value is itself the confidence |
+| `ChoiceQuestion` (one of a fixed set) | `ChoiceAnswer` | `choice`, `probabilities` per option, `confidence` |
+| `ScoreQuestion` (a position on an ordered rubric) | `ScoreAnswer` | `score` (can fall between levels), `levels`, `probabilities` aligned with them, `confidence` |
+
+- **Ask every question about a state in one call.** A batched call is far cheaper and faster than a call per question, and the answers don't shift when questions share a request. Make a second call only when a question's inputs depend on an earlier answer.
+- **The result reports what answered.** Send `jev-latest`, read `result.model` for the versioned id it resolved to; anything that feeds a gate or a stored record should pin that id. The model listing returns rolling aliases only — a pinned versioned id stays callable without appearing in `list_models()`, so KeyCall never refuses a model for being unlisted.
+- **A 0.5 from a `NoulQuestion` means "equally likely," never "medium."** A spectrum belongs in a `ScoreQuestion`. A score can fall between levels at low confidence, which is the model reporting the rubric doesn't fit the input; treat it as a review signal rather than rounding it away, and KeyCall never rounds it for you.
+- **A choice takes at most 255 options**, refused before the network past that; give the set its own catch-all option when it may not cover the input. Option descriptions may be empty strings.
+- **No sampling parameters exist on this wire.** There is no temperature, seed, or max-output-tokens to set, and `judge()` takes none.
+- **Errors carry the provider's own detail.** A validation failure (a malformed question) surfaces the field path; an unknown model raises `MODEL_NOT_AVAILABLE`; `provider_request_id` and `provider_processing_ms` carry the provider's request id and server-side time on every result. `AsyncKeyCall.judge()` is the awaitable twin.
 
 ## Prompt caching
 

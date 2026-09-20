@@ -24,6 +24,8 @@ __all__ = [
     "BatchRequest",
     "BatchResult",
     "BatchStatus",
+    "ChoiceAnswer",
+    "ChoiceQuestion",
     "Citation",
     "CitationFound",
     "CodeExecutionOutput",
@@ -41,12 +43,20 @@ __all__ = [
     "InputPart",
     "InterimTranscript",
     "InvocationResult",
+    "JudgmentAnswer",
+    "JudgmentQuestion",
+    "JudgmentRequest",
+    "JudgmentResult",
     "Message",
     "MessageRole",
     "Model",
     "ModelDiscovery",
+    "NoulAnswer",
+    "NoulQuestion",
     "OutputPart",
     "ReasoningDelta",
+    "ScoreAnswer",
+    "ScoreQuestion",
     "ServiceReport",
     "ServiceStatus",
     "SpeechGenerationRequest",
@@ -1291,6 +1301,160 @@ class DictationResult:
     words: tuple[DictationWord, ...] = ()
     confidence: float | None = None
     audio_duration_ms: int | None = None
+    provider_request_id: str | None = None
+    provider_processing_ms: float | None = None
+    round_trip_duration_ms: float | None = None
+    warnings: tuple[str, ...] = ()
+
+
+# --- judgment --------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class NoulQuestion:
+    """A yes/no question. The answer is a calibrated 0-1 probability that
+    the answer is yes: 0.5 means "equally likely", never "medium" — a
+    spectrum belongs in a :class:`ScoreQuestion`. ``instructions`` carries
+    the full question; question ids are not seen by the model, so nothing
+    can live only in the id."""
+
+    instructions: str
+
+    def __post_init__(self) -> None:
+        if not self.instructions or not self.instructions.strip():
+            raise ValueError("instructions must not be empty")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ChoiceQuestion:
+    """One option from a fixed set. ``options`` maps each option name to a
+    description of what it covers; pass an empty string where a name needs
+    none (the wire accepts that). The answer names one option and carries
+    a probability per option plus an overall confidence. A set that may
+    not cover the input should include its own catch-all option."""
+
+    instructions: str
+    options: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        if not self.instructions or not self.instructions.strip():
+            raise ValueError("instructions must not be empty")
+        if len(self.options) < 2:
+            raise ValueError("a choice needs at least two options")
+        if any(not name or not name.strip() for name in self.options):
+            raise ValueError("option names must not be empty")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ScoreQuestion:
+    """A position on an ordered rubric. ``levels`` is the rubric from
+    lowest to highest, at least two entries. The answer is a float that
+    can fall between levels — the model reporting the rubric doesn't fit
+    the input — so a caller rounding it into a decision owns that
+    threshold; KeyCall never rounds for them."""
+
+    instructions: str
+    levels: Sequence[str]
+
+    def __post_init__(self) -> None:
+        levels = tuple(self.levels)
+        object.__setattr__(self, "levels", levels)
+        if not self.instructions or not self.instructions.strip():
+            raise ValueError("instructions must not be empty")
+        if len(levels) < 2:
+            raise ValueError("a score rubric needs at least two levels")
+        if any(not level or not level.strip() for level in levels):
+            raise ValueError("rubric levels must not be empty")
+
+
+JudgmentQuestion = NoulQuestion | ChoiceQuestion | ScoreQuestion
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class NoulAnswer:
+    """The answer to a :class:`NoulQuestion`: a 0-1 probability that the
+    answer is yes. No separate confidence exists for this type; the value
+    is itself the probability."""
+
+    probability: float
+    kind: Literal["noul"] = "noul"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ChoiceAnswer:
+    """The answer to a :class:`ChoiceQuestion`: the selected option, a
+    probability per option, and the provider's overall confidence in the
+    selection (how peaked the distribution is, reported separately from
+    the probabilities rather than derived from them)."""
+
+    choice: str
+    probabilities: Mapping[str, float]
+    confidence: float | None = None
+    kind: Literal["choice"] = "choice"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ScoreAnswer:
+    """The answer to a :class:`ScoreQuestion`. ``score`` is a float on the
+    rubric's 0-based index scale and can fall between levels; ``levels``
+    echoes the rubric in order, and ``probabilities`` aligns with it
+    index for index. A between-levels score at low confidence means the
+    rubric didn't fit the input — a review signal, not noise."""
+
+    score: float
+    levels: tuple[str, ...] = ()
+    probabilities: tuple[float, ...] = ()
+    confidence: float | None = None
+    kind: Literal["score"] = "score"
+
+
+JudgmentAnswer = NoulAnswer | ChoiceAnswer | ScoreAnswer
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class JudgmentRequest:
+    """One judgment call (TypeSafe): a ``state`` (a string, or any
+    JSON-serializable structure) and every question about it at once —
+    one request per state, because batching is dramatically cheaper and
+    faster than a call per question and the answers don't shift. Keys of
+    ``questions`` are caller-chosen ids the answers come back under; the
+    model never sees them."""
+
+    model: str
+    state: Any
+    questions: Mapping[str, JudgmentQuestion]
+
+    def __post_init__(self) -> None:
+        if not self.model or not self.model.strip():
+            raise ValueError("model must not be empty")
+        if self.state is None or (isinstance(self.state, str) and not self.state.strip()):
+            raise ValueError("state must not be empty")
+        if not self.questions:
+            raise ValueError("questions must not be empty")
+        for question_id, question in self.questions.items():
+            if not question_id or not question_id.strip():
+                raise ValueError("question ids must not be empty")
+            if not isinstance(question, (NoulQuestion, ChoiceQuestion, ScoreQuestion)):
+                raise TypeError(
+                    f"question {question_id!r} must be a NoulQuestion, "
+                    "ChoiceQuestion, or ScoreQuestion "
+                    f"(got {type(question).__name__})"
+                )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class JudgmentResult:
+    """A finished judgment call. ``model`` is the resolved id the provider
+    reports (send ``jev-latest``, read back ``jev-1.13.0``), so a caller
+    pinning behavior records what answered, not what was asked for.
+    ``answers`` is keyed by the request's own question ids.
+    ``provider_processing_ms`` is the provider's server-side time,
+    distinct from ``round_trip_duration_ms``, the elapsed wall time of
+    the call."""
+
+    model: str
+    answers: Mapping[str, JudgmentAnswer]
+    usage: Usage | None = None
     provider_request_id: str | None = None
     provider_processing_ms: float | None = None
     round_trip_duration_ms: float | None = None

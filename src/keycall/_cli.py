@@ -247,9 +247,15 @@ def _render(result: VerifyResult) -> list[str]:
                 lines.append(f"  ! {status.name}: {status.detail}")
         return lines
 
+    if result.decision_model_count is not None:
+        # A judgment provider lists decision models and no text ones;
+        # counting "0 text model(s)" at it would read as a fault.
+        model_count = f"{result.decision_model_count} decision model(s)"
+    else:
+        model_count = f"{result.text_model_count} text model(s)"
     lines.append(
         f"✓ {result.label} ({result.provider}): key accepted, "
-        f"{result.text_model_count} text model(s), "
+        f"{model_count}, "
         f"list digest {result.model_list_digest}, "
         f"selection rule v{result.selection_rule_version}"
     )
@@ -259,12 +265,13 @@ def _render(result: VerifyResult) -> list[str]:
         lines.append(f"✗ {result.label}: no text models available to generate with")
         return lines
 
+    verb = "judged" if result.outcome == "judged" else "generated"
     for attempt in result.attempts:
         if attempt.ok:
             skipped = f", {attempt.position} advertised model(s) skipped" if attempt.position else ""
             usage = attempt.total_tokens if attempt.total_tokens is not None else "unreported"
             lines.append(
-                f"✓ {result.label}: generated with {attempt.model_id} "
+                f"✓ {result.label}: {verb} with {attempt.model_id} "
                 f"(filtered position {attempt.position}, "
                 f"provider-list position {attempt.raw_position}{skipped}, "
                 f"{attempt.round_trip_duration_ms:.0f} ms, total tokens: {usage})"
@@ -278,17 +285,22 @@ def _render(result: VerifyResult) -> list[str]:
 
     if result.outcome == "credential_rejected":
         lines.append(f"✗ {result.label}: credential rejected")
-    elif result.outcome == "rate_limited_unverified":
+    advertised = (
+        result.decision_model_count
+        if result.decision_model_count is not None
+        else result.text_model_count
+    )
+    if result.outcome == "rate_limited_unverified":
         tried = len(result.attempts)
         lines.append(
             f"! {result.label}: generation unverified — quota/rate limited "
-            f"({tried} attempted of {result.text_model_count})"
+            f"({tried} attempted of {advertised})"
         )
     elif result.outcome == "no_model_invocable":
         tried = len(result.attempts)
         lines.append(
-            f"✗ {result.label}: no advertised text model was invocable "
-            f"({tried} attempted of {result.text_model_count})"
+            f"✗ {result.label}: no advertised model was invocable "
+            f"({tried} attempted of {advertised})"
         )
     return lines
 

@@ -104,6 +104,7 @@ const CATEGORY_LABELS = {
   speech_generation: "Speaks text aloud",
   video_generation: "Makes video",
   realtime: "Realtime voice",
+  decision: "Judges questions",
   unknown: "Unrecognised",
 };
 
@@ -931,7 +932,7 @@ function populateCategoryOptions() {
   if (categoryOptionsFilled) return;
   const cats = [
     "text_generation", "image_generation", "embedding", "transcription",
-    "speech_generation", "video_generation", "realtime", "unknown",
+    "speech_generation", "video_generation", "realtime", "decision", "unknown",
   ];
   const sel = el("models-category");
   cats.forEach((c) => {
@@ -4662,12 +4663,17 @@ function renderVerify(target, data) {
   }
 
   const outcomeKind =
-    data.outcome === "generated" || (!data.generate_requested && data.listed_ok) ? "ok"
+    data.outcome === "generated" || data.outcome === "judged"
+      || (!data.generate_requested && data.listed_ok) ? "ok"
     : data.outcome === "rate_limited_unverified" ? "warn" : "err";
   head.appendChild(pill(data.outcome, outcomeKind));
   const count = document.createElement("span");
   count.className = "meta";
-  count.textContent = ` ${data.text_model_count} text model(s)`;
+  // A judgment provider lists decision models and no text ones; counting
+  // "0 text model(s)" at it would read as a fault.
+  count.textContent = data.decision_model_count != null
+    ? ` ${data.decision_model_count} decision model(s)`
+    : ` ${data.text_model_count} text model(s)`;
   head.appendChild(count);
   card.appendChild(head);
 

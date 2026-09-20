@@ -528,3 +528,37 @@ def test_render_service_credential_rejection():
     )
     lines = _render(result)
     assert lines[0].startswith("✗ livekit-test (livekit): invalid_api_key")
+
+
+def test_render_judgment_result_counts_decision_models_and_says_judged():
+    from keycall._cli import _render
+    from keycall._verify_core import ModelAttempt, VerifyResult
+
+    result = VerifyResult(
+        label="typesafe-test",
+        provider="typesafe",
+        listed_ok=True,
+        text_model_count=0,
+        decision_model_count=2,
+        generate_requested=True,
+        generate_ok=True,
+        attempts=(
+            ModelAttempt(
+                model_id="jev-latest",
+                position=0,
+                raw_position=0,
+                classification_source="keycall_rule",
+                ok=True,
+                round_trip_duration_ms=700.0,
+                total_tokens=306,
+            ),
+        ),
+        model_list_digest="abc123",
+        outcome="judged",
+    )
+    lines = _render(result)
+    # A judgment provider has no text models; counting zero of them at a
+    # verified key would read as a fault.
+    assert "2 decision model(s)" in lines[0]
+    assert "text model" not in lines[0]
+    assert "judged with jev-latest" in lines[1]
