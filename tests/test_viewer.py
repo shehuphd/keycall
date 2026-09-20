@@ -22,6 +22,7 @@ from keycall.viewer._api import (
     generate_image,
     generate_stream_events,
     generate_video,
+    judge,
     list_targets,
     set_settings,
     transcribe_file,
@@ -2419,6 +2420,196 @@ def test_dictate_round_trip_carries_both_outputs():
     assert result["audio_duration_ms"] == 2645
     assert result["provider_request_id"] == "sess-1"
     assert result["provider_processing_ms"] == 212.5
+    assert result["warnings"] == []
+    assert CANARY not in json.dumps(result)
+
+
+# --- judgment ---
+
+
+JUDGE_BODY = {
+    "model": "jev-latest",
+    "state": "Customer message: payouts failing for 3 days.",
+    "questions": [
+        {"type": "noul", "instructions": "Does this convey urgency?"},
+        {
+            "type": "choice",
+            "instructions": "Which team should handle this?",
+            "options": ["billing", "technical", "retention"],
+        },
+        {
+            "type": "score",
+            "instructions": "How angry is the customer?",
+            "levels": ["calm", "frustrated", "angry", "furious"],
+        },
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("body", "fragment"),
+    [
+        ({}, "model"),
+        ({"model": "jev-latest"}, "state"),
+        ({"model": "jev-latest", "state": "x"}, "questions"),
+        ({"model": "jev-latest", "state": "x", "questions": ["nope"]}, "object"),
+        (
+            {"model": "jev-latest", "state": "x", "questions": [{"type": "noul"}]},
+            "instructions",
+        ),
+        (
+            {
+                "model": "jev-latest",
+                "state": "x",
+                "questions": [{"type": "essay", "instructions": "write"}],
+            },
+            "noul, choice, or score",
+        ),
+        (
+            {
+                "model": "jev-latest",
+                "state": "x",
+                "questions": [
+                    {"type": "choice", "instructions": "pick", "options": ["only"]}
+                ],
+            },
+            "two options",
+        ),
+        (
+            {
+                "model": "jev-latest",
+                "state": "x",
+                "questions": [
+                    {"type": "score", "instructions": "rate", "levels": ["one"]}
+                ],
+            },
+            "two levels",
+        ),
+        (
+            {
+                "model": "jev-latest",
+                "state": "x",
+                "questions": [
+                    {"id": "a", "type": "noul", "instructions": "x?"},
+                    {"id": "a", "type": "noul", "instructions": "y?"},
+                ],
+            },
+            "unique",
+        ),
+    ],
+)
+def test_judge_bad_bodies(body, fragment):
+    reg = Registry(
+        [Target(provider="typesafe", key=CANARY, name="ts")],
+        httpx_transport=httpx.MockTransport(openai_handler),
+    )
+    try:
+        result = judge(reg, 0, body)
+    finally:
+        reg.close()
+    assert result["error"]["code"] == "bad_request"
+    assert fragment in result["error"]["message"]
+
+
+def test_judge_unknown_target():
+    reg = make_registry()
+    try:
+        result = judge(reg, 99, dict(JUDGE_BODY))
+    finally:
+        reg.close()
+    assert result["error"]["code"] == "not_found"
+
+
+def test_judge_refuses_on_a_provider_without_the_endpoint():
+    reg = make_registry()  # openai, anthropic
+    try:
+        result = judge(reg, 0, dict(JUDGE_BODY))
+    finally:
+        reg.close()
+    assert result["error"]["code"] == "unsupported_operation"
+    assert "typesafe" in result["error"]["message"]
+
+
+def test_judge_round_trip_answers_every_question():
+    """One POST carrying all three question types; the route hands back
+    typed answers under the browser's own ids, with a bare options list
+    turned into the wire's mapping form and score answers normalized into
+    rubric order."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "model": "jev-1.13.0",
+                "answers": {
+                    "q1": {"type": "noul", "noul": 0.95},
+                    "q2": {
+                        "type": "choice",
+                        "choice": "retention",
+                        "confidence": 0.34,
+                        "probabilities": {"billing": 0.43, "retention": 0.57, "technical": 0.0},
+                    },
+                    "q3": {
+                        "type": "score",
+                        "score": 1.81,
+                        "confidence": 0.78,
+                        "legend": {"0": "calm", "1": "frustrated", "2": "angry", "3": "furious"},
+                        "probabilities": {"0": 0.0, "1": 0.2, "2": 0.79, "3": 0.01},
+                    },
+                },
+                "usage": {"input_tokens": 413, "output_tokens": 75},
+            },
+            headers={
+                "x-typesafe-request-id": "req_abc",
+                "x-envoy-upstream-service-time": "69",
+            },
+        )
+
+    reg = Registry(
+        [Target(provider="typesafe", key=CANARY, name="ts")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+    try:
+        body = dict(JUDGE_BODY)
+        body["questions"] = [
+            {"id": "q1", **JUDGE_BODY["questions"][0]},
+            {"id": "q2", **JUDGE_BODY["questions"][1]},
+            {"id": "q3", **JUDGE_BODY["questions"][2]},
+        ]
+        result = judge(reg, 0, body)
+    finally:
+        reg.close()
+
+    assert captured["path"] == "/v1/systemone"
+    sent = captured["body"]
+    assert sent["model"] == "jev-latest"
+    assert sent["state"] == JUDGE_BODY["state"]
+    # The browser sends option names; the wire takes a mapping.
+    assert sent["questions"]["q2"]["criteria"] == {
+        "billing": "",
+        "technical": "",
+        "retention": "",
+    }
+    assert sent["questions"]["q3"]["criteria"] == [
+        "calm",
+        "frustrated",
+        "angry",
+        "furious",
+    ]
+
+    assert result["model"] == "jev-1.13.0"
+    assert result["answers"]["q1"] == {"kind": "noul", "probability": 0.95}
+    assert result["answers"]["q2"]["choice"] == "retention"
+    assert result["answers"]["q2"]["probabilities"]["billing"] == 0.43
+    assert result["answers"]["q3"]["levels"] == ["calm", "frustrated", "angry", "furious"]
+    assert result["answers"]["q3"]["probabilities"] == [0.0, 0.2, 0.79, 0.01]
+    assert result["usage"]["input_tokens"] == 413
+    assert result["provider_request_id"] == "req_abc"
+    assert result["provider_processing_ms"] == 69.0
+    assert result["round_trip_duration_ms"] is not None
     assert result["warnings"] == []
     assert CANARY not in json.dumps(result)
 

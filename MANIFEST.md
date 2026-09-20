@@ -57,7 +57,7 @@ Every current source file, with what it does and what it touches. A map for orie
 |---|---|
 | `__init__.py` | `run()`: starts the server, prints the tokened URL, opens the browser, optional `--reload` restart loop. |
 | `_server.py` | Localhost stdlib HTTP server: token handshake to an httpOnly cookie, CSRF checks, static files with `no-store`, WebSocket upgrade. |
-| `_api.py` | Every `/api/*` route: key checks, model listing, playground generation, file transcription, dictation, verify runs, settings, conversations, serialization; the per-provider capability map covers loaded custom targets too. |
+| `_api.py` | Every `/api/*` route: key checks, model listing, playground generation, file transcription, dictation, judgments, verify runs, settings, conversations, serialization; the per-provider capability map covers loaded custom targets too. |
 | `_registry.py` | Server-side target registry mapping integer ids to live clients; conversation store; read-timeout rebuilds. |
 | `_traces.py` | In-memory request-outcome log for the Traces tab (timing and status only). |
 | `_realtime_bridge.py` | Bridges the browser's voice WebSocket to a `realtime()` session. |
@@ -65,7 +65,7 @@ Every current source file, with what it does and what it touches. A map for orie
 | `_ws.py` | Minimal WebSocket frame codec for the bridges. |
 | `auth.py` | Per-run token generation and constant-time comparison. |
 | `static/index.html` | The single page: five tabs, dialogs, composer. |
-| `static/app.js` | All frontend behavior: tabs and URL routing, playground tasks, gating, history, traces, voice/transcribe audio, file transcription, dictation. |
+| `static/app.js` | All frontend behavior: tabs and URL routing, playground tasks, gating, history, traces, voice/transcribe audio, file transcription, dictation, judgments. |
 | `static/markdown.js` | The reply renderer's small markdown subset. |
 | `static/styles.css` | All styling, including the alias badge's instant hover tooltip. |
 

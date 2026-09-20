@@ -151,6 +151,7 @@
                 <option value="transcribe">Transcribe speech live</option>
                 <option value="transcribe-file">Transcribe a recording</option>
                 <option value="dictate">Dictate a short note</option>
+                <option value="judge">Judge a situation</option>
               </select>
             </div>
             <div class="pg-row">
@@ -275,6 +276,14 @@
               <input id="pg-dictate-keyterms" type="text"
                      placeholder="Optional, comma-separated, e.g. &quot;metoprolol, KeyCall&quot;">
             </div>
+            <p class="hint" id="pg-judge-mode-note" hidden>
+              Describe a situation, then ask questions about it. The model
+              answers each one with a probability, not with prose: a yes/no
+              question comes back as how likely the answer is yes, a
+              pick-one question as one option with the odds per option, and
+              a rate-on-a-scale question as a position on your own scale.
+              Every question is answered in one call.
+            </p>
           </div>
 
           <div class="pg-group" id="pg-extras">
@@ -488,6 +497,25 @@
                       title="Record a note or pick a WAV file first">Dictate</button>
               <button id="pg-dictate-new" type="button" class="secondary"
                       title="Clear the notes and start a new conversation">New chat</button>
+            </div>
+          </div>
+          <!-- Replaces the composer in the judgment task: a situation, a
+               list of typed questions, one button asks them all at once. -->
+          <div class="pg-voice-panel" id="pg-judge-panel" hidden>
+            <div class="pg-voice-status" id="pg-judge-status">Describe a situation, add one or more questions, then press Judge.</div>
+            <div class="pg-row stacked">
+              <label for="pg-judge-state" title="What the questions are about: a message, a record, any text.">The situation to judge</label>
+              <textarea id="pg-judge-state" rows="3"
+                        placeholder="e.g. Customer message: &quot;My payouts have failed for 3 days and support has not replied.&quot;"></textarea>
+            </div>
+            <div id="pg-judge-questions"></div>
+            <div class="pg-composer" id="pg-judge-composer">
+              <button id="pg-judge-add" type="button" class="secondary"
+                      title="Add another question about the same situation">Add a question</button>
+              <button id="pg-judge-run" disabled
+                      title="Pick a key, describe the situation, and finish a question first">Judge</button>
+              <button id="pg-judge-new" type="button" class="secondary"
+                      title="Clear the answers and start a new conversation">New chat</button>
             </div>
           </div>
           <div class="pg-recorder" id="pg-recorder" hidden>

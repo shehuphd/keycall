@@ -612,6 +612,7 @@ function modeCategory(mode) {
     : mode === "speech" ? "speech_generation"
     : mode === "voice" ? "realtime"
     : mode === "transcribe" || mode === "transcribe-file" ? "transcription"
+    : mode === "judge" ? "decision"
     : null;
 }
 
@@ -623,6 +624,10 @@ function modeCategory(mode) {
 function modeCapability(mode) {
   return mode === "transcribe-file" ? "file_transcription"
     : mode === "dictate" ? "dictation"
+    // The judgment task's model category is "decision" but the provider
+    // flag is "judgment": the flag names the operation, the category the
+    // kind of model it runs.
+    : mode === "judge" ? "judgment"
     : modeCategory(mode);
 }
 
@@ -965,6 +970,7 @@ async function loadPlaygroundModels() {
     updateSendEnabled();
     updateSttRunEnabled();
     updateDictateRunEnabled();
+    updateJudgeRunEnabled();
     return;
   }
   if (currentMode() === "dictate") {
@@ -1034,11 +1040,13 @@ async function loadPlaygroundModels() {
       : currentMode() === "voice" ? "this key has no voice models"
       : currentMode() === "transcribe" ? "this key has no live-transcription models"
       : currentMode() === "transcribe-file" ? "this key has no file-transcription models"
+      : currentMode() === "judge" ? "this key has no judgment models"
       : "this key has no text models";
     sel.appendChild(none);
     sel.disabled = true;
     updateSendEnabled();
     updateSttRunEnabled();
+    updateJudgeRunEnabled();
     return;
   }
   sel.disabled = false;
@@ -1232,7 +1240,8 @@ async function applyMode() {
   const transcribe = currentMode() === "transcribe";
   const sttFile = currentMode() === "transcribe-file";
   const dictate = currentMode() === "dictate";
-  const nonText = image || video || speech || voice || transcribe || sttFile || dictate;
+  const judge = currentMode() === "judge";
+  const nonText = image || video || speech || voice || transcribe || sttFile || dictate || judge;
   el("pg-extras").hidden = nonText;
   el("pg-maxtok-row").hidden = nonText;
   // Neither generate_image() nor generate_video() sends reasoning_effort
@@ -1246,8 +1255,9 @@ async function applyMode() {
   el("pg-seed-row").hidden = nonText;
   // Transcription and dictation have no instructions either: audio in,
   // words back, with no prompt anywhere in it (dictation's steering
-  // fields are its own, below).
-  el("pg-system-row").hidden = image || video || speech || transcribe || sttFile || dictate;
+  // fields are its own, below). Judgment carries the whole ask in the
+  // state and questions; there is no instructions field on that wire.
+  el("pg-system-row").hidden = image || video || speech || transcribe || sttFile || dictate || judge;
   // The cache marker only reaches generate_text/stream_text; voice runs
   // over its own realtime connection, a different protocol the marker
   // never touches, so the toggle would silently do nothing there.
@@ -1266,6 +1276,7 @@ async function applyMode() {
   el("pg-dictate-mode-note").hidden = !dictate;
   el("pg-dictate-context-row").hidden = !dictate;
   el("pg-dictate-keyterms-row").hidden = !dictate;
+  el("pg-judge-mode-note").hidden = !judge;
   el("pg-video-duration-row").hidden = !video;
   if (!video) el("pg-video-duration-warning").hidden = true;
   // An image or video model takes a description and nothing else, so a
@@ -1273,12 +1284,16 @@ async function applyMode() {
   // sent. Voice, transcribe, and dictate each have their own microphone
   // control, in their own panel.
   el("pg-mic").hidden = nonText;
-  el("pg-composer").hidden = voice || transcribe || sttFile || dictate;
-  el("pg-composer-hint").hidden = voice || transcribe || sttFile || dictate;
+  el("pg-composer").hidden = voice || transcribe || sttFile || dictate || judge;
+  el("pg-composer-hint").hidden = voice || transcribe || sttFile || dictate || judge;
   el("pg-voice-panel").hidden = !voice;
   el("pg-transcribe-panel").hidden = !transcribe;
   el("pg-stt-panel").hidden = !sttFile;
   el("pg-dictate-panel").hidden = !dictate;
+  el("pg-judge-panel").hidden = !judge;
+  // Entering the judgment task always shows at least one question row, so
+  // the panel never opens as a bare Add button with nothing to fill in.
+  if (judge) ensureJudgeQuestionRow();
   // Leaving a session mode ends any session in progress rather than
   // leaving a WebSocket open behind a panel nothing points at any more.
   if (!voice) endVoiceSession();
@@ -2627,6 +2642,285 @@ function addDictationBubble(result) {
   return bubble;
 }
 
+// --- judgment ---------------------------------------------------------------
+//
+// The judgment task: one situation, a list of typed questions, one call
+// answering them all at once (a batched call is far cheaper and faster
+// than a call per question, and the wire is built around it).
+
+function setJudgeStatus(text) {
+  el("pg-judge-status").textContent = text;
+}
+
+// What the second field means per question kind, in the user's words.
+const JUDGE_KINDS = {
+  noul: { criteria: null },
+  choice: {
+    criteria: {
+      label: "The options to pick from",
+      placeholder: "Comma-separated, e.g. billing, technical, retention",
+    },
+  },
+  score: {
+    criteria: {
+      label: "The scale, lowest first",
+      placeholder: "Comma-separated, e.g. calm, frustrated, angry, furious",
+    },
+  },
+};
+
+function addJudgeQuestionRow() {
+  const row = document.createElement("div");
+  row.className = "pg-judge-q";
+
+  const kind = document.createElement("select");
+  kind.className = "pg-judge-kind";
+  kind.setAttribute("aria-label", "What kind of answer this question takes");
+  kind.title = "What kind of answer this question takes";
+  [
+    ["noul", "Yes or no"],
+    ["choice", "Pick one option"],
+    ["score", "Rate on a scale"],
+  ].forEach(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    kind.appendChild(option);
+  });
+
+  const instructions = document.createElement("input");
+  instructions.type = "text";
+  instructions.className = "pg-judge-instructions";
+  instructions.placeholder = "The question, e.g. Does this convey urgency?";
+  instructions.setAttribute("aria-label", "The question");
+
+  const criteria = document.createElement("input");
+  criteria.type = "text";
+  criteria.className = "pg-judge-criteria";
+  criteria.hidden = true;
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "secondary danger pg-judge-remove";
+  remove.textContent = "Remove";
+  remove.title = "Remove this question";
+  remove.setAttribute("aria-label", "Remove this question");
+  remove.addEventListener("click", () => {
+    row.remove();
+    // The panel never sits empty: removing the last row leaves a fresh
+    // one to fill in rather than a bare Add button.
+    ensureJudgeQuestionRow();
+    updateJudgeRunEnabled();
+  });
+
+  const syncCriteria = () => {
+    const meta = JUDGE_KINDS[kind.value].criteria;
+    criteria.hidden = !meta;
+    if (meta) {
+      criteria.placeholder = meta.placeholder;
+      criteria.setAttribute("aria-label", meta.label);
+      criteria.title = meta.label;
+    }
+  };
+  kind.addEventListener("change", syncCriteria);
+  syncCriteria();
+
+  row.appendChild(kind);
+  row.appendChild(instructions);
+  row.appendChild(criteria);
+  row.appendChild(remove);
+  el("pg-judge-questions").appendChild(row);
+  return row;
+}
+
+function ensureJudgeQuestionRow() {
+  if (!el("pg-judge-questions").children.length) addJudgeQuestionRow();
+}
+
+// "a, b,, c" -> ["a", "b", "c"], same trimming the dictation keyterms use.
+function splitCommaList(text) {
+  return text.split(",").map((part) => part.trim()).filter(Boolean);
+}
+
+// Every question row, read into {kind, instructions, list, complete,
+// missing}: `complete` when the row can be sent, `missing` naming what
+// still needs filling for the Judge button's own explanation.
+function judgeQuestionRows() {
+  return [...el("pg-judge-questions").querySelectorAll(".pg-judge-q")].map((row) => {
+    const kind = row.querySelector(".pg-judge-kind").value;
+    const instructions = row.querySelector(".pg-judge-instructions").value.trim();
+    const list = splitCommaList(row.querySelector(".pg-judge-criteria").value);
+    let missing = null;
+    if (!instructions) missing = "a question";
+    else if (kind === "choice" && list.length < 2) missing = "at least two options";
+    else if (kind === "score" && list.length < 2) missing = "at least two scale levels";
+    return { kind, instructions, list, complete: !missing, missing };
+  });
+}
+
+function updateJudgeRunEnabled() {
+  const btn = el("pg-judge-run");
+  if (!btn) return;
+  const hasKey = Boolean(el("pg-target").value);
+  const hasModel = Boolean(el("pg-model").value);
+  const hasState = Boolean(el("pg-judge-state").value.trim());
+  const rows = judgeQuestionRows();
+  const incomplete = rows.find((row) => !row.complete);
+  btn.disabled = !hasKey || !hasModel || !hasState || Boolean(incomplete);
+  btn.title = !hasKey
+    ? "Pick a key on the left first"
+    : !hasModel
+    ? "Pick a model on the left first"
+    : !hasState
+    ? "Describe the situation first"
+    : incomplete
+    ? `A question still needs ${incomplete.missing}`
+    : "";
+}
+
+async function runJudgment() {
+  const targetId = el("pg-target").value;
+  const model = el("pg-model").value;
+  const state = el("pg-judge-state").value.trim();
+  const rows = judgeQuestionRows();
+  if (!targetId || !model || !state || rows.some((row) => !row.complete)) {
+    updateJudgeRunEnabled();
+    return;
+  }
+  clearTranscriptPlaceholder();
+  const turn = addBubble("user");
+  const stateLine = document.createElement("div");
+  stateLine.className = "result-text";
+  stateLine.textContent = state;
+  turn.appendChild(stateLine);
+  rows.forEach((row) => {
+    const line = document.createElement("div");
+    line.className = "meta";
+    line.textContent = row.list.length
+      ? `${row.instructions} (${row.list.join(", ")})`
+      : row.instructions;
+    turn.appendChild(line);
+  });
+
+  const btn = el("pg-judge-run");
+  working(btn, "Judging…");
+  // Model-scoped failures (an unknown pinned id, say) mark this model
+  // refused for this key, the same memory every model-bearing task feeds.
+  PG_LAST_REQUEST = { targetId, modelId: model };
+  const placeholder = addBubble("model");
+  placeholder.textContent = "Judging…";
+  const body = {
+    target: Number(targetId),
+    model,
+    state,
+    questions: rows.map((row, index) => ({
+      id: `q${index + 1}`,
+      type: row.kind,
+      instructions: row.instructions,
+      ...(row.kind === "choice" ? { options: row.list } : {}),
+      ...(row.kind === "score" ? { levels: row.list } : {}),
+    })),
+  };
+  const data = await api("/api/judge", { method: "POST", body });
+  placeholder.remove();
+  done(btn);
+  if (data.error) {
+    renderGeneration(addBubble("model"), data);
+    setJudgeStatus("that didn't work — the reply above says why");
+    updateJudgeRunEnabled();
+    return;
+  }
+  addJudgmentBubble(data, rows);
+  setJudgeStatus("done — edit the questions or the situation and judge again");
+  saveCurrentConversation(state);
+}
+
+// One line per percentage: probabilities are the product here, so each
+// answer leads with its own number rather than burying it in prose.
+function formatPercent(value) {
+  return `${(value * 100).toFixed(0)}%`;
+}
+
+function addJudgmentBubble(result, rows) {
+  const bubble = addBubble("model");
+  const answers = result.answers || {};
+  rows.forEach((row, index) => {
+    const answer = answers[`q${index + 1}`];
+    if (!answer) return;
+    const block = document.createElement("div");
+    block.className = "pg-judge-answer";
+    const question = document.createElement("div");
+    question.className = "meta";
+    question.textContent = row.instructions;
+    block.appendChild(question);
+    const lead = document.createElement("div");
+    lead.className = "result-text";
+    const detail = document.createElement("div");
+    detail.className = "meta";
+    if (answer.kind === "noul") {
+      lead.textContent = `${formatPercent(answer.probability)} likely yes`;
+    } else if (answer.kind === "choice") {
+      const odds = answer.probabilities || {};
+      const own = odds[answer.choice];
+      lead.textContent = own != null ? `${answer.choice} (${formatPercent(own)})` : answer.choice;
+      const others = Object.entries(odds)
+        .filter(([name]) => name !== answer.choice)
+        .map(([name, p]) => `${name} ${formatPercent(p)}`);
+      const parts = [...others];
+      if (typeof answer.confidence === "number") {
+        parts.push(`confidence ${formatPercent(answer.confidence)}`);
+      }
+      detail.textContent = parts.join(" · ");
+    } else {
+      const levels = answer.levels || [];
+      const top = Math.max(levels.length - 1, 1);
+      lead.textContent = levels.length
+        ? `${answer.score.toFixed(2)} on ${levels[0]} (0) to ${levels[levels.length - 1]} (${top})`
+        : answer.score.toFixed(2);
+      const parts = levels.map(
+        (level, i) => `${level} ${formatPercent((answer.probabilities || [])[i] || 0)}`
+      );
+      if (typeof answer.confidence === "number") {
+        parts.push(`confidence ${formatPercent(answer.confidence)}`);
+      }
+      detail.textContent = parts.join(" · ");
+    }
+    block.appendChild(lead);
+    if (detail.textContent) block.appendChild(detail);
+    bubble.appendChild(block);
+  });
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const parts = [`answered by ${result.model}`];
+  if (result.round_trip_duration_ms != null) {
+    parts.push(formatDuration(result.round_trip_duration_ms));
+  }
+  if (result.usage && result.usage.input_tokens != null) {
+    parts.push(`${result.usage.input_tokens} tokens in`);
+  }
+  if (result.provider_processing_ms != null) {
+    parts.push(`${Math.round(result.provider_processing_ms)}ms on the server`);
+  }
+  meta.textContent = parts.join(" · ");
+  bubble.appendChild(meta);
+  (result.warnings || []).forEach((warning) => {
+    const note = document.createElement("div");
+    note.className = "meta";
+    note.textContent = warning;
+    bubble.appendChild(note);
+  });
+  return bubble;
+}
+
+el("pg-judge-add").addEventListener("click", () => {
+  const row = addJudgeQuestionRow();
+  row.querySelector(".pg-judge-instructions").focus();
+  updateJudgeRunEnabled();
+});
+el("pg-judge-run").addEventListener("click", runJudgment);
+el("pg-judge-new").addEventListener("click", startNewConversation);
+
 function openLightbox(source) {
   const overlay = document.createElement("div");
   overlay.className = "lightbox";
@@ -3522,12 +3816,14 @@ document.addEventListener("input", (event) => {
   updateSendEnabled();
   updateVoiceSendEnabled();
   updateSttRunEnabled();
+  updateJudgeRunEnabled();
 });
 document.addEventListener("change", (event) => {
   if (!event.target.closest("#playground")) return;
   updateSendEnabled();
   updateVoiceSendEnabled();
   updateSttRunEnabled();
+  updateJudgeRunEnabled();
 });
 
 /** Detach everything after a turn goes out. Each attachment kind clears
@@ -3835,6 +4131,7 @@ function gateCapabilities(off) {
   taskGate("transcribe", "transcription", "transcribe speech live");
   taskGate("transcribe-file", "file_transcription", "transcribe a recording");
   taskGate("dictate", "dictation", "dictate a short note");
+  taskGate("judge", "judgment", "judge a situation");
 }
 
 // One pass over everything a key switch can invalidate, ending in a
@@ -3845,8 +4142,10 @@ function applyKeyGates() {
   gateCapabilities(off);
   gateSttControls(off);
   // Dictation has no per-provider sub-controls to gate, only a Dictate
-  // button that needs a key on the left.
+  // button that needs a key on the left; the Judge button re-checks the
+  // same way, since a key or model swap changes what it can run.
   updateDictateRunEnabled();
+  updateJudgeRunEnabled();
   if (off.length) {
     const target = TARGETS.find((t) => String(t.id) === el("pg-target").value);
     const who = target ? `this ${target.provider} key` : "this key";
@@ -3902,7 +4201,7 @@ let PG_CONVERSATION_TITLE = null;
 // writing its id back over the conversation now open.
 let PG_CONVERSATION_EPOCH = 0;
 
-const PG_MODE_LABELS = { text: "Text", image: "Picture", video: "Video", speech: "Speech", voice: "Voice", transcribe: "Live transcript", "transcribe-file": "Transcript", dictate: "Dictation" };
+const PG_MODE_LABELS = { text: "Text", image: "Picture", video: "Video", speech: "Speech", voice: "Voice", transcribe: "Live transcript", "transcribe-file": "Transcript", dictate: "Dictation", judge: "Judgment" };
 
 function deriveConversationTitle(promptText) {
   const text = (promptText || "").trim();
@@ -4703,6 +5002,7 @@ const TRACE_ROUTE_LABELS = {
   "/api/generate/video": "Video",
   "/api/transcribe/file": "File transcription",
   "/api/dictate": "Dictation",
+  "/api/judge": "Judgment",
   "/api/verify": "Verify",
   "/api/models": "Model list",
 };

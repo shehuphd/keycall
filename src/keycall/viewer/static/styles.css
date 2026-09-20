@@ -303,6 +303,23 @@ tbody tr.clickable:hover { background: var(--card); }
   white-space: pre-wrap;
 }
 .pg-dictation-spoken strong { color: var(--fg); font-weight: 500; }
+/* The judgment task's question rows: the answer kind, the question, its
+   options or scale, and Remove — one row on a laptop, wrapping to
+   full-width fields on a phone (media block below). */
+#pg-judge-questions { display: flex; flex-direction: column; gap: 0.5rem; }
+.pg-judge-q {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.pg-judge-q .pg-judge-instructions,
+.pg-judge-q .pg-judge-criteria { flex: 1 1 14rem; min-width: 0; }
+#pg-judge-state { width: 100%; resize: vertical; }
+/* One answer per question inside the reply bubble: the question muted
+   above its answer, blocks separated by spacing rather than borders. */
+.pg-judge-answer { margin-bottom: 0.6rem; }
+.pg-judge-answer .meta { margin-top: 0; }
 .citations { margin-top: 0.75rem; font-size: 0.85rem; }
 .citations a { color: var(--accent); word-break: break-all; }
 .err-box { color: var(--err); border: 1px solid var(--err); border-radius: 6px; padding: 0.6rem 0.75rem; }
@@ -952,6 +969,8 @@ a { color: var(--accent); }
   .pg-attached audio { flex: 1 1 100%; min-width: 0; }
   .pg-composer button:not(.icon-btn) { flex: 1 1 auto; min-height: 2.75rem; }
   #pg-stt-composer input[type=file] { min-width: 0; }
+  .pg-judge-q input, .pg-judge-q select { flex: 1 1 100%; }
+  .pg-judge-q button { flex: 1 1 auto; min-height: 2.75rem; }
   .pg-row { grid-template-columns: 1fr; gap: 0.35rem; }
   #pg-timeout-row, #pg-video-duration-row { grid-template-columns: 1fr auto; }
   #pg-timeout-row label, #pg-video-duration-row label { grid-column: 1 / -1; }

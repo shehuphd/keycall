@@ -26,11 +26,16 @@ from .._registry import (
 from .._sources import SourceError, _target_from_mapping, load_targets
 from .._types import (
     AudioInput,
+    ChoiceAnswer,
+    ChoiceQuestion,
     FileInput,
     ImageInput,
     ImageOutput,
     Message,
     MessageRole,
+    NoulAnswer,
+    NoulQuestion,
+    ScoreQuestion,
     TextGenerationRequest,
     TextInput,
     Tool,
@@ -55,6 +60,7 @@ __all__ = [
     "generate_stream_events",
     "generate_video",
     "get_conversation",
+    "judge",
     "list_conversations",
     "list_targets",
     "list_voices",
@@ -968,6 +974,130 @@ def dictate(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[st
         ],
         "confidence": result.confidence,
         "audio_duration_ms": result.audio_duration_ms,
+        "provider_request_id": result.provider_request_id,
+        "provider_processing_ms": result.provider_processing_ms,
+        "round_trip_duration_ms": result.round_trip_duration_ms,
+        "warnings": list(result.warnings),
+    }
+
+
+def judge(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """Typed questions about a state in, typed answers with calibrated
+    probabilities out, through the same `client.judge()` a library caller
+    uses. The body carries every question at once — one round trip per
+    state is the shape the operation is built around."""
+    try:
+        client = registry.client(target_id)
+    except KeyError:
+        return {"error": {"code": "not_found", "message": "unknown target id"}}
+
+    model = body.get("model")
+    if not model or not isinstance(model, str):
+        return {"error": {"code": "bad_request", "message": "a model is required"}}
+    state = body.get("state")
+    if not isinstance(state, str) or not state.strip():
+        return {"error": {"code": "bad_request", "message": "state must be a non-empty string"}}
+    raw_questions = body.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        return {
+            "error": {
+                "code": "bad_request",
+                "message": "questions must be a non-empty list",
+            }
+        }
+
+    questions: dict[str, Any] = {}
+    for position, entry in enumerate(raw_questions):
+        if not isinstance(entry, dict):
+            return {"error": {"code": "bad_request", "message": "each question must be an object"}}
+        question_id = entry.get("id") or f"q{position + 1}"
+        if not isinstance(question_id, str) or question_id in questions:
+            return {
+                "error": {
+                    "code": "bad_request",
+                    "message": "question ids must be unique strings",
+                }
+            }
+        kind = entry.get("type")
+        instructions = entry.get("instructions")
+        if not isinstance(instructions, str) or not instructions.strip():
+            return {
+                "error": {
+                    "code": "bad_request",
+                    "message": f"question {question_id}: instructions are required",
+                }
+            }
+        try:
+            if kind == "noul":
+                questions[question_id] = NoulQuestion(instructions=instructions)
+            elif kind == "choice":
+                raw_options = entry.get("options")
+                # A list of names is the form the Playground sends; a
+                # mapping of name to description passes through as is.
+                if isinstance(raw_options, list):
+                    options = {str(name): "" for name in raw_options if str(name).strip()}
+                elif isinstance(raw_options, dict):
+                    options = {str(name): str(text) for name, text in raw_options.items()}
+                else:
+                    options = {}
+                questions[question_id] = ChoiceQuestion(
+                    instructions=instructions, options=options
+                )
+            elif kind == "score":
+                raw_levels = entry.get("levels")
+                levels = (
+                    [str(level) for level in raw_levels if str(level).strip()]
+                    if isinstance(raw_levels, list)
+                    else []
+                )
+                questions[question_id] = ScoreQuestion(
+                    instructions=instructions, levels=levels
+                )
+            else:
+                return {
+                    "error": {
+                        "code": "bad_request",
+                        "message": f"question {question_id}: type must be noul, choice, or score",
+                    }
+                }
+        except (ValueError, TypeError) as error:
+            return {
+                "error": {
+                    "code": "bad_request",
+                    "message": f"question {question_id}: {error}",
+                }
+            }
+
+    try:
+        result = client.judge(model=model, state=state, questions=questions)
+    except (ValueError, TypeError) as error:
+        return {"error": {"code": "bad_request", "message": str(error)}}
+    except KeyCallError as error:
+        return error_body(error)
+
+    answers: dict[str, Any] = {}
+    for question_id, answer in result.answers.items():
+        if isinstance(answer, NoulAnswer):
+            answers[question_id] = {"kind": "noul", "probability": answer.probability}
+        elif isinstance(answer, ChoiceAnswer):
+            answers[question_id] = {
+                "kind": "choice",
+                "choice": answer.choice,
+                "probabilities": dict(answer.probabilities),
+                "confidence": answer.confidence,
+            }
+        else:
+            answers[question_id] = {
+                "kind": "score",
+                "score": answer.score,
+                "levels": list(answer.levels),
+                "probabilities": list(answer.probabilities),
+                "confidence": answer.confidence,
+            }
+    return {
+        "model": result.model,
+        "answers": answers,
+        "usage": dataclasses.asdict(result.usage) if result.usage else None,
         "provider_request_id": result.provider_request_id,
         "provider_processing_ms": result.provider_processing_ms,
         "round_trip_duration_ms": result.round_trip_duration_ms,
