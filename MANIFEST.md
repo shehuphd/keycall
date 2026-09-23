@@ -1,6 +1,6 @@
 # Manifest
 
-Last updated: 2026-09-20 00:00:00 UTC
+Last updated: 2026-09-23 00:00:00 UTC
 
 Every current source file, with what it does and what it touches. A map for orienting in the codebase, not a second copy of the docstrings.
 
@@ -58,14 +58,14 @@ Every current source file, with what it does and what it touches. A map for orie
 | `__init__.py` | `run()`: starts the server, prints the tokened URL, opens the browser, optional `--reload` restart loop. |
 | `_server.py` | Localhost stdlib HTTP server: token handshake to an httpOnly cookie, CSRF checks, static files with `no-store`, WebSocket upgrade. |
 | `_api.py` | Every `/api/*` route: key checks, model listing, playground generation, file transcription, dictation, judgments, verify runs, settings, conversations, serialization; the per-provider capability map covers loaded custom targets too. |
-| `_registry.py` | Server-side target registry mapping integer ids to live clients; conversation store; read-timeout rebuilds. |
+| `_registry.py` | Server-side target registry mapping integer ids to live clients; conversation store (with each conversation's task setup); read-timeout rebuilds. |
 | `_traces.py` | In-memory request-outcome log for the Traces tab (timing and status only). |
 | `_realtime_bridge.py` | Bridges the browser's voice WebSocket to a `realtime()` session. |
 | `_transcription_bridge.py` | Bridges the browser's transcribe WebSocket to a `transcribe_stream()` session. |
 | `_ws.py` | Minimal WebSocket frame codec for the bridges. |
 | `auth.py` | Per-run token generation and constant-time comparison. |
 | `static/index.html` | The single page: five tabs, dialogs, composer. |
-| `static/app.js` | All frontend behavior: tabs and URL routing, playground tasks, gating, history, traces, voice/transcribe audio, file transcription, dictation, judgments. |
+| `static/app.js` | All frontend behavior: tabs and URL routing, playground tasks, gating, history (foldable), traces, voice/transcribe audio, file transcription, dictation, judgments (with the draft kept per viewer in `localStorage`). |
 | `static/markdown.js` | The reply renderer's small markdown subset. |
 | `static/styles.css` | All styling, including the alias badge's instant hover tooltip. |
 

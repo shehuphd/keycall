@@ -507,7 +507,10 @@ def test_render_service_probe_result():
     )
     lines = _render(result)
     assert lines[0].startswith("✓ maps-test (google_maps): key accepted — ")
-    assert "geocoding enabled" in lines[0]
+    # Enabled is the expected state, so an enabled category is listed by
+    # name alone; only a category that isn't carries its status word.
+    assert "geocoding" in lines[0]
+    assert "enabled" not in lines[0]
     assert "directions denied" in lines[0]
     assert lines[1].startswith("  ! directions:")
     assert "console.developers.google.com" in lines[1]

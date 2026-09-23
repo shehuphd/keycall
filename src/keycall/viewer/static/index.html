@@ -503,12 +503,17 @@
                list of typed questions, one button asks them all at once. -->
           <div class="pg-voice-panel" id="pg-judge-panel" hidden>
             <div class="pg-voice-status" id="pg-judge-status">Describe a situation, add one or more questions, then press Judge.</div>
-            <div class="pg-row stacked">
-              <label for="pg-judge-state" title="What the questions are about: a message, a record, any text.">The situation to judge</label>
-              <textarea id="pg-judge-state" rows="3"
-                        placeholder="e.g. Customer message: &quot;My payouts have failed for 3 days and support has not replied.&quot;"></textarea>
-            </div>
-            <div id="pg-judge-questions"></div>
+            <!-- The setup folds away so the answers above can have the
+                 room; Judge stays outside it, reachable either way. -->
+            <details id="pg-judge-setup" open>
+              <summary id="pg-judge-summary">Situation and questions</summary>
+              <div class="pg-row stacked">
+                <label for="pg-judge-state" title="What the questions are about: a message, a record, any text.">The situation to judge</label>
+                <textarea id="pg-judge-state" rows="3"
+                          placeholder="e.g. Customer message: &quot;My payouts have failed for 3 days and support has not replied.&quot;"></textarea>
+              </div>
+              <div id="pg-judge-questions"></div>
+            </details>
             <div class="pg-composer" id="pg-judge-composer">
               <button id="pg-judge-add" type="button" class="secondary"
                       title="Add another question about the same situation">Add a question</button>
@@ -544,6 +549,14 @@
               <h3>History</h3>
               <button id="pg-history-clear" class="secondary danger" type="button" disabled
                       title="Nothing saved yet — send a message to start a conversation">Clear</button>
+              <button id="pg-history-toggle" class="icon-btn" type="button"
+                      aria-expanded="true" aria-controls="pg-history-list"
+                      title="Hide the history" aria-label="Hide the history">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round" d="M15 6l-6 6 6 6"/>
+                </svg>
+              </button>
             </div>
             <div id="pg-history-list" class="pg-history-list">
               <p class="hint" id="pg-history-empty">Conversations appear here once they have a reply. Cleared when the server stops, kept through a page reload.</p>

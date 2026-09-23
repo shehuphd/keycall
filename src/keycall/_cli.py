@@ -240,7 +240,12 @@ def _render(result: VerifyResult) -> list[str]:
     if result.outcome == "services_probed":
         # A service provider has no models; its verification is the
         # per-category probe standing.
-        summary = ", ".join(f"{s.name} {s.status}" for s in result.services)
+        # Enabled is the expected state, so an enabled category is just its
+        # name; anything else keeps its status word, since that's the part to read.
+        summary = ", ".join(
+            s.name if s.status == "enabled" else f"{s.name} {s.status}"
+            for s in result.services
+        )
         lines.append(f"✓ {result.label} ({result.provider}): key accepted — {summary}")
         for status in result.services:
             if status.status != "enabled" and status.detail:

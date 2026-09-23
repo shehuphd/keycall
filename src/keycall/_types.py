@@ -1396,7 +1396,10 @@ class ChoiceAnswer:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ScoreAnswer:
     """The answer to a :class:`ScoreQuestion`. ``score`` is a float on the
-    rubric's 0-based index scale and can fall between levels; ``levels``
+    rubric's 0-based index scale, the odds-weighted average of level
+    positions, and can fall between levels; on a rubric listed out of
+    order it can point at an unlikely level, so read the single most
+    likely level from ``probabilities``. ``levels``
     echoes the rubric in order, and ``probabilities`` aligns with it
     index for index. A between-levels score at low confidence means the
     rubric didn't fit the input — a review signal, not noise."""

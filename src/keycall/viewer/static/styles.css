@@ -303,23 +303,131 @@ tbody tr.clickable:hover { background: var(--card); }
   white-space: pre-wrap;
 }
 .pg-dictation-spoken strong { color: var(--fg); font-weight: 500; }
-/* The judgment task's question rows: the answer kind, the question, its
-   options or scale, and Remove — one row on a laptop, wrapping to
-   full-width fields on a phone (media block below). */
-#pg-judge-questions { display: flex; flex-direction: column; gap: 0.5rem; }
-.pg-judge-q {
+/* The judgment task's setup folds away (a disclosure) so the answers above
+   can take the room; the summary line is its toggle and counts what it
+   holds. */
+#pg-judge-setup > summary {
+  cursor: pointer;
+  width: fit-content;
+  /* 44px tall: the summary is the fold's only control. */
+  min-height: 2.75rem;
   display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  list-style: none;
+}
+#pg-judge-setup > summary::-webkit-details-marker { display: none; }
+#pg-judge-setup > summary::before {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+}
+#pg-judge-setup[open] > summary::before { transform: rotate(45deg); }
+@media (prefers-reduced-motion: reduce) {
+  #pg-judge-setup > summary::before { transition: none; }
+}
+#pg-judge-setup > * + * { margin-top: 0.6rem; }
+#pg-judge-state { width: 100%; resize: vertical; }
+/* One grid per question row: the answer kind, the question, its options
+   or scale, and the remove icon, each in its own column so every row
+   lines up with the one above. A yes/no row has no options field, so its
+   question takes that column as well. */
+#pg-judge-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  /* The list scrolls inside itself past a comfortable height rather than
+     pushing the answers off the column; 2px keeps focus rings unclipped. */
+  max-height: 40vh;
+  max-height: 40dvh;
+  overflow-y: auto;
+  padding: 2px;
+}
+.pg-judge-q {
+  display: grid;
+  grid-template-columns: 10rem minmax(0, 1.4fr) minmax(0, 1fr) 2.75rem;
   gap: 0.5rem;
   align-items: center;
-  flex-wrap: wrap;
 }
-.pg-judge-q .pg-judge-instructions,
-.pg-judge-q .pg-judge-criteria { flex: 1 1 14rem; min-width: 0; }
-#pg-judge-state { width: 100%; resize: vertical; }
-/* One answer per question inside the reply bubble: the question muted
-   above its answer, blocks separated by spacing rather than borders. */
-.pg-judge-answer { margin-bottom: 0.6rem; }
-.pg-judge-answer .meta { margin-top: 0; }
+.pg-judge-q > *,
+.pg-judge-q > input[type=text] { min-width: 0; }
+.pg-judge-q.no-criteria .pg-judge-instructions { grid-column: span 2; }
+/* The row stacks on the list's own width, not the window's: the wide
+   layout's third column can be narrower than a phone. The kind and the
+   remove icon share the first line, the question and its options each
+   take a full line below. */
+#pg-judge-questions { container-type: inline-size; }
+@container (max-width: 34rem) {
+  .pg-judge-q { grid-template-columns: minmax(0, 1fr) 2.75rem; }
+  .pg-judge-q .pg-judge-kind { grid-column: 1; grid-row: 1; }
+  .pg-judge-q .pg-judge-remove { grid-column: 2; grid-row: 1; }
+  .pg-judge-q .pg-judge-instructions,
+  .pg-judge-q.no-criteria .pg-judge-instructions,
+  .pg-judge-q .pg-judge-criteria { grid-column: 1 / -1; }
+}
+.icon-btn.danger {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 55%, transparent);
+  background: transparent;
+}
+.icon-btn.danger:hover:not(:disabled) { background: var(--err); border-color: var(--err); color: var(--bg); }
+
+/* One answer per question inside the reply bubble: the question muted,
+   the answer bold beneath it, then its odds. Blocks separated by spacing
+   rather than borders. */
+.pg-judge-answer + .pg-judge-answer { margin-top: 0.9rem; }
+.pg-judge-question { font-size: 0.8rem; color: var(--muted); }
+.pg-judge-lead { font-weight: 600; margin-top: 0.1rem; }
+.pg-judge-answer .meta { margin-top: 0.2rem; }
+/* Odds: name, bar, percentage in three fixed columns, so a numeric option
+   name can never run into its percentage. The picked row is set in
+   weight as well as full-strength accent; the rest recede. */
+.pg-odds {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(3rem, max-content) minmax(6rem, 14rem) 3rem;
+  gap: 0.2rem 0.6rem;
+  align-items: center;
+  font-size: 0.85rem;
+}
+.pg-odds li { display: contents; }
+.pg-odds-label { overflow-wrap: anywhere; color: var(--muted); }
+.pg-odds-pct { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.pg-odds li.chosen .pg-odds-label,
+.pg-odds li.chosen .pg-odds-pct { color: var(--fg); font-weight: 600; }
+.pg-odds meter {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 0.5rem;
+  border: none;
+  border-radius: 4px;
+  background: var(--code);
+  overflow: hidden;
+}
+.pg-odds meter::-webkit-meter-bar { background: var(--code); border: none; border-radius: 4px; height: 0.5rem; }
+.pg-odds meter::-webkit-meter-optimum-value,
+.pg-odds meter::-webkit-meter-suboptimum-value,
+.pg-odds meter::-webkit-meter-even-less-good-value {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 4px;
+}
+.pg-odds meter::-moz-meter-bar {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 4px;
+}
+.pg-odds li.chosen meter::-webkit-meter-optimum-value,
+.pg-odds li.chosen meter::-webkit-meter-suboptimum-value,
+.pg-odds li.chosen meter::-webkit-meter-even-less-good-value { background: var(--accent); }
+.pg-odds li.chosen meter::-moz-meter-bar { background: var(--accent); }
 .citations { margin-top: 0.75rem; font-size: 0.85rem; }
 .citations a { color: var(--accent); word-break: break-all; }
 .err-box { color: var(--err); border: 1px solid var(--err); border-radius: 6px; padding: 0.6rem 0.75rem; }
@@ -492,6 +600,30 @@ a { color: var(--accent); }
     height: auto;
   }
   .pg-history, .pg-side, .pg-main { max-height: none; overflow: visible; }
+  /* One scroll region on a stacked page: the question list grows with the
+     page instead of scrolling inside it. */
+  #pg-judge-questions { max-height: none; overflow: visible; }
+}
+
+/* History folded: on a wide screen the rail narrows to its toggle alone,
+   and the conversation takes the width. The chevron turns to point the
+   way the rail will open. */
+.pg-layout.history-collapsed { grid-template-columns: 2.75rem 22rem minmax(0, 1fr); }
+.pg-layout.history-collapsed .pg-history .pg-group { padding: 0; border: none; }
+.pg-layout.history-collapsed .pg-history h3,
+.pg-layout.history-collapsed #pg-history-clear,
+.pg-layout.history-collapsed .pg-history-list { display: none; }
+.pg-layout.history-collapsed #pg-history-toggle svg { transform: rotate(180deg); }
+@media (max-width: 900px) {
+  /* Stacked, the rail is a full-width section at the foot of the page:
+     folding it keeps its heading and hides the list, and the chevron
+     points up to fold, down to open. */
+  .pg-layout.history-collapsed { grid-template-columns: minmax(0, 1fr); }
+  .pg-layout.history-collapsed .pg-history .pg-group { padding: 1rem; border: 1px solid var(--border); }
+  .pg-layout.history-collapsed .pg-history h3 { display: block; }
+  .pg-layout.history-collapsed .pg-history-head { margin-bottom: 0; }
+  #pg-history-toggle svg { transform: rotate(90deg); }
+  .pg-layout.history-collapsed #pg-history-toggle svg { transform: rotate(-90deg); }
 }
 
 .pg-history {
@@ -509,6 +641,9 @@ a { color: var(--accent); }
   margin-bottom: 0.75rem;
 }
 .pg-history-head h3 { margin: 0; }
+/* Clear and the fold toggle sit together at the right of the heading. */
+.pg-history-head { gap: 0.5rem; }
+#pg-history-clear { margin-left: auto; }
 .pg-history-list { display: flex; flex-direction: column; gap: 0.35rem; }
 .pg-history-item {
   display: block;
@@ -969,8 +1104,7 @@ a { color: var(--accent); }
   .pg-attached audio { flex: 1 1 100%; min-width: 0; }
   .pg-composer button:not(.icon-btn) { flex: 1 1 auto; min-height: 2.75rem; }
   #pg-stt-composer input[type=file] { min-width: 0; }
-  .pg-judge-q input, .pg-judge-q select { flex: 1 1 100%; }
-  .pg-judge-q button { flex: 1 1 auto; min-height: 2.75rem; }
+  .pg-odds { grid-template-columns: minmax(3rem, max-content) minmax(0, 1fr) 3rem; }
   .pg-row { grid-template-columns: 1fr; gap: 0.35rem; }
   #pg-timeout-row, #pg-video-duration-row { grid-template-columns: 1fr auto; }
   #pg-timeout-row label, #pg-video-duration-row label { grid-column: 1 / -1; }

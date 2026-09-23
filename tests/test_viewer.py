@@ -2614,6 +2614,47 @@ def test_judge_round_trip_answers_every_question():
     assert CANARY not in json.dumps(result)
 
 
+def test_saved_conversation_round_trips_its_task_setup():
+    """A judgment conversation's situation and questions live outside the
+    replay history, so the store carries them opaque and hands them back
+    on reopen; a task with no setup stores none."""
+    from keycall.viewer._api import get_conversation, save_conversation
+
+    reg = make_registry()
+    setup = {
+        "state": "Today is Saturday",
+        "questions": [{"kind": "score", "instructions": "Which day?", "criteria": "1, 2, 3"}],
+    }
+    try:
+        saved = save_conversation(
+            reg,
+            {
+                "title": "Today is Saturday",
+                "mode": "judge",
+                "target": 0,
+                "model": "jev-latest",
+                "history": [],
+                "transcript_html": "<div class='bubble'></div>",
+                "setup": setup,
+            },
+        )
+        reopened = get_conversation(reg, saved["conversation"]["id"])
+        plain = save_conversation(
+            reg,
+            {"title": "t", "mode": "text", "history": [], "transcript_html": ""},
+        )
+        refused = save_conversation(
+            reg,
+            {"title": "t", "mode": "judge", "history": [], "transcript_html": "", "setup": "x"},
+        )
+    finally:
+        reg.close()
+    assert reopened["conversation"]["setup"] == setup
+    assert plain["conversation"]["setup"] is None
+    assert refused["error"]["code"] == "bad_request"
+    assert "setup" in refused["error"]["message"]
+
+
 def test_transcribe_file_url_input():
     captured = {}
 

@@ -287,6 +287,7 @@ def _conversation_full(conversation: Any) -> dict[str, Any]:
         **_conversation_summary(conversation),
         "history": conversation.history,
         "transcript_html": conversation.transcript_html,
+        "setup": conversation.setup,
     }
 
 
@@ -334,6 +335,9 @@ def save_conversation(registry: Registry, body: dict[str, Any]) -> dict[str, Any
     model_id = body.get("model")
     if model_id is not None and not isinstance(model_id, str):
         return {"error": {"code": "bad_request", "message": "model must be a string or null"}}
+    setup = body.get("setup")
+    if setup is not None and not isinstance(setup, dict):
+        return {"error": {"code": "bad_request", "message": "setup must be an object or null"}}
     conversation = registry.save_conversation(
         id=conversation_id,
         title=title,
@@ -342,6 +346,7 @@ def save_conversation(registry: Registry, body: dict[str, Any]) -> dict[str, Any
         model_id=model_id,
         history=history,
         transcript_html=transcript_html,
+        setup=setup,
     )
     return {"conversation": _conversation_full(conversation)}
 

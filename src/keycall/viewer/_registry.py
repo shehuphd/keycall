@@ -69,6 +69,10 @@ class Conversation:
     history: list[dict[str, Any]]
     transcript_html: str
     updated_at: float
+    # A task's own setup, for tasks whose inputs live outside the replay
+    # history (the judgment task's situation and questions), so reopening
+    # the conversation puts them back in their panel. Opaque, like the rest.
+    setup: dict[str, Any] | None = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -242,6 +246,7 @@ class Registry:
         model_id: str | None,
         history: list[dict[str, Any]],
         transcript_html: str,
+        setup: dict[str, Any] | None = None,
     ) -> Conversation:
         """Create a conversation, or overwrite one this same viewer already
         saved. `id` addresses a slot the browser already knows about (its
@@ -263,6 +268,7 @@ class Registry:
                 history=history,
                 transcript_html=transcript_html,
                 updated_at=time.time(),
+                setup=setup,
             )
             self._conversations[new_id] = conversation
             return conversation

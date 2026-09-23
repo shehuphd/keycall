@@ -543,6 +543,17 @@ function renderDashboard() {
     : "Load a key first — there is nothing to test yet";
 }
 
+// A service key's per-category standings as one line. Enabled is the
+// expected state, so an enabled category is just its name; anything else
+// keeps its status word ("directions denied"), which is the part to
+// read. "geocoding, places, directions" over "geocoding enabled,
+// places enabled, directions enabled".
+function serviceSummary(services) {
+  return (services || [])
+    .map((s) => (s.status === "enabled" ? s.name : `${s.name} ${s.status}`))
+    .join(", ");
+}
+
 async function checkTarget(id, row) {
   const statusCell = row.children[2];
   clear(statusCell);
@@ -559,9 +570,7 @@ async function checkTarget(id, row) {
     // A service key has categories, never models: the standing per
     // category is the whole answer.
     statusCell.appendChild(pill("key valid", "ok"));
-    row.children[3].textContent = (data.services || [])
-      .map((s) => `${s.name} ${s.status}`)
-      .join(", ");
+    row.children[3].textContent = serviceSummary(data.services);
     return;
   }
   statusCell.appendChild(pill("key valid", "ok"));
@@ -2669,7 +2678,39 @@ const JUDGE_KINDS = {
   },
 };
 
-function addJudgeQuestionRow() {
+// judge() takes hundreds of questions in one call; the Playground's reply
+// bubble reads well with a handful, so the panel stops here. The library
+// itself has no such limit.
+const JUDGE_MAX_QUESTIONS = 10;
+
+// A runner-up below this share is a rounding tail, not a lean, so a scale
+// answer only reads "between" two levels when the second one holds this much.
+const JUDGE_BETWEEN_MIN = 0.1;
+
+// Browser storage for per-viewer conveniences (an unsent draft, a folded
+// panel). Every access is guarded: a private window or blocked site data
+// makes the accessor itself throw, and the page must work without it.
+function storeGet(key) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw == null ? null : JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function storeSet(key, value) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage unavailable: the draft lives only as long as the page.
+  }
+}
+
+const JUDGE_DRAFT_KEY = "keycall.judge.draft";
+const JUDGE_SETUP_OPEN_KEY = "keycall.judge.setupOpen";
+
+function addJudgeQuestionRow(values) {
   const row = document.createElement("div");
   row.className = "pg-judge-q";
 
@@ -2699,23 +2740,44 @@ function addJudgeQuestionRow() {
   criteria.className = "pg-judge-criteria";
   criteria.hidden = true;
 
+  // An icon, not a word: a word-width button per row pushed the row past
+  // its line and onto one of its own. Red like every other Remove here.
   const remove = document.createElement("button");
   remove.type = "button";
-  remove.className = "secondary danger pg-judge-remove";
-  remove.textContent = "Remove";
+  remove.className = "icon-btn danger pg-judge-remove";
   remove.title = "Remove this question";
   remove.setAttribute("aria-label", "Remove this question");
+  const cross = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  cross.setAttribute("viewBox", "0 0 24 24");
+  cross.setAttribute("width", "18");
+  cross.setAttribute("height", "18");
+  cross.setAttribute("aria-hidden", "true");
+  const stroke = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  stroke.setAttribute("fill", "none");
+  stroke.setAttribute("stroke", "currentColor");
+  stroke.setAttribute("stroke-width", "2");
+  stroke.setAttribute("stroke-linecap", "round");
+  stroke.setAttribute("d", "M6 6l12 12M18 6L6 18");
+  cross.appendChild(stroke);
+  remove.appendChild(cross);
   remove.addEventListener("click", () => {
+    const next = row.nextElementSibling || row.previousElementSibling;
     row.remove();
-    // The panel never sits empty: removing the last row leaves a fresh
-    // one to fill in rather than a bare Add button.
+    // The panel is never left empty: removing the last row leaves a
+    // fresh one to fill in rather than a bare Add button.
     ensureJudgeQuestionRow();
-    updateJudgeRunEnabled();
+    // Focus moves to a neighbouring question rather than falling back to
+    // the top of the page with the removed button.
+    const target = next && next.isConnected ? next : el("pg-judge-questions").firstElementChild;
+    if (target) target.querySelector(".pg-judge-instructions").focus();
+    judgeSetupChanged();
   });
 
   const syncCriteria = () => {
     const meta = JUDGE_KINDS[kind.value].criteria;
     criteria.hidden = !meta;
+    // Without a second field the question takes its column too.
+    row.classList.toggle("no-criteria", !meta);
     if (meta) {
       criteria.placeholder = meta.placeholder;
       criteria.setAttribute("aria-label", meta.label);
@@ -2723,6 +2785,12 @@ function addJudgeQuestionRow() {
     }
   };
   kind.addEventListener("change", syncCriteria);
+
+  if (values) {
+    if (JUDGE_KINDS[values.kind]) kind.value = values.kind;
+    instructions.value = values.instructions || "";
+    criteria.value = values.criteria || "";
+  }
   syncCriteria();
 
   row.appendChild(kind);
@@ -2735,6 +2803,47 @@ function addJudgeQuestionRow() {
 
 function ensureJudgeQuestionRow() {
   if (!el("pg-judge-questions").children.length) addJudgeQuestionRow();
+}
+
+// The panel as plain data: the situation and each row as typed, the
+// criteria kept as the raw comma-separated text so a half-typed list
+// comes back as it was left.
+function judgeSetup() {
+  return {
+    state: el("pg-judge-state").value,
+    questions: [...el("pg-judge-questions").querySelectorAll(".pg-judge-q")].map((row) => ({
+      kind: row.querySelector(".pg-judge-kind").value,
+      instructions: row.querySelector(".pg-judge-instructions").value,
+      criteria: row.querySelector(".pg-judge-criteria").value,
+    })),
+  };
+}
+
+function applyJudgeSetup(setup) {
+  if (!setup || typeof setup !== "object") return;
+  el("pg-judge-state").value = typeof setup.state === "string" ? setup.state : "";
+  clear(el("pg-judge-questions"));
+  (Array.isArray(setup.questions) ? setup.questions : [])
+    .slice(0, JUDGE_MAX_QUESTIONS)
+    .forEach((question) => addJudgeQuestionRow(question));
+  ensureJudgeQuestionRow();
+  judgeSetupChanged();
+}
+
+// Every edit to the panel: keep the draft through a reload, recount the
+// summary, and re-check the Add and Judge buttons.
+function judgeSetupChanged() {
+  storeSet(JUDGE_DRAFT_KEY, judgeSetup());
+  const count = el("pg-judge-questions").querySelectorAll(".pg-judge-q").length;
+  el("pg-judge-summary").textContent =
+    `Situation and ${count} question${count === 1 ? "" : "s"}`;
+  const add = el("pg-judge-add");
+  const full = count >= JUDGE_MAX_QUESTIONS;
+  add.disabled = full;
+  add.title = full
+    ? `The Playground asks up to ${JUDGE_MAX_QUESTIONS} questions at a time. Remove one to add another.`
+    : "Add another question about the same situation";
+  updateJudgeRunEnabled();
 }
 
 // "a, b,, c" -> ["a", "b", "c"], same trimming the dictation keyterms use.
@@ -2835,10 +2944,58 @@ async function runJudgment() {
   saveCurrentConversation(state);
 }
 
-// One line per percentage: probabilities are the product here, so each
-// answer leads with its own number rather than burying it in prose.
+// Whole percentages, with the ends kept honest: a sliver of probability
+// reads "<1%" rather than a flat "0%" that claims none at all.
 function formatPercent(value) {
-  return `${(value * 100).toFixed(0)}%`;
+  if (value > 0 && value < 0.005) return "<1%";
+  if (value < 1 && value > 0.995) return ">99%";
+  return `${Math.round(value * 100)}%`;
+}
+
+// One row per option or level: the name in its own column, a bar, and the
+// percentage right-aligned in a third, so "6" beside "77%" reads as a
+// label and its odds rather than one run-together string. The bar is a
+// <meter> (a value attribute, no inline style), so a transcript restored
+// from History draws the same bars under the page's style policy. The
+// highlighted row also carries weight, never colour alone.
+function oddsList(entries) {
+  const list = document.createElement("ul");
+  list.className = "pg-odds";
+  entries.forEach(({ label, p, chosen }) => {
+    const item = document.createElement("li");
+    if (chosen) item.className = "chosen";
+    const name = document.createElement("span");
+    name.className = "pg-odds-label";
+    name.textContent = label;
+    const bar = document.createElement("meter");
+    bar.min = 0;
+    bar.max = 1;
+    bar.value = Math.max(0, Math.min(1, Number(p) || 0));
+    // The percentage beside it is the accessible value; the bar would
+    // only repeat it.
+    bar.setAttribute("aria-hidden", "true");
+    const pct = document.createElement("span");
+    pct.className = "pg-odds-pct";
+    pct.textContent = formatPercent(Number(p) || 0);
+    item.appendChild(name);
+    item.appendChild(bar);
+    item.appendChild(pct);
+    list.appendChild(item);
+  });
+  return list;
+}
+
+// Whether every level is a number and the numbers don't run one way: the
+// one kind of out-of-order scale code can detect without knowing what the
+// levels mean.
+function scaleOutOfOrder(levels) {
+  const numbers = levels.map((level) => Number(level));
+  if (levels.length < 3 || numbers.some((n, i) => levels[i].trim() === "" || !Number.isFinite(n))) {
+    return false;
+  }
+  const rising = numbers.every((n, i) => i === 0 || n > numbers[i - 1]);
+  const falling = numbers.every((n, i) => i === 0 || n < numbers[i - 1]);
+  return !rising && !falling;
 }
 
 function addJudgmentBubble(result, rows) {
@@ -2850,43 +3007,80 @@ function addJudgmentBubble(result, rows) {
     const block = document.createElement("div");
     block.className = "pg-judge-answer";
     const question = document.createElement("div");
-    question.className = "meta";
+    question.className = "pg-judge-question";
     question.textContent = row.instructions;
     block.appendChild(question);
     const lead = document.createElement("div");
-    lead.className = "result-text";
-    const detail = document.createElement("div");
-    detail.className = "meta";
+    lead.className = "pg-judge-lead";
+    block.appendChild(lead);
+    const notes = [];
+
     if (answer.kind === "noul") {
       lead.textContent = `${formatPercent(answer.probability)} likely yes`;
+      block.appendChild(oddsList([{ label: "Yes", p: answer.probability, chosen: true }]));
     } else if (answer.kind === "choice") {
-      const odds = answer.probabilities || {};
-      const own = odds[answer.choice];
-      lead.textContent = own != null ? `${answer.choice} (${formatPercent(own)})` : answer.choice;
-      const others = Object.entries(odds)
-        .filter(([name]) => name !== answer.choice)
-        .map(([name, p]) => `${name} ${formatPercent(p)}`);
-      const parts = [...others];
-      if (typeof answer.confidence === "number") {
-        parts.push(`confidence ${formatPercent(answer.confidence)}`);
-      }
-      detail.textContent = parts.join(" · ");
+      lead.textContent = answer.choice;
+      // Most likely first: the pick leads, the runners-up follow in order.
+      const entries = Object.entries(answer.probabilities || {})
+        .map(([label, p]) => ({ label, p, chosen: label === answer.choice }))
+        .sort((a, b) => b.p - a.p);
+      block.appendChild(oddsList(entries));
     } else {
       const levels = answer.levels || [];
-      const top = Math.max(levels.length - 1, 1);
-      lead.textContent = levels.length
-        ? `${answer.score.toFixed(2)} on ${levels[0]} (0) to ${levels[levels.length - 1]} (${top})`
-        : answer.score.toFixed(2);
-      const parts = levels.map(
-        (level, i) => `${level} ${formatPercent((answer.probabilities || [])[i] || 0)}`
-      );
-      if (typeof answer.confidence === "number") {
-        parts.push(`confidence ${formatPercent(answer.confidence)}`);
+      const probabilities = answer.probabilities || [];
+      if (levels.length) {
+        // The score is the odds-weighted average of 0-based list positions,
+        // so on a list whose order means nothing it can point at a level
+        // nobody picked (2, 8, 1, 3, 6 averages to "3" at 1%). Whether a
+        // list is in order depends on what its words mean, which code
+        // can't know, so the lead is the most likely level, and "between"
+        // is claimed only for two neighbours in the list that share the odds.
+        const ranked = levels
+          .map((_, i) => i)
+          .sort((a, b) => (probabilities[b] || 0) - (probabilities[a] || 0));
+        const pick = probabilities.length
+          ? ranked[0]
+          : Math.max(0, Math.min(levels.length - 1, Math.round(answer.score)));
+        lead.textContent = levels[pick];
+        const runnerUp = probabilities.length > 1 ? ranked[1] : null;
+        if (
+          runnerUp !== null &&
+          Math.abs(runnerUp - pick) === 1 &&
+          (probabilities[runnerUp] || 0) >= JUDGE_BETWEEN_MIN
+        ) {
+          const position = document.createElement("div");
+          position.className = "meta";
+          const [first, second] = runnerUp < pick ? [runnerUp, pick] : [pick, runnerUp];
+          position.textContent = `Between ${levels[first]} and ${levels[second]}, nearer ${levels[pick]}`;
+          block.appendChild(position);
+        }
+        // Rubric order, not sorted: on a scale the order is the meaning.
+        block.appendChild(oddsList(levels.map((label, i) => ({
+          label,
+          p: probabilities[i] || 0,
+          chosen: i === pick,
+        }))));
+        if (scaleOutOfOrder(levels)) {
+          notes.push(
+            `Your scale isn't in order (${levels.join(", ")}). The pick and the bars still hold, but a scale question assumes the levels run lowest first, so list them that way for a meaningful answer.`
+          );
+        }
+      } else {
+        lead.textContent = answer.score.toFixed(2);
       }
-      detail.textContent = parts.join(" · ");
     }
-    block.appendChild(lead);
-    if (detail.textContent) block.appendChild(detail);
+    if (typeof answer.confidence === "number") {
+      const confidence = document.createElement("div");
+      confidence.className = "meta";
+      confidence.textContent = `Confidence ${formatPercent(answer.confidence)}`;
+      block.appendChild(confidence);
+    }
+    notes.forEach((text) => {
+      const note = document.createElement("div");
+      note.className = "meta";
+      note.textContent = text;
+      block.appendChild(note);
+    });
     bubble.appendChild(block);
   });
 
@@ -2914,12 +3108,29 @@ function addJudgmentBubble(result, rows) {
 }
 
 el("pg-judge-add").addEventListener("click", () => {
+  if (el("pg-judge-questions").children.length >= JUDGE_MAX_QUESTIONS) return;
+  // A question added to a folded panel would be added out of sight.
+  el("pg-judge-setup").open = true;
   const row = addJudgeQuestionRow();
   row.querySelector(".pg-judge-instructions").focus();
-  updateJudgeRunEnabled();
+  judgeSetupChanged();
 });
 el("pg-judge-run").addEventListener("click", runJudgment);
 el("pg-judge-new").addEventListener("click", startNewConversation);
+
+// Typing in the situation or any row, or switching a row's kind.
+["input", "change"].forEach((type) => {
+  el("pg-judge-setup").addEventListener(type, judgeSetupChanged);
+});
+
+// The fold is remembered per viewer, open by default.
+el("pg-judge-setup").addEventListener("toggle", () => {
+  storeSet(JUDGE_SETUP_OPEN_KEY, el("pg-judge-setup").open);
+});
+if (storeGet(JUDGE_SETUP_OPEN_KEY) === false) el("pg-judge-setup").open = false;
+
+// A reload brings back the situation and questions as they were left.
+applyJudgeSetup(storeGet(JUDGE_DRAFT_KEY) || { state: "", questions: [] });
 
 function openLightbox(source) {
   const overlay = document.createElement("div");
@@ -4240,6 +4451,10 @@ async function saveConversationSnapshot(latestPrompt) {
       model: modelValue || null,
       history: PG_HISTORY,
       transcript_html: transcript.innerHTML,
+      // The judgment task's situation and questions live in their panel,
+      // not in the replay history, so they ride along to come back with
+      // the conversation.
+      setup: currentMode() === "judge" ? judgeSetup() : null,
     },
   });
   if (data.error) return;
@@ -4310,11 +4525,34 @@ async function openConversation(id) {
     el("pg-model").value = conversation.model;
   }
   el("pg-transcript").innerHTML = conversation.transcript_html || "";
+  if (conversation.mode === "judge" && conversation.setup) {
+    applyJudgeSetup(conversation.setup);
+  }
   el("pg-new").hidden = false;
   el("pg-transcript").scrollTop = el("pg-transcript").scrollHeight;
   updateSendEnabled();
   loadConversationList();
 }
+
+// The History rail folds to a narrow strip holding only its toggle, giving
+// the conversation the width back; the choice is remembered per viewer.
+const HISTORY_COLLAPSED_KEY = "keycall.history.collapsed";
+
+function setHistoryCollapsed(collapsed) {
+  document.querySelector(".pg-layout").classList.toggle("history-collapsed", collapsed);
+  const toggle = el("pg-history-toggle");
+  const label = collapsed ? "Show the history" : "Hide the history";
+  toggle.setAttribute("aria-expanded", String(!collapsed));
+  toggle.setAttribute("aria-label", label);
+  toggle.title = label;
+  storeSet(HISTORY_COLLAPSED_KEY, collapsed);
+}
+
+el("pg-history-toggle").addEventListener("click", () => {
+  const collapsed = !document.querySelector(".pg-layout").classList.contains("history-collapsed");
+  setHistoryCollapsed(collapsed);
+});
+setHistoryCollapsed(storeGet(HISTORY_COLLAPSED_KEY) === true);
 
 el("pg-history-clear").addEventListener("click", async () => {
   const count = el("pg-history-list").querySelectorAll(".pg-history-item").length;
@@ -4946,9 +5184,7 @@ function renderVerify(target, data) {
     head.appendChild(pill("key accepted", "ok"));
     const summary = document.createElement("span");
     summary.className = "meta";
-    summary.textContent = " " + (data.services || [])
-      .map((s) => `${s.name} ${s.status}`)
-      .join(", ");
+    summary.textContent = " " + serviceSummary(data.services);
     head.appendChild(summary);
     card.appendChild(head);
     (data.services || []).forEach((s) => {
