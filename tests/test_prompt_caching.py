@@ -42,7 +42,7 @@ def _anthropic_response(text="ok", cache_creation=0, cache_read=0):
     )
 
 
-def _openai_response(text="ok", cached_tokens=0):
+def _openai_response(text="ok", cached_tokens=0, cache_write_tokens=None):
     return httpx.Response(
         200,
         json={
@@ -57,7 +57,8 @@ def _openai_response(text="ok", cached_tokens=0):
             "usage": {
                 "input_tokens": 10,
                 "output_tokens": 3,
-                "input_tokens_details": {"cached_tokens": cached_tokens},
+                "input_tokens_details": {"cached_tokens": cached_tokens}
+                | ({} if cache_write_tokens is None else {"cache_write_tokens": cache_write_tokens}),
                 "total_tokens": 13,
             },
         },
@@ -206,28 +207,168 @@ def test_anthropic_system_prompt_becomes_a_block_array_when_cache_marked():
     ]
 
 
-def test_anthropic_reports_cache_creation_and_read_via_usage():
-    def handler(request):
+def test_anthropic_input_tokens_count_cache_writes_and_reads():
+    """Anthropic reports input in three disjoint parts (live-verified
+    2026-09-24); every other provider counts cached tokens inside its input
+    figure, so input_tokens is their sum and the cache counts are parts of
+    it. A write call that reported only the uncached 10 would hide 500."""
+
+    def handler_write(request):
         return _anthropic_response(cache_creation=500, cache_read=0)
 
-    client = make_client("anthropic", handler)
-    result = client.generate_text(
+    written = make_client("anthropic", handler_write).generate_text(
         model="claude-opus-5",
         messages=[Message(role="user", content=[TextInput(text="hi", cacheable=True)])],
     )
-    # cache_creation_input_tokens has no dedicated Usage field (it isn't a
-    # discount, it's the write cost); cache_read_input_tokens is the field
-    # that answers "did caching pay off", and that's what's normalized.
-    assert result.usage.cached_input_tokens == 0
+    assert written.usage.input_tokens == 510
+    assert written.usage.cache_write_input_tokens == 500
+    assert written.usage.cached_input_tokens == 0
 
     def handler_hit(request):
         return _anthropic_response(cache_creation=0, cache_read=500)
 
-    result_hit = make_client("anthropic", handler_hit).generate_text(
+    hit = make_client("anthropic", handler_hit).generate_text(
         model="claude-opus-5",
         messages=[Message(role="user", content=[TextInput(text="hi", cacheable=True)])],
     )
-    assert result_hit.usage.cached_input_tokens == 500
+    assert hit.usage.input_tokens == 510
+    assert hit.usage.cached_input_tokens == 500
+    assert hit.usage.cache_write_input_tokens == 0
+
+
+def test_anthropic_cache_write_lifetimes_ride_provider_units():
+    """The 5-minute and 1-hour writes bill at different rates, so the split
+    is carried; a lifetime with no tokens adds no entry."""
+
+    def handler(request):
+        response = _anthropic_response(cache_creation=700, cache_read=0)
+        body = json.loads(response.content)
+        body["usage"]["cache_creation"] = {
+            "ephemeral_5m_input_tokens": 200,
+            "ephemeral_1h_input_tokens": 500,
+        }
+        return httpx.Response(200, json=body)
+
+    result = make_client("anthropic", handler).generate_text(
+        model="claude-opus-5",
+        messages=[Message(role="user", content=[TextInput(text="hi", cacheable=True)])],
+    )
+    assert dict(result.usage.provider_units) == {
+        "cache_write_5m_input_tokens": 200.0,
+        "cache_write_1h_input_tokens": 500.0,
+    }
+
+    def handler_hit(request):
+        response = _anthropic_response(cache_creation=0, cache_read=700)
+        body = json.loads(response.content)
+        body["usage"]["cache_creation"] = {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 0,
+        }
+        return httpx.Response(200, json=body)
+
+    hit = make_client("anthropic", handler_hit).generate_text(
+        model="claude-opus-5",
+        messages=[Message(role="user", content=[TextInput(text="hi", cacheable=True)])],
+    )
+    assert hit.usage.provider_units is None
+
+
+def test_anthropic_usage_without_cache_fields_stays_unreported():
+    """A body with no cache fields reports none: None is 'not reported',
+    never a fabricated zero."""
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 3},
+            },
+        )
+
+    result = make_client("anthropic", handler).generate_text(
+        model="claude-opus-5",
+        messages=[Message(role="user", content=[TextInput(text="hi")])],
+    )
+    assert result.usage.input_tokens == 10
+    assert result.usage.cached_input_tokens is None
+    assert result.usage.cache_write_input_tokens is None
+    assert result.usage.provider_units is None
+
+
+def test_anthropic_stream_keeps_cache_counts_and_the_lifetime_split():
+    """message_start carries the cache counts and the lifetime split;
+    message_delta repeats the counts cumulatively but not the split
+    (live-verified 2026-09-24), so the split must survive the merge."""
+
+    def event(name, payload):
+        return f"event: {name}\ndata: {json.dumps(payload)}\n\n"
+
+    body = "".join(
+        [
+            event(
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_1",
+                        "model": "claude-opus-5",
+                        "usage": {
+                            "input_tokens": 13,
+                            "cache_creation_input_tokens": 15770,
+                            "cache_read_input_tokens": 0,
+                            "cache_creation": {
+                                "ephemeral_5m_input_tokens": 15770,
+                                "ephemeral_1h_input_tokens": 0,
+                            },
+                            "output_tokens": 1,
+                        },
+                    },
+                },
+            ),
+            event(
+                "content_block_start",
+                {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+            ),
+            event(
+                "content_block_delta",
+                {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "ok"}},
+            ),
+            event("content_block_stop", {"type": "content_block_stop", "index": 0}),
+            event(
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {
+                        "input_tokens": 13,
+                        "cache_creation_input_tokens": 15770,
+                        "cache_read_input_tokens": 0,
+                        "output_tokens": 4,
+                    },
+                },
+            ),
+            event("message_stop", {"type": "message_stop"}),
+        ]
+    ).encode()
+
+    def handler(request):
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+
+    with make_client("anthropic", handler).stream_text(
+        model="claude-opus-5",
+        messages=[Message(role="user", content=[TextInput(text="hi", cacheable=True)])],
+    ) as stream:
+        list(stream)
+        result = stream.result()
+    assert result.usage.input_tokens == 15783
+    assert result.usage.cache_write_input_tokens == 15770
+    assert result.usage.cached_input_tokens == 0
+    assert result.usage.output_tokens == 4
+    assert dict(result.usage.provider_units) == {"cache_write_5m_input_tokens": 15770.0}
 
 
 # --- OpenAI: caching already automatic; the marker is an optional aid -------
@@ -296,6 +437,50 @@ def test_openai_reports_cached_input_tokens():
         messages=[Message(role="user", content=[TextInput(text="hi", cacheable=True)])],
     )
     assert result.usage.cached_input_tokens == 8
+
+
+def test_openai_reports_cache_writes_on_an_explicit_breakpoint_call():
+    """Explicit-breakpoint calls report cache_write_tokens inside
+    input_tokens_details (live-verified 2026-09-24); a response without
+    the field leaves the write count unreported, never zero."""
+    written = make_client(
+        "openai", lambda request: _openai_response(cache_write_tokens=9)
+    ).generate_text(
+        model="gpt-5.6",
+        messages=[Message(role="user", content=[TextInput(text="hi", cacheable=True)])],
+    )
+    assert written.usage.cache_write_input_tokens == 9
+    assert written.usage.input_tokens == 10
+    silent = make_client("openai", lambda request: _openai_response()).generate_text(
+        model="gpt-5.6", messages=[Message(role="user", content=[TextInput(text="hi")])]
+    )
+    assert silent.usage.cache_write_input_tokens is None
+
+
+def test_round_merge_sums_cache_writes_and_provider_units_by_name():
+    """A logical call spanning rounds is billed per round, so a cache write
+    or a per-call charge in an earlier round still counts."""
+    from keycall import Usage
+    from keycall._client import _merged_usage
+
+    merged = _merged_usage(
+        Usage(
+            input_tokens=100,
+            cache_write_input_tokens=80,
+            provider_units=(("cache_write_5m_input_tokens", 80.0), ("request_cost", 0.005)),
+        ),
+        Usage(
+            input_tokens=120,
+            cache_write_input_tokens=None,
+            provider_units=(("request_cost", 0.005),),
+        ),
+    )
+    assert merged.input_tokens == 220
+    assert merged.cache_write_input_tokens == 80
+    assert dict(merged.provider_units) == {
+        "cache_write_5m_input_tokens": 80.0,
+        "request_cost": 0.01,
+    }
 
 
 # --- Every other provider: silent no-op, unchanged wire shape ---------------

@@ -1023,6 +1023,9 @@ class OpenAIAdapter(FileBatchDialect, ProviderAdapter):
                 input_tokens=usage_raw.get("input_tokens"),
                 output_tokens=usage_raw.get("output_tokens"),
                 cached_input_tokens=input_details.get("cached_tokens"),
+                # Filled on explicit-breakpoint calls (live-verified
+                # 2026-09-24); like cached_tokens, a part of input_tokens.
+                cache_write_input_tokens=input_details.get("cache_write_tokens"),
                 reasoning_tokens=output_details.get("reasoning_tokens"),
                 total_tokens=usage_raw.get("total_tokens"),
             )

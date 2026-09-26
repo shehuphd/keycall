@@ -964,7 +964,14 @@ el("models-refresh").addEventListener("click", () => loadModels(true));
 
 // --- playground -------------------------------------------------------------
 
+// Each load takes a ticket; only the newest one may fill the picker. A task
+// change and a key change each start a load, and without this whichever
+// answered last won: a slow first answer put one key's models beside
+// another key, or reset a model already picked from the newer list.
+let PG_MODELS_TICKET = 0;
+
 async function loadPlaygroundModels() {
+  const ticket = ++PG_MODELS_TICKET;
   const id = el("pg-target").value;
   if (id === "") {
     // No eligible key for this task: leaving the previous task's models
@@ -1003,6 +1010,7 @@ async function loadPlaygroundModels() {
   opt.textContent = "loading models…";
   sel.appendChild(opt);
   const data = await api(`/api/models?target=${id}&category=${category}`);
+  if (ticket !== PG_MODELS_TICKET) return;
   clear(sel);
   if (data.error) {
     const o = document.createElement("option");
@@ -5064,11 +5072,17 @@ function usageLabel(usage) {
   // count, so fall back to the parts rather than claiming nothing arrived.
   if (!usage) return "usage unreported";
   const reasoning = usage.reasoning_tokens != null ? ` (${usage.reasoning_tokens} reasoning)` : "";
-  if (usage.total_tokens != null) return `${usage.total_tokens} tokens${reasoning}`;
+  // Cached and written tokens are parts of the input count, shown so the
+  // Cache standing instructions toggle has a visible effect.
+  const cache = [];
+  if (usage.cached_input_tokens) cache.push(`${usage.cached_input_tokens} read from cache`);
+  if (usage.cache_write_input_tokens) cache.push(`${usage.cache_write_input_tokens} written to cache`);
+  const cacheNote = cache.length ? `, ${cache.join(", ")}` : "";
+  if (usage.total_tokens != null) return `${usage.total_tokens} tokens${reasoning}${cacheNote}`;
   const parts = [];
   if (usage.input_tokens != null) parts.push(`${usage.input_tokens} in`);
   if (usage.output_tokens != null) parts.push(`${usage.output_tokens} out`);
-  return parts.length ? `${parts.join(" / ")} tokens${reasoning}` : "usage unreported";
+  return parts.length ? `${parts.join(" / ")} tokens${reasoning}${cacheNote}` : "usage unreported";
 }
 
 function renderGeneration(out, data) {

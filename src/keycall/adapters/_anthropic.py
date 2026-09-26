@@ -58,6 +58,48 @@ from ._base import (
 _DEFAULT_MAX_OUTPUT_TOKENS = 4096
 _PAGE_LIMIT = "1000"
 
+# Anthropic's cache-write split by lifetime, billed at different rates, as
+# (wire field under usage.cache_creation, provider_units name).
+_CACHE_WRITE_UNITS = (
+    ("ephemeral_5m_input_tokens", "cache_write_5m_input_tokens"),
+    ("ephemeral_1h_input_tokens", "cache_write_1h_input_tokens"),
+)
+
+
+def _anthropic_usage(raw: Mapping[str, Any]) -> Usage:
+    """Anthropic reports input in three disjoint parts: `input_tokens` is
+    only what came after the last cache breakpoint, and the cache write and
+    cache read counts sit beside it (live-verified 2026-09-24: 13 uncached,
+    15,779 written, 15,779 read on the repeat). Every other provider counts
+    cached tokens inside its input figure, so `input_tokens` here is the
+    sum of the parts the provider reported, and the cached and written
+    counts are subsets of it. The write split by cache lifetime rides
+    `provider_units`, since the two lifetimes bill at different rates;
+    only nonzero entries are carried."""
+    parts = [
+        raw.get(name)
+        for name in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    ]
+    reported = [value for value in parts if isinstance(value, int) and not isinstance(value, bool)]
+    creation = raw.get("cache_creation")
+    units: tuple[tuple[str, float], ...] = ()
+    if isinstance(creation, Mapping):
+        units = tuple(
+            (unit, float(creation[field]))
+            for field, unit in _CACHE_WRITE_UNITS
+            if isinstance(creation.get(field), (int, float))
+            and not isinstance(creation.get(field), bool)
+            and creation[field] > 0
+        )
+    return Usage(
+        input_tokens=sum(reported) if reported else None,
+        output_tokens=raw.get("output_tokens"),
+        cached_input_tokens=raw.get("cache_read_input_tokens"),
+        cache_write_input_tokens=raw.get("cache_creation_input_tokens"),
+        provider_units=units or None,
+    )
+
+
 # Beta feature flag code_interpreter needs (live-verified 2026-08-22); sent
 # only on a request that asks for it, never on every Anthropic request.
 _CODE_EXECUTION_BETA_HEADER = "code-execution-2025-08-25"
@@ -108,6 +150,9 @@ class _AnthropicStreamAssembler(StreamAssembler):
         self._adapter = adapter
         # index -> content block type ("text", "tool_use:<name>", ...)
         self._blocks: dict[int, str] = {}
+        # The provider's usage fields as reported so far, merged across
+        # message_start and message_delta.
+        self._usage_raw: dict[str, Any] = {}
 
     def feed(self, event_name: str | None, data: str) -> list[StreamEvent]:
         payload = self._parse_data(data)
@@ -123,10 +168,10 @@ class _AnthropicStreamAssembler(StreamAssembler):
                     self.model = str(message["model"])
                 usage = message.get("usage")
                 if isinstance(usage, dict):
-                    self.usage = Usage(
-                        input_tokens=usage.get("input_tokens"),
-                        cached_input_tokens=usage.get("cache_read_input_tokens"),
-                    )
+                    # message_start's output count is a placeholder; the
+                    # final count arrives on message_delta.
+                    self._usage_raw = {k: v for k, v in usage.items() if k != "output_tokens"}
+                    self.usage = _anthropic_usage(self._usage_raw)
             return [StreamStart(model=self.model)]
         if kind == "content_block_start":
             index = int(payload.get("index", 0))
@@ -175,11 +220,15 @@ class _AnthropicStreamAssembler(StreamAssembler):
             if isinstance(delta, dict) and delta.get("stop_reason"):
                 self.finish_reason = str(delta["stop_reason"])
             usage = payload.get("usage")
-            if isinstance(usage, dict) and usage.get("output_tokens") is not None:
-                self.usage = dataclasses.replace(
-                    self.usage, output_tokens=usage.get("output_tokens")
-                )
-                self.usage_reported = True
+            if isinstance(usage, dict):
+                # Cumulative counts: message_delta repeats the input and
+                # cache figures but not message_start's cache-write split
+                # by lifetime (live-verified 2026-09-24), so it merges over
+                # what message_start reported rather than replacing it.
+                self._usage_raw.update({k: v for k, v in usage.items() if v is not None})
+                self.usage = _anthropic_usage(self._usage_raw)
+                if usage.get("output_tokens") is not None:
+                    self.usage_reported = True
             return []
         if kind == "message_stop":
             self.saw_terminal = True
@@ -450,12 +499,8 @@ class AnthropicAdapter(ProviderAdapter):
 
         usage_raw = payload.get("usage")
         if isinstance(usage_raw, dict):
-            # Anthropic reports no total; None stays None — never fabricated.
-            usage = Usage(
-                input_tokens=usage_raw.get("input_tokens"),
-                output_tokens=usage_raw.get("output_tokens"),
-                cached_input_tokens=usage_raw.get("cache_read_input_tokens"),
-            )
+            # Anthropic reports no total; None stays None, never fabricated.
+            usage = _anthropic_usage(usage_raw)
         else:
             usage = Usage()
             warnings.append("provider reported no usage information")

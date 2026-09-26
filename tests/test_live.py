@@ -3583,6 +3583,107 @@ def test_live_prompt_caching_anthropic_and_openai():
     assert checked or inconclusive, "no anthropic or openai target in the live source"
 
 
+def test_live_cached_input_counts_add_up():
+    """Capability-drift probe for the cache usage fields. Anthropic reports
+    input as three disjoint parts (uncached, cache write, cache read), and
+    KeyCall's input_tokens is their sum so that it means the whole input on
+    every provider (live-verified 2026-09-24: a cache-marked call reported
+    13 uncached beside 15,779 written, and the same prompt unmarked
+    reported 15,794). So a marked call and an unmarked call on the same
+    prompt must report nearly the same input_tokens, on the plain and the
+    streamed path, with the write or read count inside it; a 1-hour write
+    must show in provider_units. A drop back to the uncached remainder
+    alone, or a renamed field, fails here. OpenAI's explicit breakpoint
+    reports its write the same way, inside input_tokens."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import time
+
+    from keycall import KeyCall, Message, TextInput
+
+    model = {"anthropic": "claude-haiku-4-5-20251001", "openai": "gpt-5.6"}
+    # Marked and unmarked requests differ only in the breakpoint itself,
+    # which costs a handful of tokens at most.
+    tolerance = 32
+
+    def prompt(marker, cacheable, ttl=300):
+        # The marker leads once, so every variant has the same length and
+        # no two variants share a cacheable prefix.
+        filler = f"Probe {marker}. " + " ".join(
+            f"Fact {i}: the KeyCall cache-count probe prefix pads this block."
+            for i in range(1200)
+        )
+        return [
+            Message(
+                role="system",
+                content=[TextInput(text=filler, cacheable=cacheable, cache_ttl_seconds=ttl)],
+            ),
+            Message(role="user", content=[TextInput(text="Reply with: ok")]),
+        ]
+
+    def cache_part(usage):
+        return (usage.cache_write_input_tokens or 0) + (usage.cached_input_tokens or 0)
+
+    targets, _ = load_targets(source)
+    checked = []
+    for target in targets:
+        if target.provider not in model or target.provider in checked:
+            continue
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+        )
+        try:
+            marker = f"count-{time.monotonic_ns()}"
+            name = model[target.provider]
+            marked = client.generate_text(model=name, messages=prompt(marker, True)).usage
+            plain = client.generate_text(model=name, messages=prompt(marker + "-u", False)).usage
+            print(f"{target.display_name}: marked {marked}; unmarked {plain}")
+            assert marked.input_tokens is not None and plain.input_tokens is not None
+            assert abs(marked.input_tokens - plain.input_tokens) <= tolerance, (
+                f"{target.provider}: a cache-marked call reported {marked.input_tokens} input "
+                f"tokens beside {plain.input_tokens} for the same prompt unmarked; cached "
+                "tokens have dropped out of input_tokens"
+            )
+            assert cache_part(marked) > 0, (
+                f"{target.provider}: a cache-marked prefix reported neither a cache write "
+                "nor a cache read"
+            )
+            assert cache_part(marked) <= marked.input_tokens
+            if target.provider == "anthropic":
+                with client.stream_text(
+                    model=name, messages=prompt(marker + "-s", True)
+                ) as stream:
+                    list(stream)
+                    streamed = stream.result().usage
+                print(f"{target.display_name}: streamed {streamed}")
+                assert streamed.input_tokens is not None
+                assert abs(streamed.input_tokens - plain.input_tokens) <= tolerance, (
+                    f"anthropic: the streamed call reported {streamed.input_tokens} input "
+                    f"tokens beside {plain.input_tokens} unmarked"
+                )
+                hour = client.generate_text(
+                    model=name, messages=prompt(marker + "-h", True, ttl=3600)
+                ).usage
+                print(f"{target.display_name}: 1h write {hour}")
+                if hour.cache_write_input_tokens:
+                    units = dict(hour.provider_units or ())
+                    assert units.get("cache_write_1h_input_tokens") == float(
+                        hour.cache_write_input_tokens
+                    ), f"anthropic: 1-hour write split missing from provider_units: {units}"
+            else:
+                assert marked.cache_write_input_tokens is not None, (
+                    "openai: an explicit-breakpoint call no longer reports cache_write_tokens"
+                )
+            checked.append(target.provider)
+        finally:
+            client.close()
+    assert checked, "no anthropic or openai target in the live source"
+
+
 def test_live_alias_convention_evidence_still_holds():
     """Capability-drift probe for the catalog's alias_conventions evidence,
     which alias_fact() and Model.alias serve to consumers (rates bakes it

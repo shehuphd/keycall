@@ -1470,11 +1470,18 @@ class JudgmentResult:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Usage:
     """Normalized usage. None means the provider didn't report a value;
-    0 means the provider explicitly reported zero. Never conflate them."""
+    0 means the provider explicitly reported zero. Never conflate them.
+
+    ``input_tokens`` is every input token the call processed, cached or
+    not, on every provider. ``cached_input_tokens`` (read from cache) and
+    ``cache_write_input_tokens`` (written to cache this call, billed above
+    the base input rate) are parts of it, so the tokens billed at the base
+    rate are ``input_tokens`` minus both."""
 
     input_tokens: int | None = None
     output_tokens: int | None = None
     cached_input_tokens: int | None = None
+    cache_write_input_tokens: int | None = None
     reasoning_tokens: int | None = None
     total_tokens: int | None = None
     provider_units: tuple[tuple[str, float], ...] | None = None

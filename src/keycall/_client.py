@@ -913,10 +913,29 @@ def _merged_usage(carried: Usage, current: Usage) -> Usage:
         input_tokens=_added(carried.input_tokens, current.input_tokens),
         output_tokens=_added(carried.output_tokens, current.output_tokens),
         cached_input_tokens=_added(carried.cached_input_tokens, current.cached_input_tokens),
+        cache_write_input_tokens=_added(
+            carried.cache_write_input_tokens, current.cache_write_input_tokens
+        ),
         reasoning_tokens=_added(carried.reasoning_tokens, current.reasoning_tokens),
         total_tokens=_added(carried.total_tokens, current.total_tokens),
-        provider_units=current.provider_units or carried.provider_units,
+        provider_units=_added_units(carried.provider_units, current.provider_units),
     )
+
+
+def _added_units(
+    a: tuple[tuple[str, float], ...] | None, b: tuple[tuple[str, float], ...] | None
+) -> tuple[tuple[str, float], ...] | None:
+    """Billing units summed by name across rounds, first-seen order kept:
+    each round is billed on its own, so a per-call charge or a cache write
+    in an earlier round still counts."""
+    if not a:
+        return b
+    if not b:
+        return a
+    totals: dict[str, float] = {}
+    for name, value in (*a, *b):
+        totals[name] = totals.get(name, 0.0) + value
+    return tuple(totals.items())
 
 
 def _hide_server_tool_event(event: StreamEvent, hidden_ids: set[str]) -> bool:

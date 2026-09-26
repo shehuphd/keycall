@@ -617,6 +617,30 @@ def test_anthropic_results_read_the_nested_error_envelope_in_any_order():
     assert fetched[1].error_message == "no credits"
 
 
+def test_anthropic_batch_results_count_cached_input():
+    """A batch result's usage goes through the same parser as a live reply,
+    so its input count includes cache writes and reads."""
+    body = anthropic_message_body("one")
+    body["usage"] = {
+        "input_tokens": 3,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 40,
+        "output_tokens": 1,
+    }
+    results = [
+        {"custom_id": "kc-0", "result": {"type": "succeeded", "message": body}},
+        {"custom_id": "kc-1", "result": {"type": "succeeded", "message": anthropic_message_body("two")}},
+    ]
+    captured = {}
+    client = make_client("anthropic", anthropic_handler(captured, results_lines=results))
+    job = client.check_batch(client.start_batch(two_requests()))
+    fetched = client.fetch_batch_results(job)
+    client.close()
+    assert fetched[0].result.usage.input_tokens == 43
+    assert fetched[0].result.usage.cached_input_tokens == 40
+    assert fetched[1].result.usage.input_tokens == 3
+
+
 def test_anthropic_refuses_a_results_url_off_its_own_host():
     captured = {}
     client = make_client(
