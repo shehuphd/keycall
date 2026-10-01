@@ -38,12 +38,20 @@ def pytest_collection_finish(session):
     if not live_items:
         return
 
+    from keycall._registry import supported_providers, supported_service_providers
     from keycall._sources import load_targets
     from keycall._verify_core import run_verify
 
+    known = set(supported_providers()) | set(supported_service_providers())
     targets, _ = load_targets(source)
     unavailable: list[str] = []
     for target in targets:
+        if target.provider not in known and target.protocol is None:
+            # A shared targets file can name a provider added in a later
+            # version; this version has no test for it, so it isn't a
+            # reason to stop the run.
+            print(f"live pre-flight: skipping {target.display_name}, provider {target.provider!r} is newer than this version")
+            continue
         result = run_verify(target, generate=True)
         reachable = result.generate_ok or result.outcome in ("services_probed", "no_text_models")
         if reachable:

@@ -20,9 +20,18 @@ import _spend
 import pytest
 
 from keycall._errors import KeyCallError
-from keycall._registry import supported_service_providers
-from keycall._sources import load_targets
+from keycall._registry import supported_providers, supported_service_providers
+from keycall._sources import load_targets as _load_all_targets
 from keycall._verify_core import run_verify
+
+
+def load_targets(source):
+    """The live targets this version can address. A shared targets file can
+    name a provider added in a later version; this version has no test for
+    it, so it is left out rather than counted as a failure."""
+    targets, warnings = _load_all_targets(source)
+    known = set(supported_providers()) | set(supported_service_providers())
+    return [t for t in targets if t.provider in known or t.protocol is not None], warnings
 
 pytestmark = pytest.mark.live
 
@@ -2002,8 +2011,9 @@ def test_live_deepseek_reasoning_effort_still_binds():
     (evidence 2026-09-10, which replaced a 2026-08-14 note recording the
     field as accepted and ignored). Two claims, both cheap:
 
-    1. The provider validates the level, refusing an unknown one with 400.
-       A field parsed as an enum is a field being read.
+    1. The provider validates the level, refusing an unknown one with an
+       error that names the field (a 400 on 2026-09-10, a 422 listing the
+       enum on 2026-10-01). A field parsed as an enum is a field being read.
     2. It binds at the boundary that needs no statistics: effort "none"
        spends zero reasoning tokens and a level spends some. Comparing
        levels against each other would need many samples, since the counts
@@ -2046,10 +2056,11 @@ def test_live_deepseek_reasoning_effort_still_binds():
                     "reasoning_effort": "zzz-not-a-level",
                 },
             )
-            assert rejected.status_code == 400, (
-                f"capability drift: deepseek accepted an invalid reasoning_effort "
-                f"(HTTP {rejected.status_code}), so it may have stopped parsing the field. "
-                "Re-measure whether a level still binds and revisit the catalog flag"
+            assert rejected.status_code in (400, 422) and "reasoning_effort" in rejected.text, (
+                f"capability drift: deepseek answered an invalid reasoning_effort with "
+                f"HTTP {rejected.status_code} and no complaint about the field, so it may have "
+                "stopped parsing it. Re-measure whether a level still binds and revisit the "
+                "catalog flag"
             )
 
             def spend(effort: str) -> int:
@@ -2064,7 +2075,9 @@ def test_live_deepseek_reasoning_effort_still_binds():
                 )
                 answer.raise_for_status()
                 usage = answer.json()["usage"]
-                return int(usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0))
+                # "none" can come back with the details object absent or null.
+                details = usage.get("completion_tokens_details") or {}
+                return int(details.get("reasoning_tokens") or 0)
 
             none_spend, high_spend = spend("none"), spend("high")
             assert none_spend == 0 and high_spend > 0, (

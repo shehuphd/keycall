@@ -4,7 +4,9 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.16.0] — 2026-09-17
+## [1.16.0] — 2026-10-01
+
+Highlights: `dictate()` turns a short spoken note into a verbatim transcript and a cleaned rewrite in one call on AssemblyAI, with a Playground task to try it; and the viewer now fits a phone.
 
 ### Added
 
