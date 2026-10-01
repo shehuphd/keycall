@@ -107,7 +107,7 @@ provider name ──► catalog profile ──► protocol ──► adapter
   <custom> + base_url openai-compatible              OpenAICompatibleAdapter (is_custom)
 ```
 
-The two service protocols are single-vendor the same way `elevenlabs` is, so custom targets cannot claim them. LiveKit's catalog entry declares `requires_base_url`: resolution refuses construction without the caller's per-project host (normalizing the dashboard's `wss://` spelling to `https://`), and that host passes the same custom-base-URL validation every explicit base URL gets.
+The two service protocols are single-vendor the same way `elevenlabs` and `typesafe` are, so custom targets cannot claim any of them. LiveKit's catalog entry declares `requires_base_url`: resolution refuses construction without the caller's per-project host (normalizing the dashboard's `wss://` spelling to `https://`), and that host passes the same custom-base-URL validation every explicit base URL gets.
 
 An unknown name is an error unless the caller explicitly passes `protocol="openai-compatible"` with a validated HTTPS `base_url`. Custom targets get the DNS-rebinding guard; named providers route to catalog-maintained hostnames and don't. The guard fails closed against the environment too: a set proxy variable would route requests around it (the proxy resolves DNS itself), so constructing a guarded custom-target client with one set raises a typed error naming the resolutions (`trust_env=False`, `allow_private_network=True`, or unsetting the variable) rather than proceeding with the guard silently disabled.
 

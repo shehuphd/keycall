@@ -114,7 +114,7 @@ both = client.list_models(
 )
 ```
 
-Categories: `TEXT_GENERATION`, `IMAGE_GENERATION`, `EMBEDDING`, `TRANSCRIPTION`, `SPEECH_GENERATION`, `VIDEO_GENERATION`, `REALTIME`, `LIVE`, `UNKNOWN`. Models KeyCall can't classify are `UNKNOWN` and appear only when you request that category explicitly, never in the default text picker.
+Categories: `TEXT_GENERATION`, `IMAGE_GENERATION`, `EMBEDDING`, `TRANSCRIPTION`, `SPEECH_GENERATION`, `VIDEO_GENERATION`, `REALTIME`, `LIVE`, `DECISION` (judgment models such as TypeSafe's Jev, answered through [`judge()`](#judgments)), `UNKNOWN`. Models KeyCall can't classify are `UNKNOWN` and appear only when you request that category explicitly, never in the default text picker.
 
 `ModelDiscovery` fields: `provider`, `models`, `categories`, `fetched_at`, `from_cache`, `catalog_version`, `catalog_stale`, `warnings`, `withheld`. Each `Model` carries `id`, `provider`, `categories`, `display_name`, `lifecycle`, `released_at`, `context_limit`, `capabilities`, `classification_source`, `warnings`, and `alias`.
 
@@ -1201,7 +1201,7 @@ Add one bounded generation per target:
 keycall verify --source ./keys.toml --generate
 ```
 
-With `--generate`, KeyCall walks the filtered text models in provider order and reports every attempt until one succeeds (default budget 8, adjustable with `--attempts`). Skipped models are printed with reasons, so retired models, modality mismatches, and per-model quota walls stay visible. Each attempt reports the model's position in both the filtered list and the provider's raw list, plus the classification evidence that made it a candidate; the result carries a digest of the raw model-list snapshot and the selection-rule version, so a failure is reconstructable against the provider surface that produced it.
+With `--generate`, KeyCall walks the filtered text models in provider order and reports every attempt until one succeeds (default budget 8, adjustable with `--attempts`). Skipped models are printed with reasons, so retired models, modality mismatches, and per-model quota walls stay visible. Each attempt reports the model's position in both the filtered list and the provider's raw list, plus the classification evidence that made it a candidate; the result carries a digest of the raw model-list snapshot and the selection-rule version, so a failure is reconstructable against the provider surface that produced it. A judgment provider (TypeSafe) lists decision models and no text models, so `--generate` proves its key with one minimal yes/no judgment per candidate instead, and the row reads `judged with` and counts decision models.
 
 ### Live verification in CI
 

@@ -1,6 +1,6 @@
 # Manifest
 
-Last updated: 2026-09-23 00:00:00 UTC
+Last updated: 2026-10-01 00:00:00 UTC
 
 Every current source file, with what it does and what it touches. A map for orienting in the codebase, not a second copy of the docstrings.
 
@@ -36,8 +36,8 @@ Every current source file, with what it does and what it touches. A map for orie
 |---|---|
 | `__init__.py` | Adapter selection by protocol, with named overrides. |
 | `_base.py` | The adapter contract: request building, response parsing, error translation, the pre-flight generation checks (`validate_generation_request`, including the sampling-constraint, tool-choice-constraint, seed, and Gemini `additionalProperties` schema gates), the batch hook set (prelude/submit/status/results/cancel), the prerecorded-transcription hook set (sync build/parse plus job upload/submit/status/result), and the service-probe hook set (`ServiceProviderAdapter`: per-category specs and status parsing) with their refusal gates. No I/O, never sees the credential. |
-| `_openai.py` | OpenAI Responses API: text, streaming, tools, apply_patch, code interpreter, images, speech, embeddings, realtime sessions; `FileBatchDialect`, the upload-a-JSONL batch flow shared with Moonshot; prerecorded transcription (multipart, whisper-1-only word timings). |
-| `_anthropic.py` | Anthropic Messages API, including prompt-caching breakpoints, native structured output via `output_config.format`, the server-tool round for web search, code interpreter, and tool search, paginated listing, and the inline batch dialect with mixed models and a host-pinned results download. |
+| `_openai.py` | OpenAI Responses API: text, streaming, tools, apply_patch, code interpreter, images, speech, embeddings, realtime sessions; `FileBatchDialect`, the upload-a-JSONL batch flow shared with Moonshot; prerecorded transcription (multipart, whisper-1-only word timings); usage reads cache reads and explicit-breakpoint cache writes as parts of the input count. |
+| `_anthropic.py` | Anthropic Messages API, including prompt-caching breakpoints and usage that sums the uncached, cache-write, and cache-read input parts into one input count (plain, streamed, and batch), native structured output via `output_config.format`, the server-tool round for web search, code interpreter, and tool search, paginated listing, and the inline batch dialect with mixed models and a host-pinned results download. |
 | `_google_maps.py` | Google Maps Platform service adapter: one cheapest-request probe per category (geocoding on the v4beta surface, places ids-only, directions duration-only), google.rpc error translation including the 400-means-bad-key mapping. |
 | `_livekit.py` | LiveKit service adapter: the RoomService ListRooms probe over Twirp on the caller's project host, with the two 401 bodies translated apart (bad signature vs missing roomList grant). |
 | `_gemini.py` | Google Gemini: text, streaming, embeddings, image, speech, and video generation, realtime sessions, the inline batch dialect (model in the URL, results on the operation object). A bare refusal repeats the provider's own finishReason rather than reporting a missing image. |
