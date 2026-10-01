@@ -556,7 +556,7 @@ The value is passed in the provider's own vocabulary (commonly `"low"` / `"mediu
 | Anthropic | `output_config.effort` |
 | Gemini | `thinkingConfig.thinkingLevel` (KeyCall uppercases the value) |
 | Perplexity | `reasoning_effort` |
-| DeepSeek | `reasoning_effort` (levels `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) |
+| DeepSeek | `reasoning_effort` (levels `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `ultra`, `max`) |
 | xAI | `reasoning.effort`, on the `/v1/responses` route |
 
 On xAI, naming an effort switches the request to `/v1/responses` the same way `web_search=True` does: Grok's chat completions accepts a `reasoning_effort` field with HTTP 200 but measured reasoning-token counts don't follow it, while the responses route honors the level.
@@ -821,7 +821,7 @@ result.usage.input_tokens                     # output tokens are billed at zero
 - **`score` is a position in the level list, not a level's value.** It matches the odds-weighted average of 0-based list positions (checked live 2026-09-23 on `jev-1.13.0`), so on the rubric `2, 4, 6, 8, 1` a score of 2.2 means "at `6`, leaning toward `8`". On a list whose order means nothing it can point at a level nobody picked: `2, 8, 1, 3, 6` with about 73% on `6` and 23% on `8` scores about 3.2, next to `3` at 1%. List levels from one end to the other, and read the pick from `probabilities` when you need the single most likely level.
 - **A choice takes at most 255 options**, refused before the network past that; give the set its own catch-all option when it may not cover the input. Option descriptions may be empty strings.
 - **No sampling parameters exist on this wire.** There is no temperature, seed, or max-output-tokens to set, and `judge()` takes none.
-- **Errors carry the provider's own detail.** A validation failure (a malformed question) surfaces the field path; an unknown model raises `MODEL_NOT_AVAILABLE`; `provider_request_id` and `provider_processing_ms` carry the provider's request id and server-side time on every result. `AsyncKeyCall.judge()` is the awaitable twin.
+- **Errors carry the provider's own detail.** A validation failure (a malformed question) surfaces the field path; an unknown model raises `MODEL_NOT_AVAILABLE`; `provider_request_id` carries the provider's request id on every result; `provider_processing_ms` carries its server-side time when the provider reports one, and TypeSafe stopped sending it on 2026-10-01, so it is `None` there for now. `AsyncKeyCall.judge()` is the awaitable twin.
 
 ## Prompt caching
 

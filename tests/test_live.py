@@ -1177,9 +1177,9 @@ def test_live_judgment_on_typesafe():
             "no usage reported"
         )
         assert result.provider_request_id, "no x-typesafe-request-id header"
-        assert result.provider_processing_ms is not None, (
-            "no x-envoy-upstream-service-time header"
-        )
+        # The server-time header disappeared when responses moved behind
+        # Cloudflare (2026-10-01); a value that does come back must be sane.
+        assert result.provider_processing_ms is None or result.provider_processing_ms >= 0
         _spend.record(
             "typesafe", "judge",
             tokens=(result.usage.input_tokens or 0) + (result.usage.output_tokens or 0),
@@ -1187,8 +1187,8 @@ def test_live_judgment_on_typesafe():
         print(
             f"typesafe judgment: resolved {result.model}, urgent {urgent.probability}, "
             f"route {route.choice}, anger {anger.score} "
-            f"({result.usage.input_tokens} tokens in, "
-            f"{result.provider_processing_ms:.0f}ms server)"
+            f"({result.usage.input_tokens} tokens in, server time "
+            f"{'unreported' if result.provider_processing_ms is None else f'{result.provider_processing_ms:.0f}ms'})"
         )
 
         # The listing-not-exhaustive fact: the resolved versioned id is
@@ -2147,8 +2147,9 @@ def test_live_deepseek_reasoning_effort_still_binds():
     (evidence 2026-09-10, which replaced a 2026-08-14 note recording the
     field as accepted and ignored). Two claims, both cheap:
 
-    1. The provider validates the level, refusing an unknown one with 400.
-       A field parsed as an enum is a field being read.
+    1. The provider validates the level, refusing an unknown one with an
+       error that names the field (a 400 on 2026-09-10, a 422 listing the
+       enum on 2026-10-01). A field parsed as an enum is a field being read.
     2. It binds at the boundary that needs no statistics: effort "none"
        spends zero reasoning tokens and a level spends some. Comparing
        levels against each other would need many samples, since the counts
@@ -2191,10 +2192,11 @@ def test_live_deepseek_reasoning_effort_still_binds():
                     "reasoning_effort": "zzz-not-a-level",
                 },
             )
-            assert rejected.status_code == 400, (
-                f"capability drift: deepseek accepted an invalid reasoning_effort "
-                f"(HTTP {rejected.status_code}), so it may have stopped parsing the field. "
-                "Re-measure whether a level still binds and revisit the catalog flag"
+            assert rejected.status_code in (400, 422) and "reasoning_effort" in rejected.text, (
+                f"capability drift: deepseek answered an invalid reasoning_effort with "
+                f"HTTP {rejected.status_code} and no complaint about the field, so it may have "
+                "stopped parsing it. Re-measure whether a level still binds and revisit the "
+                "catalog flag"
             )
 
             def spend(effort: str) -> int:
@@ -2209,7 +2211,9 @@ def test_live_deepseek_reasoning_effort_still_binds():
                 )
                 answer.raise_for_status()
                 usage = answer.json()["usage"]
-                return int(usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0))
+                # "none" can come back with the details object absent or null.
+                details = usage.get("completion_tokens_details") or {}
+                return int(details.get("reasoning_tokens") or 0)
 
             none_spend, high_spend = spend("none"), spend("high")
             assert none_spend == 0 and high_spend > 0, (
