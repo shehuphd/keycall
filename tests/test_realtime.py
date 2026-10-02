@@ -264,6 +264,12 @@ def test_gemini_frames_translate_including_binary_ones():
     assert done.kind == "turn_complete"
     assert done.usage.total_tokens == 438
     assert done.usage.reasoning_tokens == 157
+    # Gemini Live reports thoughts outside both responseTokenCount and
+    # totalTokenCount (live-verified 2026-10-02 on
+    # gemini-2.5-flash-native-audio-latest: 394 + 363 = 757 total, 574
+    # thoughts beside it), unlike generateContent, so the session's output
+    # stays the response count.
+    assert done.usage.output_tokens == 51
 
     (cut,) = t.events_for_frame(json.dumps({"serverContent": {"interrupted": True}}))
     assert cut.kind == "interrupted"

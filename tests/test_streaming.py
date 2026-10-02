@@ -307,16 +307,29 @@ def test_compat_stream_done_terminal_and_stream_options():
     assert result.finish_reason == "stop"
 
 
-@pytest.mark.parametrize("provider", ("deepseek", "moonshot", "xai"))
-def test_compat_stream_reasoning_tokens_normalized(provider):
+@pytest.mark.parametrize(
+    ("provider", "completion", "total", "expected_output"),
+    [
+        # DeepSeek and Moonshot count reasoning inside completion_tokens.
+        ("deepseek", 12, 15, 12),
+        ("moonshot", 12, 15, 12),
+        # xAI's chat completions report it beside them (live-verified
+        # 2026-10-02), so output_tokens is the sum.
+        ("xai", 2, 15, 12),
+    ],
+)
+def test_compat_stream_reasoning_tokens_normalized(provider, completion, total, expected_output):
+    """output_tokens is every output token, reasoning included, on every
+    provider, and reasoning_tokens is a part of it."""
+
     def handler(request: httpx.Request) -> httpx.Response:
         return stream_response(
             sse(
                 (None, compat_chunk("o")),
                 (None, compat_chunk("k", finish="stop", usage={
                     "prompt_tokens": 3,
-                    "completion_tokens": 12,
-                    "total_tokens": 15,
+                    "completion_tokens": completion,
+                    "total_tokens": total,
                     "completion_tokens_details": {"reasoning_tokens": 10},
                 })),
                 (None, "[DONE]"),
@@ -329,7 +342,31 @@ def test_compat_stream_reasoning_tokens_normalized(provider):
         list(stream)
         result = stream.result()
     assert result.usage.reasoning_tokens == 10
-    assert result.usage.output_tokens == 12
+    assert result.usage.output_tokens == expected_output
+    assert result.usage.input_tokens + result.usage.output_tokens == result.usage.total_tokens
+
+
+def test_gemini_stream_output_tokens_include_thoughts():
+    """The final chunk's usageMetadata carries thoughts beside candidates on
+    the stream too (live-verified 2026-10-02)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return stream_response(
+            sse(
+                (None, {"candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+                        "usageMetadata": {"promptTokenCount": 26, "candidatesTokenCount": 33,
+                                          "thoughtsTokenCount": 325, "totalTokenCount": 384}}),
+            )
+        )
+
+    with make_client("gemini", handler).stream_text(
+        model="test-model", messages=messages()
+    ) as stream:
+        list(stream)
+        result = stream.result()
+    assert result.usage.output_tokens == 358
+    assert result.usage.reasoning_tokens == 325
+    assert result.usage.input_tokens + result.usage.output_tokens == result.usage.total_tokens
 
 
 def test_compat_stream_unreported_reasoning_tokens_stay_none():

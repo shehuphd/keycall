@@ -1,6 +1,6 @@
 # Manifest
 
-Last updated: 2026-10-01 00:00:00 UTC
+Last updated: 2026-10-02 00:00:00 UTC
 
 Every current source file, with what it does and what it touches. A map for orienting in the codebase, not a second copy of the docstrings.
 
@@ -40,11 +40,11 @@ Every current source file, with what it does and what it touches. A map for orie
 | `_anthropic.py` | Anthropic Messages API, including prompt-caching breakpoints and usage that sums the uncached, cache-write, and cache-read input parts into one input count (plain, streamed, and batch), native structured output via `output_config.format`, the server-tool round for web search, code interpreter, and tool search, paginated listing, and the inline batch dialect with mixed models and a host-pinned results download. |
 | `_google_maps.py` | Google Maps Platform service adapter: one cheapest-request probe per category (geocoding on the v4beta surface, places ids-only, directions duration-only), google.rpc error translation including the 400-means-bad-key mapping. |
 | `_livekit.py` | LiveKit service adapter: the RoomService ListRooms probe over Twirp on the caller's project host, with the two 401 bodies translated apart (bad signature vs missing roomList grant). |
-| `_gemini.py` | Google Gemini: text, streaming, embeddings, image, speech, and video generation, realtime sessions, the inline batch dialect (model in the URL, results on the operation object). A bare refusal repeats the provider's own finishReason rather than reporting a missing image. |
-| `_openai_compat.py` | The shared chat-completions adapter (DeepSeek, Moonshot, xAI, Perplexity, custom targets): usage normalization including reasoning tokens and Perplexity's per-request cost units, streaming assembly, tool calls. |
+| `_gemini.py` | Google Gemini: text, streaming, embeddings, image, speech, and video generation, realtime sessions, the inline batch dialect (model in the URL, results on the operation object). One usage helper counts thoughts in the output and tool-use prompt tokens in the input on every parser. A bare refusal repeats the provider's own finishReason rather than reporting a missing image. |
+| `_openai_compat.py` | The shared chat-completions adapter (DeepSeek, Moonshot, xAI, Perplexity, custom targets): usage normalization including reasoning tokens (added into the output where a subclass flags them as reported beside it) and Perplexity's per-request cost units, streaming assembly, tool calls. |
 | `_moonshot.py` | Moonshot override: the `$web_search` builtin's echo-back handshake; batch rides the shared file dialect against chat completions. |
 | `_perplexity.py` | Perplexity override: catalog-maintained Sonar models, the `max_output_tokens >= 16` floor gate, and the 400 "Invalid model"/"deprecated" mapping to `MODEL_NOT_AVAILABLE`. |
-| `_xai.py` | xAI override: `/v1/responses` routing for web search, reasoning effort, and code_interpreter, image and video generation, realtime sessions with Grok Voice appended from the catalog, the container batch dialect with counter-derived status and paginated results. |
+| `_xai.py` | xAI override: flags chat-completions reasoning as reported beside the output, `/v1/responses` routing for web search, reasoning effort, and code_interpreter, image and video generation, realtime sessions with Grok Voice appended from the catalog, the container batch dialect with counter-derived status and paginated results. |
 | `_realtime.py` | Realtime wire adapters (OpenAI, xAI, Gemini) mapping session events to normalized types. |
 | `_live.py` | The gpt-live full-duplex wire translator (OpenAI), mapping probe-confirmed session frames to normalized `LiveEvent`s. |
 | `_stt.py` | AssemblyAI and Deepgram: credential-validating discovery, streaming transcription frames to normalized events (including each provider's own speaker-label dialect under `diarize=True`), Deepgram's one-round-trip file transcription, AssemblyAI's job-shaped one (upload, submit, poll), and AssemblyAI's one-shot dictation (verbatim transcript plus cleaned rewrite). |

@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, ClassVar
 
 from .._classify import classify_model_id
 from .._enums import Operation
@@ -78,14 +78,51 @@ def _image_url(part: ImageInput) -> str:
 _STREAM_USAGE_PROVIDERS = frozenset({"deepseek", "moonshot", "xai"})
 
 
+def _compat_usage(
+    usage_raw: dict[str, Any], *, reasoning_outside_completion: bool
+) -> Usage:
+    """Chat Completions usage. `output_tokens` is every output token, reasoning
+    included, on every provider: DeepSeek and Moonshot count reasoning inside
+    `completion_tokens`, but xAI's chat completions report it beside it
+    (live-verified 2026-10-02: 44 completion and 221 reasoning, total 480 over
+    a 215-token prompt), so there the two are summed and `reasoning_tokens`
+    stays a part of the output."""
+    details = usage_raw.get("prompt_tokens_details") or {}
+    completion_details = usage_raw.get("completion_tokens_details") or {}
+    completion = usage_raw.get("completion_tokens")
+    reasoning = completion_details.get("reasoning_tokens")
+    if (
+        reasoning_outside_completion
+        and isinstance(completion, int)
+        and isinstance(reasoning, int)
+    ):
+        completion += reasoning
+    return Usage(
+        input_tokens=usage_raw.get("prompt_tokens"),
+        output_tokens=completion,
+        cached_input_tokens=details.get("cached_tokens")
+        or usage_raw.get("prompt_cache_hit_tokens"),
+        reasoning_tokens=reasoning,
+        total_tokens=usage_raw.get("total_tokens"),
+        provider_units=_provider_units(usage_raw),
+    )
+
+
 class CompatStreamAssembler(StreamAssembler):
     """Chat Completions chunk stream: choices[0].delta.content fragments,
     usage on the chunk that carries it, `data: [DONE]` terminal."""
 
-    def __init__(self, resolved: ResolvedProvider, request: TextGenerationRequest) -> None:
+    def __init__(
+        self,
+        resolved: ResolvedProvider,
+        request: TextGenerationRequest,
+        *,
+        reasoning_outside_completion: bool = False,
+    ) -> None:
         super().__init__(resolved, request)
         self._started = False
         self._saw_reasoning = False
+        self._reasoning_outside_completion = reasoning_outside_completion
 
     def _chunk_events(self, payload: dict[str, Any]) -> list[StreamEvent]:
         events: list[StreamEvent] = []
@@ -117,15 +154,8 @@ class CompatStreamAssembler(StreamAssembler):
                 events.extend(self.flush_tool_calls())
         usage_raw = payload.get("usage")
         if isinstance(usage_raw, dict) and usage_raw.get("completion_tokens") is not None:
-            details = usage_raw.get("prompt_tokens_details") or {}
-            completion_details = usage_raw.get("completion_tokens_details") or {}
-            self.usage = Usage(
-                input_tokens=usage_raw.get("prompt_tokens"),
-                output_tokens=usage_raw.get("completion_tokens"),
-                cached_input_tokens=details.get("cached_tokens")
-                or usage_raw.get("prompt_cache_hit_tokens"),
-                reasoning_tokens=completion_details.get("reasoning_tokens"),
-                total_tokens=usage_raw.get("total_tokens"),
+            self.usage = _compat_usage(
+                usage_raw, reasoning_outside_completion=self._reasoning_outside_completion
             )
             self.usage_reported = True
         return events
@@ -177,6 +207,10 @@ class CompatStreamAssembler(StreamAssembler):
 
 
 class OpenAICompatibleAdapter(ProviderAdapter):
+    # Whether this provider's chat completions report reasoning tokens beside
+    # completion_tokens rather than inside them; see _compat_usage.
+    reasoning_outside_completion: ClassVar[bool] = False
+
     def build_stream_spec(self, request: TextGenerationRequest) -> RequestSpec:
         spec = self.build_generation_spec(request)
         body = {**(spec.json_body or {}), "stream": True}
@@ -191,7 +225,11 @@ class OpenAICompatibleAdapter(ProviderAdapter):
         )
 
     def stream_assembler(self, request: TextGenerationRequest) -> StreamAssembler:
-        return CompatStreamAssembler(self.resolved, request)
+        return CompatStreamAssembler(
+            self.resolved,
+            request,
+            reasoning_outside_completion=self.reasoning_outside_completion,
+        )
 
     def initial_list_request(self) -> RequestSpec:
         op = self.resolved.operations["list_models"]
@@ -430,16 +468,8 @@ class OpenAICompatibleAdapter(ProviderAdapter):
 
         usage_raw = payload.get("usage")
         if isinstance(usage_raw, dict):
-            details = usage_raw.get("prompt_tokens_details") or {}
-            completion_details = usage_raw.get("completion_tokens_details") or {}
-            usage = Usage(
-                input_tokens=usage_raw.get("prompt_tokens"),
-                output_tokens=usage_raw.get("completion_tokens"),
-                cached_input_tokens=details.get("cached_tokens")
-                or usage_raw.get("prompt_cache_hit_tokens"),
-                reasoning_tokens=completion_details.get("reasoning_tokens"),
-                total_tokens=usage_raw.get("total_tokens"),
-                provider_units=_provider_units(usage_raw),
+            usage = _compat_usage(
+                usage_raw, reasoning_outside_completion=self.reasoning_outside_completion
             )
         else:
             usage = Usage()

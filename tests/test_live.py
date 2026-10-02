@@ -3587,6 +3587,75 @@ def test_live_prompt_caching_anthropic_and_openai():
     assert checked or inconclusive, "no anthropic or openai target in the live source"
 
 
+def test_live_output_tokens_include_reasoning():
+    """Capability-drift probe for the output-token rule: output_tokens is
+    every output token, reasoning included, and reasoning_tokens is a part
+    of it, on every provider that reports a reasoning count. Providers split
+    two ways on the wire (live-verified 2026-10-02): OpenAI, DeepSeek,
+    Moonshot, and xAI's responses route count reasoning inside their output
+    figure; Gemini and xAI's chat completions report it beside it, and their
+    adapters add it in. A provider moving its reasoning count in or out of
+    its output figure breaks one of the two checks here: reasoning never
+    exceeds output, and input plus output equals the provider's total
+    wherever a total is reported. A call that spent no reasoning tokens
+    proves nothing about the split and is reported, not failed."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import KeyCall, Message, TextInput
+
+    cases = {
+        "openai": [("gpt-5.4-nano", "low")],
+        "gemini": [("gemini-flash-latest", None)],
+        "deepseek": [("deepseek-flash", None)],
+        "moonshot": [("kimi-k2.6", None)],
+        # The chat route, then the responses route that reasoning_effort takes.
+        "xai": [("grok-4.3", None), ("grok-4.3", "low")],
+    }
+    ask = "A rope burns unevenly in 60 minutes. Measure 45 minutes with two ropes. One sentence."
+    targets, _ = load_targets(source)
+    checked, no_reasoning = [], []
+    seen = set()
+    for target in targets:
+        if target.provider not in cases or target.provider in seen:
+            continue
+        seen.add(target.provider)
+        client = KeyCall(provider=target.provider, api_key=target.key)
+        try:
+            for model, effort in cases[target.provider]:
+                usage = client.generate_text(
+                    model=model,
+                    messages=[Message(role="user", content=[TextInput(text=ask)])],
+                    max_output_tokens=4000,
+                    reasoning_effort=effort,
+                ).usage
+                label = f"{target.provider}/{model}" + (f" effort={effort}" if effort else "")
+                print(f"{label}: {usage}")
+                _spend.record(
+                    target.provider, "text_generate",
+                    tokens=(usage.input_tokens or 0) + (usage.output_tokens or 0),
+                )
+                if not usage.reasoning_tokens:
+                    no_reasoning.append(label)
+                    continue
+                assert usage.output_tokens is not None and usage.output_tokens >= usage.reasoning_tokens, (
+                    f"{label}: reasoning_tokens {usage.reasoning_tokens} exceeds output_tokens "
+                    f"{usage.output_tokens}; the provider's reasoning count has moved out of its "
+                    "output figure"
+                )
+                if usage.total_tokens is not None and usage.input_tokens is not None:
+                    assert usage.input_tokens + usage.output_tokens == usage.total_tokens, (
+                        f"{label}: input {usage.input_tokens} + output {usage.output_tokens} != "
+                        f"total {usage.total_tokens}; reasoning is now counted twice or not at all"
+                    )
+                checked.append(label)
+        finally:
+            client.close()
+    if no_reasoning:
+        print("spent no reasoning tokens, so the split is unverified this run: " + ", ".join(no_reasoning))
+    assert checked, "no provider spent reasoning tokens; the output-token rule went unverified"
+
+
 def test_live_cached_input_counts_add_up():
     """Capability-drift probe for the cache usage fields. Anthropic reports
     input as three disjoint parts (uncached, cache write, cache read), and

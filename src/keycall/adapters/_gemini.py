@@ -127,6 +127,31 @@ def _inline_data_output(inline: Mapping[str, Any]) -> OutputPart:
     return UnknownOutput(provider_kind="inlineData")
 
 
+def _sum_reported(*values: Any) -> int | None:
+    reported = [v for v in values if isinstance(v, int) and not isinstance(v, bool)]
+    return sum(reported) if reported else None
+
+
+def _gemini_usage(raw: Mapping[str, Any]) -> Usage:
+    """Gemini reports input and output each in parts (live-verified
+    2026-10-02): `promptTokenCount` beside `toolUsePromptTokenCount` (what a
+    code-execution or other tool run fed back in), and `candidatesTokenCount`
+    beside `thoughtsTokenCount`, with `totalTokenCount` the sum of all four.
+    `input_tokens` and `output_tokens` are each the whole, as on every other
+    provider; the cached and reasoning counts are parts of them."""
+    return Usage(
+        input_tokens=_sum_reported(
+            raw.get("promptTokenCount"), raw.get("toolUsePromptTokenCount")
+        ),
+        output_tokens=_sum_reported(
+            raw.get("candidatesTokenCount"), raw.get("thoughtsTokenCount")
+        ),
+        cached_input_tokens=raw.get("cachedContentTokenCount"),
+        reasoning_tokens=raw.get("thoughtsTokenCount"),
+        total_tokens=raw.get("totalTokenCount"),
+    )
+
+
 class _GeminiStreamAssembler(StreamAssembler):
     """Gemini's SSE stream has no event names and no terminal marker: each
     data line is a full GenerateContentResponse chunk, finishReason arrives
@@ -224,18 +249,14 @@ class _GeminiStreamAssembler(StreamAssembler):
         usage_raw = payload.get("usageMetadata")
         if isinstance(usage_raw, dict) and any(
             usage_raw.get(field) is not None
-            for field in ("promptTokenCount", "candidatesTokenCount", "totalTokenCount")
+            for field in (
+                "promptTokenCount", "candidatesTokenCount", "thoughtsTokenCount", "totalTokenCount"
+            )
         ):
             # Chunks repeat usageMetadata; the final chunk is authoritative.
             # A MAX_TOKENS truncation can omit candidatesTokenCount while
             # still reporting the other counts (live-verified 2026-08-08).
-            self.usage = Usage(
-                input_tokens=usage_raw.get("promptTokenCount"),
-                output_tokens=usage_raw.get("candidatesTokenCount"),
-                cached_input_tokens=usage_raw.get("cachedContentTokenCount"),
-                reasoning_tokens=usage_raw.get("thoughtsTokenCount"),
-                total_tokens=usage_raw.get("totalTokenCount"),
-            )
+            self.usage = _gemini_usage(usage_raw)
             self.usage_reported = True
 
         if isinstance(candidate, dict) and candidate.get("finishReason"):
@@ -407,11 +428,7 @@ class GeminiAdapter(ProviderAdapter):
             warnings = (f"model also returned text: {' '.join(commentary)[:200]}",)
         return self.image_result(
             images,
-            usage=Usage(
-                input_tokens=usage_raw.get("promptTokenCount"),
-                output_tokens=usage_raw.get("candidatesTokenCount"),
-                total_tokens=usage_raw.get("totalTokenCount"),
-            ),
+            usage=_gemini_usage(usage_raw),
             model=_strip_prefix(str(payload.get("modelVersion", model))),
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=safe_request_id(payload.get("responseId")),
@@ -484,11 +501,7 @@ class GeminiAdapter(ProviderAdapter):
         return self.speech_result(
             base64_data=data,
             media_type=media_type,
-            usage=Usage(
-                input_tokens=usage_raw.get("promptTokenCount"),
-                output_tokens=usage_raw.get("candidatesTokenCount"),
-                total_tokens=usage_raw.get("totalTokenCount"),
-            ),
+            usage=_gemini_usage(usage_raw),
             model=_strip_prefix(str(payload.get("modelVersion", model))),
             round_trip_duration_ms=round_trip_duration_ms,
             provider_request_id=safe_request_id(payload.get("responseId")),
@@ -884,13 +897,7 @@ class GeminiAdapter(ProviderAdapter):
 
         usage_raw = payload.get("usageMetadata")
         if isinstance(usage_raw, dict):
-            usage = Usage(
-                input_tokens=usage_raw.get("promptTokenCount"),
-                output_tokens=usage_raw.get("candidatesTokenCount"),
-                cached_input_tokens=usage_raw.get("cachedContentTokenCount"),
-                reasoning_tokens=usage_raw.get("thoughtsTokenCount"),
-                total_tokens=usage_raw.get("totalTokenCount"),
-            )
+            usage = _gemini_usage(usage_raw)
         else:
             usage = Usage()
             warnings.append("provider reported no usage information")

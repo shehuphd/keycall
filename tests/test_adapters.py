@@ -398,6 +398,113 @@ def test_compat_reasoning_tokens_normalized(provider):
     assert result.usage.reasoning_tokens == 7
 
 
+@pytest.mark.parametrize(
+    ("provider", "completion", "expected_output"),
+    [
+        # DeepSeek and Moonshot count reasoning inside completion_tokens
+        # (live-verified 2026-09-24: completion 12 with reasoning 10, total
+        # = prompt + completion).
+        ("deepseek", 9, 9),
+        ("moonshot", 9, 9),
+        # xAI's chat completions report it beside them (live-verified
+        # 2026-10-02: completion 44, reasoning 221, total 480 over a
+        # 215-token prompt), so output_tokens is the sum.
+        ("xai", 2, 9),
+    ],
+)
+def test_compat_output_tokens_include_reasoning(provider, completion, expected_output):
+    """output_tokens is every output token, reasoning included, and
+    reasoning_tokens is a part of it, so input + output is the total."""
+    usage = {
+        "prompt_tokens": 6,
+        "completion_tokens": completion,
+        "total_tokens": 15,
+        "completion_tokens_details": {"reasoning_tokens": 7},
+    }
+    result = run_generation(provider, compat_usage_handler(usage))
+    assert result.usage.output_tokens == expected_output
+    assert result.usage.reasoning_tokens == 7
+    assert result.usage.input_tokens + result.usage.output_tokens == result.usage.total_tokens
+
+
+def test_xai_output_without_a_reasoning_count_is_left_as_reported():
+    usage = {"prompt_tokens": 6, "completion_tokens": 9, "total_tokens": 15}
+    result = run_generation("xai", compat_usage_handler(usage))
+    assert result.usage.output_tokens == 9
+    assert result.usage.reasoning_tokens is None
+
+
+def _gemini_usage_handler(usage):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "modelVersion": "test-model-001",
+                "candidates": [
+                    {"content": {"parts": [{"text": "done"}]}, "finishReason": "STOP"}
+                ],
+                "usageMetadata": usage,
+            },
+        )
+
+    return handler
+
+
+def test_gemini_output_tokens_include_thoughts():
+    """Gemini reports thoughtsTokenCount beside candidatesTokenCount
+    (live-verified 2026-10-02: 33 + 325 of a 384 total over 26 prompt), so
+    output_tokens is the sum and reasoning_tokens a part of it."""
+    result = run_generation(
+        "gemini",
+        _gemini_usage_handler(
+            {
+                "promptTokenCount": 26,
+                "candidatesTokenCount": 33,
+                "thoughtsTokenCount": 325,
+                "totalTokenCount": 384,
+            }
+        ),
+    )
+    assert result.usage.output_tokens == 358
+    assert result.usage.reasoning_tokens == 325
+    assert result.usage.input_tokens + result.usage.output_tokens == result.usage.total_tokens
+
+
+def test_gemini_input_tokens_include_tool_use_prompt():
+    """A code-execution run feeds its results back as toolUsePromptTokenCount,
+    beside promptTokenCount (live-verified 2026-10-02: 310 prompt, 416 tool
+    use, 244 candidates, 379 thoughts, total 1349); input_tokens is the
+    whole input."""
+    result = run_generation(
+        "gemini",
+        _gemini_usage_handler(
+            {
+                "promptTokenCount": 310,
+                "toolUsePromptTokenCount": 416,
+                "candidatesTokenCount": 244,
+                "thoughtsTokenCount": 379,
+                "totalTokenCount": 1349,
+            }
+        ),
+    )
+    assert result.usage.input_tokens == 726
+    assert result.usage.output_tokens == 623
+    assert result.usage.input_tokens + result.usage.output_tokens == result.usage.total_tokens
+
+
+def test_gemini_truncation_without_candidates_still_counts_thoughts():
+    """A MAX_TOKENS stop can omit candidatesTokenCount; the thoughts were
+    still produced and billed as output."""
+    result = run_generation(
+        "gemini",
+        _gemini_usage_handler(
+            {"promptTokenCount": 5, "thoughtsTokenCount": 16, "totalTokenCount": 21}
+        ),
+    )
+    assert result.usage.output_tokens == 16
+    assert result.usage.input_tokens == 5
+
+
 @pytest.mark.parametrize("provider", COMPAT_PROVIDERS)
 @pytest.mark.parametrize(
     "usage_extra",

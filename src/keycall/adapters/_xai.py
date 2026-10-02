@@ -57,6 +57,10 @@ from ._openai_compat import OpenAICompatibleAdapter
 
 
 class XAIAdapter(OpenAICompatibleAdapter):
+    # Chat completions report reasoning beside completion_tokens (the
+    # responses route counts it inside output_tokens, like OpenAI).
+    reasoning_outside_completion = True
+
     # --- web search via the Responses route ---
 
     def _responses_adapter(self) -> OpenAIAdapter:

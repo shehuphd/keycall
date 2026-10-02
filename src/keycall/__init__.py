@@ -115,7 +115,7 @@ from ._types import (
     WithheldModel,
 )
 
-__version__ = "1.17.0"
+__version__ = "1.18.0"
 
 __all__ = [
     "AliasFact",

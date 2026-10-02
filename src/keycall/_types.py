@@ -1476,7 +1476,11 @@ class Usage:
     not, on every provider. ``cached_input_tokens`` (read from cache) and
     ``cache_write_input_tokens`` (written to cache this call, billed above
     the base input rate) are parts of it, so the tokens billed at the base
-    rate are ``input_tokens`` minus both."""
+    rate are ``input_tokens`` minus both. ``output_tokens`` is every output
+    token, reasoning included, on text generation (plain, streamed, and
+    batch), and ``reasoning_tokens`` is a part of it. A Gemini realtime
+    session is the exception: it reports thoughts outside its own total, so
+    there ``reasoning_tokens`` comes on top of ``output_tokens``."""
 
     input_tokens: int | None = None
     output_tokens: int | None = None

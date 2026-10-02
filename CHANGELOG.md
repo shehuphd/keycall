@@ -4,6 +4,19 @@ All notable changes to KeyCall are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] — 2026-10-02
+
+Highlights: `output_tokens` now includes reasoning on every provider, so input plus output is the whole call everywhere; and Gemini's `input_tokens` now counts what a tool run fed back in.
+
+### Changed
+
+- **`output_tokens` counts reasoning on Gemini and xAI, like every other provider's.** OpenAI, Anthropic, DeepSeek, Moonshot, and xAI's responses route count reasoning inside their output figure, but Gemini and xAI's chat completions report it beside it, and KeyCall passed their output figure through alone, so a Gemini call that thought for 325 tokens and answered in 33 reported 33. `output_tokens` is now every output token on text generation (plain, streamed, and batch), with `reasoning_tokens` a part of it, never extra to it; input plus output equals the provider's total wherever one is reported. Every provider bills reasoning as output. If your code added `reasoning_tokens` on top of `output_tokens` on Gemini or xAI, remove that addition, or reasoning will be counted twice; on the other providers, adding it was already double-counting.
+- **Gemini's `input_tokens` counts tool-use prompt tokens.** A code-execution run feeds its results back to the model, and Gemini reports those tokens as `toolUsePromptTokenCount` beside the prompt (310 prompt and 416 tool use on one call). `input_tokens` now includes them, matching the rule that it is the whole input.
+
+### Notes
+
+- **Reasoning counts were probed on every provider that reports them (2026-10-02).** Gemini's `totalTokenCount` is prompt plus tool use plus candidates plus thoughts, plain and streamed; xAI's chat completions total is prompt plus completion plus reasoning, while its responses route counts reasoning inside `output_tokens`; OpenAI, DeepSeek, and Moonshot count it inside. A Gemini realtime session is different: `gemini-2.5-flash-native-audio-latest` reported 394 prompt plus 363 response as its 757 total, with 574 thoughts outside it, so a session's `output_tokens` stays the response count and `reasoning_tokens` comes on top of it. A release-suite drift probe holds the rule on every provider that reasons: reasoning never exceeds output, and input plus output equals the total.
+
 ## [1.17.0] — 2026-10-01
 
 Highlights: `judge()` adds typed judgments with calibrated probabilities on TypeSafe, the newest provider, with a Playground task to try them; and Anthropic's `input_tokens` now counts cached tokens like every other provider's, with cache writes reported in a new field.
@@ -651,6 +664,7 @@ First release. Key validation, model discovery and filtering, and text generatio
 - Perplexity's Sonar models aren't API-discoverable and are maintained in the bundled catalog.
 - The provider catalog ships inside the package and updates only on release.
 
+[1.18.0]: https://github.com/shehuphd/keycall/compare/v1.17.0...v1.18.0
 [1.17.0]: https://github.com/shehuphd/keycall/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/shehuphd/keycall/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/shehuphd/keycall/compare/v1.14.0...v1.15.0

@@ -209,13 +209,17 @@ result.text                      # concatenated text output, or None
 result.usage.input_tokens        # None means "provider didn't report", not zero
 result.usage.cached_input_tokens # part of input_tokens read from the prompt cache
 result.usage.cache_write_input_tokens  # part of input_tokens written to the cache this call
+result.usage.output_tokens       # every output token, reasoning included
+result.usage.reasoning_tokens    # part of output_tokens spent thinking
 result.usage.total_tokens
 result.round_trip_duration_ms
 result.finish_reason
 result.provider_request_id
 ```
 
-`input_tokens` is every input token the call processed, cached or not, on every provider. `cached_input_tokens` and `cache_write_input_tokens` are parts of it, so the tokens billed at the base input rate are `input_tokens` minus both. Anthropic reports the three parts separately and KeyCall adds them up; every other provider already counts cached tokens inside its input figure.
+`input_tokens` is every input token the call processed, cached or not, on every provider. `cached_input_tokens` and `cache_write_input_tokens` are parts of it, so the tokens billed at the base input rate are `input_tokens` minus both. Anthropic reports the three parts separately and KeyCall adds them up; every other provider already counts cached tokens inside its input figure. Gemini also reports what a tool run (code execution, for one) fed back in as its own figure, which KeyCall counts in `input_tokens` too.
+
+`output_tokens` is every output token the call produced, reasoning included, on every provider, and `reasoning_tokens` is a part of it, so input plus output is the whole call. OpenAI, Anthropic, DeepSeek, Moonshot, and xAI's responses route already count reasoning inside their output figure; Gemini and xAI's chat completions report it beside it, and KeyCall adds it in. Every provider bills reasoning as output.
 
 `messages` accepts any sequence of `Message` objects, a plain list is fine. Roles are `"system"`, `"user"`, `"assistant"`. Dicts and bare strings are not accepted; there's one canonical representation.
 
@@ -565,7 +569,7 @@ Moonshot accepts the parameter and ignores it (HTTP 200, and an invalid level ac
 
 ### Reasoning-token counts
 
-`result.usage.reasoning_tokens` carries how many tokens the model spent thinking, wherever the provider reports a count: OpenAI, Gemini, DeepSeek, Moonshot, and xAI, streaming and not (each verified live 2026-08-30 or earlier). It stays `None` where no count is sent — Perplexity's reasoning models emit their thinking as visible text in the reply instead, and Anthropic reports thinking spend inside `output_tokens` without a separate figure. As everywhere in `Usage`, `None` means "the provider didn't report a value" and `0` means it reported zero.
+`result.usage.reasoning_tokens` carries how many tokens the model spent thinking, wherever the provider reports a count: OpenAI, Gemini, DeepSeek, Moonshot, and xAI, streaming and not (each verified live 2026-08-30 or earlier). It is a part of `output_tokens`, never extra to it (see [Generating text](#generating-text)). The one exception is a Gemini [realtime session](#realtime-sessions), which reports thoughts outside both its response count and its own total, so there `reasoning_tokens` comes on top of `output_tokens`; whether those thoughts bill isn't stated by the provider. It stays `None` where no count is sent — Perplexity's reasoning models emit their thinking as visible text in the reply instead, and Anthropic reports thinking spend inside `output_tokens` without a separate figure. As everywhere in `Usage`, `None` means "the provider didn't report a value" and `0` means it reported zero.
 
 ## Realtime sessions
 
