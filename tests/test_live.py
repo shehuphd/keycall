@@ -1632,19 +1632,22 @@ def test_live_seed_and_temperature_support_still_holds():
 
 
 def test_live_gemini_sampling_still_fixed_on_newer_models():
-    """Drift probe for the Gemini sampling_constraints entries (evidence
-    2026-10-07), probed raw. The newest listed Gemini model the catalog
-    pattern covers is asked for a random noun six times at temperature
-    2.0: a model that honours temperature spreads across five or six
-    answers there (3.5 Flash gave five of five), while the affected
-    models gave two or three. A 400 means the model now rejects the
-    parameter, which the gate already covers. The control, gemini-3.5-flash,
-    must still honour temperature 0 with one repeated answer, so the gate
-    hasn't become too narrow either."""
+    """Drift probe for the Gemini sampling_constraints entries, probed raw.
+    A model that honours temperature nearly repeats itself at temperature
+    0. Asked eight times at 0 to invent an animal in one sentence
+    (2026-10-07), gemini-3.5-flash gave two different sentences, while
+    3.5-flash-lite, 3.6-flash and 3.8-flash gave eight. So the newest
+    covered Flash model must give at least four different sentences in
+    eight at 0; a 400 means it now rejects the parameter, which the gate
+    already covers. gemini-3.5-flash is the control and must give at most
+    three, so the gate hasn't become too narrow either. A one-word prompt
+    was tried first and was too narrow to tell them apart reliably: the
+    affected models sometimes gave the same noun ten times."""
     source = os.environ.get("KEYCALL_LIVE_SOURCE")
     if not source:
         pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
     import re
+    from concurrent.futures import ThreadPoolExecutor
 
     import httpx
 
@@ -1657,9 +1660,9 @@ def test_live_gemini_sampling_still_fixed_on_newer_models():
     patterns = [c.pattern for c in resolve_provider("gemini").capabilities.sampling_constraints]
     base = "https://generativelanguage.googleapis.com/v1beta/models"
     headers = {"x-goog-api-key": gem.key}
-    prompt = "Name one random English noun. Reply with the single word only."
+    prompt = "Invent an imaginary animal and describe it in one sentence of at most twenty words."
 
-    def ask(client, model, temperature):
+    def ask(client, model):
         r = client.post(
             f"{base}/{model}:generateContent",
             headers=headers,
@@ -1667,7 +1670,7 @@ def test_live_gemini_sampling_still_fixed_on_newer_models():
                 "contents": [{"role": "user", "parts": [{"text": prompt}]}],
                 "generationConfig": {
                     "maxOutputTokens": 1024,
-                    "temperature": temperature,
+                    "temperature": 0.0,
                     "thinkingConfig": {"thinkingLevel": "LOW"},
                 },
             },
@@ -1675,7 +1678,11 @@ def test_live_gemini_sampling_still_fixed_on_newer_models():
         if r.status_code != 200:
             return r.status_code, r.text[:200]
         parts = r.json()["candidates"][0]["content"]["parts"]
-        return 200, parts[-1]["text"].strip().lower().strip(".")
+        return 200, parts[-1]["text"].strip()
+
+    def sample(client, model, count):
+        with ThreadPoolExecutor(count) as pool:
+            return list(pool.map(lambda _: ask(client, model), range(count)))
 
     with httpx.Client(timeout=180) as client:
         listing = client.get(base, params={"pageSize": 1000}, headers=headers)
@@ -1684,7 +1691,6 @@ def test_live_gemini_sampling_still_fixed_on_newer_models():
             m["name"].removeprefix("models/")
             for m in listing.json()["models"]
             if "generateContent" in m.get("supportedGenerationMethods", [])
-            and "thinking" in m and m.get("thinking")
         ]
         covered = sorted(
             (i for i in ids if re.fullmatch(r"gemini-\d+\.\d+-flash", i)
@@ -1694,25 +1700,28 @@ def test_live_gemini_sampling_still_fixed_on_newer_models():
         if not covered:
             pytest.skip("no listed Gemini Flash model falls under the sampling_constraints patterns")
         model = covered[-1]
-        answers = [ask(client, model, 2.0) for _ in range(6)]
-        if all(status == 400 for status, _ in answers):
+        answers = sample(client, model, 8)
+        if any(status == 400 for status, _ in answers):
             print(f"{model} now rejects an explicit temperature (400); the gate already refuses it")
         else:
-            words = {text for status, text in answers if status == 200}
-            assert len(words) < 5, (
-                f"{model} gave {len(words)} different answers in six at temperature 2.0 "
-                f"({sorted(words)}): it may honour temperature again. Re-probe, then narrow the "
-                "gemini sampling_constraints patterns in the catalog, USAGE's sampling notes, "
-                "and this probe"
+            words = [text for status, text in answers if status == 200]
+            if len(words) < 6:
+                pytest.skip(f"{model}: only {len(words)} of 8 calls answered; inconclusive")
+            assert len(set(words)) >= 4, (
+                f"{model} gave only {len(set(words))} different sentences in {len(words)} at "
+                "temperature 0: it may honour temperature again. Re-probe, then narrow the gemini "
+                "sampling_constraints patterns in the catalog, USAGE's sampling notes, and this probe"
             )
-            print(f"{model}: {len(words)} distinct answers in six at temperature 2.0, still fixed")
+            print(f"{model}: {len(set(words))} different sentences in {len(words)} at temperature 0, still fixed")
 
         if "gemini-3.5-flash" in ids:
-            control = [ask(client, "gemini-3.5-flash", 0.0) for _ in range(4)]
-            words = {text for status, text in control if status == 200}
-            assert all(status == 200 for status, _ in control) and len(words) == 1, (
-                f"gemini-3.5-flash no longer repeats itself at temperature 0 ({control}): "
-                "sampling may be fixed there too. Re-probe, then widen the gemini "
+            control = sample(client, "gemini-3.5-flash", 8)
+            words = [text for status, text in control if status == 200]
+            if len(words) < 6:
+                pytest.skip(f"gemini-3.5-flash: only {len(words)} of 8 calls answered; inconclusive")
+            assert len(set(words)) <= 3, (
+                f"gemini-3.5-flash gave {len(set(words))} different sentences in {len(words)} at "
+                "temperature 0: sampling may be fixed there too. Re-probe, then widen the gemini "
                 "sampling_constraints patterns, USAGE's sampling notes, and this probe"
             )
             print("gemini-3.5-flash still honours temperature 0")

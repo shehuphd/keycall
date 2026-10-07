@@ -253,7 +253,7 @@ Some models constrain sampling, and KeyCall raises `MODEL_NOT_SUITABLE` before a
 
 A `seed` set for a provider without one is refused before the network rather than dropped, so reproducibility a caller asked for never silently disappears. No provider guarantees determinism from a seed; it narrows variance rather than removing it, which every provider that has the field states.
 
-The evidence lives in the bundled catalog per provider, with the date each claim was last checked against the live API, and release probes re-verify that the seed-supporting providers still accept a seed, the pinned models still reject a non-default temperature, and the newest Gemini Flash still ignores temperature while Gemini 3.5 Flash still honours it.
+The evidence lives in the bundled catalog per provider, with the date each claim was last checked against the live API, and release probes re-verify that the seed-supporting providers still accept a seed, the pinned models still reject a non-default temperature, and the newest Gemini Flash still varies its answers at temperature 0 while Gemini 3.5 Flash still nearly repeats itself there.
 
 ## Streaming
 
