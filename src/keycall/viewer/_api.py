@@ -36,6 +36,7 @@ from .._types import (
     NoulAnswer,
     NoulQuestion,
     ScoreQuestion,
+    TextBlockOutput,
     TextGenerationRequest,
     TextInput,
     Tool,
@@ -82,6 +83,9 @@ VIDEO_JOB_TIMEOUT = 900.0
 # can take minutes. Sync transcription providers get no timeout at all —
 # the library refuses one there, pointing at read_timeout instead.
 TRANSCRIPTION_JOB_TIMEOUT = 900.0
+# A provider design tool runs as a job too; the ones observed live
+# finished inside two minutes, so ten is generous.
+TOOL_JOB_TIMEOUT = 600.0
 
 
 def _transcription_wires(provider: str) -> dict[str, list[str]]:
@@ -136,7 +140,24 @@ def _capability_flags(caps: Any) -> dict[str, Any]:
         # matches the "decision" model category through the judge()
         # operation rather than by spelling.
         "judgment": caps.judgment,
+        # Picture operations beyond generation, each with the optional
+        # inputs the provider honours, so a control for an input the
+        # provider would refuse can disable itself before a request.
+        "image_operations": {
+            name: {
+                "params": sorted(support.params),
+                "max_reference_images": support.max_reference_images,
+            }
+            for name, support in caps.image_operations.items()
+        },
+        # Which pictures a video request may start from (first frame,
+        # last frame, references).
+        "video_inputs": sorted(caps.video_inputs),
+        # Whether the provider changes pictures at all, the Change a
+        # picture task's gate.
+        "picture_operations": any(name != "image_generation" for name in caps.image_operations),
     }
+
 
 
 def error_body(error: KeyCallError) -> dict[str, Any]:
@@ -171,7 +192,13 @@ def list_targets(registry: Registry) -> dict[str, Any]:
         # never run.
         "provider_capabilities": {
             **{
-                name: _capability_flags(resolve_provider(name).capabilities)
+                name: {
+                    **_capability_flags(resolve_provider(name).capabilities),
+                    # The provider's own named design tools, the Run a
+                    # design tool task's gate. Lives on the provider rather
+                    # than its capabilities, so it's added here.
+                    "provider_tools": bool(resolve_provider(name).provider_tools),
+                }
                 for name in supported_providers()
             },
             **{
@@ -433,8 +460,14 @@ def check_target(registry: Registry, target_id: int) -> dict[str, Any]:
 
 
 def browse_models(
-    registry: Registry, target_id: int, *, category: str | None, refresh: bool
+    registry: Registry,
+    target_id: int,
+    *,
+    category: str | None,
+    refresh: bool,
+    operation: str | None = None,
 ) -> dict[str, Any]:
+
     try:
         client = registry.client(target_id)
     except KeyError:
@@ -471,6 +504,8 @@ def browse_models(
                         }
                     }
 
+    if operation is not None:
+        return _models_for_operation(client, discovery, operation)
     if category is None:
         return _discovery_dict(discovery)
     try:
@@ -487,6 +522,31 @@ def browse_models(
     body = _discovery_dict(discovery)
     body["models"] = [_model_dict(m) for m in filtered]
     body["categories"] = [wanted.value]
+    return body
+
+
+def _models_for_operation(client: Any, discovery: Any, operation: str) -> dict[str, Any]:
+    """The models that serve one picture operation. A catalog model that
+    names its operations (Ideogram's routes) is offered for those and no others;
+    a model that names none is offered when its provider serves the
+    operation and the model draws pictures, which is how OpenAI, Gemini
+    and xAI edit with their generation models."""
+    if operation not in client._resolved.capabilities.image_operations:
+        body = _discovery_dict(discovery)
+        body["models"] = []
+        return body
+    picture_operations = set(_PICTURE_OPERATIONS) | {"image_generation"}
+
+    def serves(model: Any) -> bool:
+        named = picture_operations & set(model.capabilities)
+        if named:
+            return operation in named
+        return ModelCategory.IMAGE_GENERATION in model.categories
+
+    body = _discovery_dict(discovery)
+    body["models"] = [
+        _model_dict(m) for m in order_candidates([m for m in discovery.models if serves(m)])
+    ]
     return body
 
 
@@ -735,6 +795,66 @@ def generate(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[s
     return _result_dict(result)
 
 
+def _one_picture(raw: Any, name: str) -> ImageInput | None:
+    """One picture the browser sent under ``name``, in the attachment
+    shape (base64 or a URL), or None when the field is absent."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise _BadRequest(f"{name} must be an object")
+    try:
+        (picture,) = _parse_media([raw], "images")
+    except _BadRequest as error:
+        raise _BadRequest(f"{name}: {str(error).split(': ', 1)[-1]}") from None
+    assert isinstance(picture, ImageInput)
+    return picture
+
+
+def _pictures(raw: Any, name: str) -> list[ImageInput]:
+    try:
+        return [p for p in _parse_media(raw, "images") if isinstance(p, ImageInput)]
+    except _BadRequest as error:
+        raise _BadRequest(f"{name}: {error}") from None
+
+
+def _picture_options(body: dict[str, Any]) -> dict[str, Any]:
+    """The optional picture fields shared by generate_image() and the
+    picture operations, checked for type here and left to the library to
+    refuse where a provider or model wouldn't honour them."""
+    fields: dict[str, Any] = {}
+    for name in ("size", "quality"):
+        value = body.get(name)
+        if value in (None, ""):
+            continue
+        if not isinstance(value, str):
+            raise _BadRequest(f"{name} must be a string")
+        fields[name] = value
+    seed = body.get("seed")
+    if seed is not None:
+        if not isinstance(seed, int) or isinstance(seed, bool):
+            raise _BadRequest("seed must be a whole number")
+        fields["seed"] = seed
+    options = body.get("provider_options")
+    if options not in (None, {}):
+        if not isinstance(options, dict):
+            raise _BadRequest("provider options must be a JSON object")
+        fields["provider_options"] = options
+    return fields
+
+
+def _picture_result(result: Any) -> dict[str, Any]:
+    body_out = _result_dict(result)
+    body_out["images"] = [
+        {"base64_data": part.base64_data, "media_type": part.media_type, "label": part.label}
+        for part in result.parts
+        if isinstance(part, ImageOutput)
+    ]
+    body_out["text_blocks"] = [
+        dataclasses.asdict(part) for part in result.parts if isinstance(part, TextBlockOutput)
+    ]
+    return body_out
+
+
 def generate_image(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[str, Any]:
     """Image generation is its own operation, not a flag on text: the
     request shape, the result parts, and the models are all different."""
@@ -747,19 +867,149 @@ def generate_image(registry: Registry, target_id: int, body: dict[str, Any]) -> 
     prompt = body.get("prompt")
     if not model or not isinstance(model, str) or not prompt or not isinstance(prompt, str):
         return {"error": {"code": "bad_request", "message": "model and prompt are required"}}
+    try:
+        fields = _picture_options(body)
+    except _BadRequest as error:
+        return {"error": {"code": "bad_request", "message": str(error)}}
 
     try:
-        result = client.generate_image(model=model, prompt=prompt)
-    except KeyCallError as error:
-        return error_body(error)
+        result = client.generate_image(model=model, prompt=prompt, **fields)
+    except (KeyCallError, ValueError) as error:
+        return _refusal_body(error)
 
-    body_out = _result_dict(result)
-    body_out["images"] = [
-        {"base64_data": part.base64_data, "media_type": part.media_type}
-        for part in result.parts
-        if isinstance(part, ImageOutput)
-    ]
-    return body_out
+    return _picture_result(result)
+
+
+def _refusal_body(error: Exception) -> dict[str, Any]:
+    if isinstance(error, KeyCallError):
+        return error_body(error)
+    return {"error": {"code": "bad_request", "message": str(error)}}
+
+
+# Each picture operation the Playground offers, the client method that
+# runs it, and the browser fields it passes through. The library refuses
+# whatever a provider or model wouldn't honour, so this table only says
+# which fields reach which method.
+_PICTURE_OPERATIONS: dict[str, tuple[str, frozenset[str]]] = {
+    "image_edit": (
+        "edit_image",
+        frozenset({"prompt", "reference_images", "mask", "size", "quality", "seed"}),
+    ),
+    "image_upscale": ("upscale_image", frozenset({"factor", "prompt", "seed"})),
+    "image_expand": ("expand_image", frozenset({"size", "prompt", "seed"})),
+    "background_removal": ("remove_background", frozenset()),
+    "background_replacement": ("replace_background", frozenset({"prompt", "quality"})),
+    "object_erase": ("erase_object", frozenset({"mask", "seed"})),
+    "image_description": ("describe_image", frozenset()),
+    "image_layerize": ("layerize_image", frozenset({"prompt", "seed"})),
+}
+
+
+def picture_operation(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """One picture in, a changed picture (or a description) out, through
+    the same named client method a library caller uses."""
+    try:
+        client = registry.client(target_id)
+    except KeyError:
+        return {"error": {"code": "not_found", "message": "unknown target id"}}
+
+    operation = body.get("operation")
+    if operation not in _PICTURE_OPERATIONS:
+        return {"error": {"code": "bad_request", "message": f"unknown operation {operation!r}"}}
+    method, accepted = _PICTURE_OPERATIONS[operation]
+    model = body.get("model")
+    if not model or not isinstance(model, str):
+        return {"error": {"code": "bad_request", "message": "a model is required"}}
+
+    try:
+        image = _one_picture(body.get("image"), "the picture")
+        if image is None:
+            raise _BadRequest("pick a picture to work on")
+        fields: dict[str, Any] = {"model": model, "image": image}
+        options = _picture_options(body)
+        if "provider_options" in options:
+            fields["provider_options"] = options.pop("provider_options")
+        for name, value in options.items():
+            if name in accepted:
+                fields[name] = value
+        prompt = body.get("prompt")
+        if "prompt" in accepted and isinstance(prompt, str) and prompt.strip():
+            fields["prompt"] = prompt
+        if "mask" in accepted:
+            mask = _one_picture(body.get("mask"), "the mask")
+            if mask is not None:
+                fields["mask"] = mask
+        if "reference_images" in accepted:
+            references = _pictures(body.get("reference_images"), "reference pictures")
+            if references:
+                fields["reference_images"] = references
+        factor = body.get("factor")
+        if "factor" in accepted and factor is not None:
+            if not isinstance(factor, int) or isinstance(factor, bool):
+                raise _BadRequest("the enlargement factor must be a whole number")
+            fields["factor"] = factor
+    except _BadRequest as error:
+        return {"error": {"code": "bad_request", "message": str(error)}}
+
+    try:
+        result = getattr(client, method)(**fields)
+    except (KeyCallError, ValueError, TypeError) as error:
+        return _refusal_body(error)
+    return _picture_result(result)
+
+
+def list_tools(registry: Registry, target_id: int) -> dict[str, Any]:
+    """The provider's own named tools and the inputs each takes."""
+    try:
+        client = registry.client(target_id)
+    except KeyError:
+        return {"error": {"code": "not_found", "message": "unknown target id"}}
+    if client.kind == "service":
+        return {"tools": []}
+    return {
+        "tools": [
+            {
+                "name": tool.name,
+                "required": list(tool.required),
+                "files": dict(tool.files),
+                "fields": list(tool.fields),
+                "note": tool.note,
+            }
+            for tool in client.list_tools()
+        ]
+    }
+
+
+def run_tool(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """Start, poll and download one provider tool run in a single blocking
+    call, the same shape as the video route."""
+    try:
+        client = registry.client(target_id)
+    except KeyError:
+        return {"error": {"code": "not_found", "message": "unknown target id"}}
+    tool = body.get("tool")
+    if not tool or not isinstance(tool, str):
+        return {"error": {"code": "bad_request", "message": "pick a tool to run"}}
+    files = body.get("files") or {}
+    fields = body.get("fields") or {}
+    if not isinstance(files, dict) or not isinstance(fields, dict):
+        return {"error": {"code": "bad_request", "message": "files and fields must be objects"}}
+    inputs: dict[str, Any] = {}
+    try:
+        for name, raw in files.items():
+            pictures = _pictures(raw if isinstance(raw, list) else [raw], name)
+            if pictures:
+                inputs[name] = pictures if isinstance(raw, list) else pictures[0]
+    except _BadRequest as error:
+        return {"error": {"code": "bad_request", "message": str(error)}}
+    for name, value in fields.items():
+        if value not in (None, ""):
+            inputs[name] = value
+    try:
+        result = client.run_tool(tool=tool, inputs=inputs, timeout=TOOL_JOB_TIMEOUT)
+    except (KeyCallError, ValueError, TypeError) as error:
+        return _refusal_body(error)
+    return _picture_result(result)
 
 
 def generate_speech(registry: Registry, target_id: int, body: dict[str, Any]) -> dict[str, Any]:
@@ -836,16 +1086,25 @@ def generate_video(registry: Registry, target_id: int, body: dict[str, Any]) -> 
     duration_seconds = body.get("duration_seconds")
     if duration_seconds is not None and not isinstance(duration_seconds, int):
         return {"error": {"code": "bad_request", "message": "duration_seconds must be an integer"}}
+    try:
+        image = _one_picture(body.get("image"), "the first frame")
+        last_frame = _one_picture(body.get("last_frame"), "the last frame")
+        references = _pictures(body.get("reference_images"), "reference pictures")
+    except _BadRequest as error:
+        return {"error": {"code": "bad_request", "message": str(error)}}
 
     try:
         result = client.generate_video(
             model=model,
             prompt=prompt,
             duration_seconds=duration_seconds,
+            image=image,
+            last_frame=last_frame,
+            reference_images=references,
             timeout=VIDEO_JOB_TIMEOUT,
         )
-    except KeyCallError as error:
-        return error_body(error)
+    except (KeyCallError, ValueError) as error:
+        return _refusal_body(error)
 
     body_out = _result_dict(result)
     body_out["videos"] = [

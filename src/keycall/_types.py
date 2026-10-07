@@ -7,9 +7,11 @@ Sequence and normalized to tuples internally.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
@@ -39,6 +41,7 @@ __all__ = [
     "FinalTranscript",
     "ImageGenerationRequest",
     "ImageInput",
+    "ImageOperationRequest",
     "ImageOutput",
     "InputPart",
     "InterimTranscript",
@@ -54,6 +57,7 @@ __all__ = [
     "NoulAnswer",
     "NoulQuestion",
     "OutputPart",
+    "ProviderTool",
     "ReasoningDelta",
     "ScoreAnswer",
     "ScoreQuestion",
@@ -63,6 +67,7 @@ __all__ = [
     "StreamEvent",
     "StreamFinish",
     "StreamStart",
+    "TextBlockOutput",
     "TextDelta",
     "TextGenerationRequest",
     "TextInput",
@@ -72,6 +77,8 @@ __all__ = [
     "ToolCallArgumentsDelta",
     "ToolCallComplete",
     "ToolCallStarted",
+    "ToolJob",
+    "ToolJobStatus",
     "ToolResult",
     "TranscriptOutput",
     "TranscriptWord",
@@ -265,10 +272,37 @@ class TextOutput:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ImageOutput:
+    """``label`` names which picture this is when an operation returns
+    more than one kind: layerize_image returns the design ("design") and
+    the same design with its text removed ("base"). None everywhere a
+    result holds one kind of picture."""
+
     url: str | None = None
     base64_data: str | None = None
     media_type: str | None = None
+    label: str | None = None
     kind: Literal["image"] = "image"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TextBlockOutput:
+    """One block of text found in a picture by layerize_image: what it
+    says and where it is, in pixels from the top-left corner. Font
+    details are the provider's best match and None where it reports
+    none."""
+
+    text: str
+    x: int
+    y: int
+    width: int
+    height: int
+    angle: float = 0.0
+    alignment: str | None = None
+    formatting: tuple[str, ...] = ()
+    font_name: str | None = None
+    font_size: int | None = None
+    color: str | None = None
+    kind: Literal["text_block"] = "text_block"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -343,6 +377,7 @@ OutputPart = (
     | EmbeddingOutput
     | VideoOutput
     | FileOutput
+    | TextBlockOutput
     | ToolCall
     | CodeExecutionOutput
     | UnknownOutput
@@ -522,19 +557,169 @@ class EmbeddingRequest:
         object.__setattr__(self, "inputs", inputs)
 
 
+# An aspect ratio ("16:9", "9:19.5") or a pixel size ("1280x768").
+_SIZE_PATTERN = re.compile(
+    r"[1-9][0-9]*(?:\.[0-9]+)?:[1-9][0-9]*(?:\.[0-9]+)?|[1-9][0-9]*x[1-9][0-9]*"
+)
+
+
+def _validated_provider_options(
+    options: Mapping[str, Any] | None, *, owner: str
+) -> Mapping[str, Any] | None:
+    if options is None:
+        return None
+    if not isinstance(options, Mapping):
+        raise TypeError(f"{owner}.provider_options must be a mapping of field name to value")
+    for name in options:
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"{owner}.provider_options keys must be non-empty strings")
+    return MappingProxyType(dict(options))
+
+
+def _validated_seed(seed: int | None, *, owner: str) -> None:
+    if seed is None:
+        return
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError(f"{owner}.seed must be a non-negative integer")
+
+
+def _validated_size(size: str | None, *, owner: str) -> None:
+    """A size is an aspect ratio ("16:9") or a pixel size ("1280x768")."""
+    if size is None:
+        return
+    if not isinstance(size, str) or not _SIZE_PATTERN.fullmatch(size):
+        raise ValueError(
+            f'{owner}.size must be an aspect ratio like "16:9" or a pixel '
+            f'size like "1280x768", got {size!r}'
+        )
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ImageGenerationRequest:
     """Carries no provider and no credential — those are client identity.
-    Deliberately just a model and a prompt: size and count are supported on
-    OpenAI and ignored by Gemini's image models, and a parameter that
-    silently does nothing on half the providers is worse than none."""
+
+    ``size`` is an aspect ratio ("16:9") or a pixel size ("1280x768").
+    ``quality``, ``seed`` and ``size`` are sent where the provider takes
+    them and refused, before any request, where it doesn't: each changes
+    the picture, so dropping one silently would hand back a result the
+    caller didn't ask for. ``provider_options`` are extra request fields sent to
+    the provider as given, for a setting KeyCall has no parameter for;
+    code that uses them is tied to that provider."""
 
     model: str
     prompt: str
+    size: str | None = None
+    quality: str | None = None
+    seed: int | None = None
+    provider_options: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.prompt or not self.prompt.strip():
             raise ValueError("ImageGenerationRequest.prompt must not be empty")
+        _validated_seed(self.seed, owner="ImageGenerationRequest")
+        _validated_size(self.size, owner="ImageGenerationRequest")
+        object.__setattr__(
+            self,
+            "provider_options",
+            _validated_provider_options(
+                self.provider_options, owner="ImageGenerationRequest"
+            ),
+        )
+
+
+# What each picture operation needs beyond a model. A missing required
+# input is a ValueError at construction, so it never reaches a provider.
+_IMAGE_OPERATION_INPUTS: dict[Operation, tuple[frozenset[str], frozenset[str]]] = {
+    # operation: (required, allowed beyond required)
+    Operation.IMAGE_EDIT: (
+        frozenset({"prompt", "image"}),
+        frozenset({"reference_images", "mask", "seed", "quality", "size"}),
+    ),
+    Operation.IMAGE_UPSCALE: (frozenset({"image"}), frozenset({"factor", "prompt", "seed"})),
+    Operation.IMAGE_EXPAND: (frozenset({"image", "size"}), frozenset({"prompt", "seed"})),
+    Operation.BACKGROUND_REMOVAL: (frozenset({"image"}), frozenset()),
+    Operation.BACKGROUND_REPLACEMENT: (frozenset({"image", "prompt"}), frozenset({"quality"})),
+    Operation.OBJECT_ERASE: (frozenset({"image", "mask"}), frozenset({"seed"})),
+    Operation.IMAGE_DESCRIPTION: (frozenset({"image"}), frozenset()),
+    Operation.IMAGE_LAYERIZE: (frozenset({"image"}), frozenset({"prompt", "seed"})),
+}
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ImageOperationRequest:
+    """One picture-in operation: an edit, an upscale, an expand, a
+    background removal or replacement, an object erase, a description, or
+    a split into layers. Carries no provider and no credential.
+
+    ``image`` is the picture being worked on. ``reference_images`` guide an
+    edit and are never changed themselves. ``mask`` is a PNG the same size
+    as ``image`` where white marks the area to change and black the area
+    to keep; KeyCall redraws it for a provider whose own convention
+    differs. ``size`` is an aspect ratio ("16:9") or a pixel size
+    ("1280x768"). ``factor`` is how many times larger an upscale makes
+    each side.
+
+    An input the provider or the model can't honour is refused before any
+    request rather than dropped, because each one changes the result.
+    ``provider_options`` are extra request fields sent as given."""
+
+    operation: Operation
+    model: str
+    image: ImageInput
+    prompt: str | None = None
+    reference_images: Sequence[ImageInput] = ()
+    mask: ImageInput | None = None
+    seed: int | None = None
+    quality: str | None = None
+    factor: int | None = None
+    size: str | None = None
+    provider_options: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        owner = "ImageOperationRequest"
+        if self.operation not in _IMAGE_OPERATION_INPUTS:
+            raise ValueError(f"{self.operation!r} is not a picture operation")
+        if not isinstance(self.image, ImageInput):
+            raise TypeError(f"{owner}.image must be an ImageInput")
+        references = tuple(self.reference_images)
+        for reference in references:
+            if not isinstance(reference, ImageInput):
+                raise TypeError(f"{owner}.reference_images must hold ImageInput values")
+        object.__setattr__(self, "reference_images", references)
+        if self.mask is not None and not isinstance(self.mask, ImageInput):
+            raise TypeError(f"{owner}.mask must be an ImageInput")
+        if self.prompt is not None and not self.prompt.strip():
+            raise ValueError(f"{owner}.prompt must not be blank")
+        _validated_seed(self.seed, owner=owner)
+        _validated_size(self.size, owner=owner)
+        if self.factor is not None and (
+            isinstance(self.factor, bool) or not isinstance(self.factor, int) or self.factor < 2
+        ):
+            raise ValueError(f"{owner}.factor must be a whole number of 2 or more")
+        required, allowed = _IMAGE_OPERATION_INPUTS[self.operation]
+        given = {
+            name
+            for name in ("prompt", "mask", "seed", "quality", "factor", "size")
+            if getattr(self, name) is not None
+        }
+        given.add("image")
+        if references:
+            given.add("reference_images")
+        missing = sorted(required - given)
+        if missing:
+            raise ValueError(
+                f"{self.operation.value} needs {', '.join(missing)}"
+            )
+        extra = sorted(given - required - allowed)
+        if extra:
+            raise ValueError(
+                f"{self.operation.value} takes no {', '.join(extra)}"
+            )
+        object.__setattr__(
+            self,
+            "provider_options",
+            _validated_provider_options(self.provider_options, owner=owner),
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -581,10 +766,37 @@ class VideoGenerationRequest:
     prompt: str
     duration_seconds: int | None = None
     aspect_ratio: str | None = None
+    # Picture inputs: ``image`` is the first frame, ``last_frame`` the
+    # frame the video ends on, and ``reference_images`` are subjects or
+    # styles to carry into the video. Each is refused before any request
+    # on a provider or model that can't take it.
+    image: ImageInput | None = None
+    last_frame: ImageInput | None = None
+    reference_images: Sequence[ImageInput] = ()
 
     def __post_init__(self) -> None:
         if not self.prompt or not self.prompt.strip():
             raise ValueError("VideoGenerationRequest.prompt must not be empty")
+        for name in ("image", "last_frame"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, ImageInput):
+                raise TypeError(f"VideoGenerationRequest.{name} must be an ImageInput")
+        references = tuple(self.reference_images)
+        for reference in references:
+            if not isinstance(reference, ImageInput):
+                raise TypeError(
+                    "VideoGenerationRequest.reference_images must hold ImageInput values"
+                )
+        object.__setattr__(self, "reference_images", references)
+        if self.last_frame is not None and self.image is None:
+            raise ValueError(
+                "VideoGenerationRequest.last_frame needs image, the frame the video starts on"
+            )
+        if references and self.image is not None:
+            raise ValueError(
+                "VideoGenerationRequest takes either image (a first frame) or "
+                "reference_images, not both"
+            )
 
 
 VideoJobStatus = Literal["running", "succeeded", "failed"]
@@ -610,6 +822,44 @@ class VideoJob:
     status: VideoJobStatus = "running"
     provider_status: str | None = None
     video_url: str | None = None
+    error_message: str | None = None
+
+
+# --- provider tools --------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProviderTool:
+    """One of a provider's own named tools and the inputs it takes, from
+    the catalog. ``files`` maps each picture input to how many pictures it
+    takes; ``fields`` are the plain inputs; ``required`` names the inputs
+    a call must carry."""
+
+    name: str
+    required: tuple[str, ...]
+    files: Mapping[str, int]
+    fields: tuple[str, ...]
+    note: str = ""
+
+
+ToolJobStatus = Literal["running", "succeeded", "failed"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolJob:
+    """A handle to a provider tool run in progress. Plain data with no
+    credential inside, so it can be stored and polled later through a
+    client bound to the same provider. On success ``output_urls`` holds the
+    provider's links to the finished pictures, which fetch_tool()
+    downloads; on failure ``error_message`` holds the provider's own
+    explanation."""
+
+    provider: str
+    tool: str
+    job_id: str
+    status: ToolJobStatus = "running"
+    provider_status: str | None = None
+    output_urls: tuple[str, ...] = ()
     error_message: str | None = None
 
 

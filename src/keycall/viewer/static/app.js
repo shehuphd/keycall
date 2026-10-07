@@ -637,6 +637,10 @@ function modeCapability(mode) {
     // flag is "judgment": the flag names the operation, the category the
     // kind of model it runs.
     : mode === "judge" ? "judgment"
+    // Change a picture and Run a design tool have no single model
+    // category: each step or tool names its own models.
+    : mode === "picture" ? "picture_operations"
+    : mode === "tool" ? "provider_tools"
     : modeCategory(mode);
 }
 
@@ -645,10 +649,17 @@ function modeCapability(mode) {
 // memory: what a key can reach changes with the account, not the page.
 const PG_KEY_HAS_MODELS = new Map();
 
-async function keyHasModels(id, category) {
-  const cacheKey = `${id}:${category}`;
+// The model-list query for a task: a picture step lists the models that
+// serve that step, every other task the models of its category.
+function modelQuery(mode) {
+  if (mode === "picture") return `operation=${el("pg-picture-op").value}`;
+  return `category=${modeCategory(mode) || "text_generation"}`;
+}
+
+async function keyHasModels(id, query) {
+  const cacheKey = `${id}:${query}`;
   if (PG_KEY_HAS_MODELS.has(cacheKey)) return PG_KEY_HAS_MODELS.get(cacheKey);
-  const data = await api(`/api/models?target=${id}&category=${category}`);
+  const data = await api(`/api/models?target=${id}&${query}`);
   // An errored listing (bad credential, provider down) keeps the key
   // visible: silently dropping it would read as the key vanishing, and
   // the model picker names the error somewhere it can be acted on.
@@ -716,6 +727,11 @@ function keyServes(target, needed, attachments) {
     (flag) => !caps || caps[flag] === undefined || Boolean(caps[flag])
   );
   if (!servesAll) return false;
+  // Change a picture asks for one step, which not every picture provider
+  // offers (only Ideogram enlarges or extends).
+  if (currentMode() === "picture" && caps && caps.image_operations) {
+    if (!caps.image_operations[el("pg-picture-op").value]) return false;
+  }
   return attachments.every((kind) => {
     const accepts = target.accepts ? target.accepts[kind] : null;
     return !accepts || accepts.bytes || accepts.url;
@@ -746,7 +762,8 @@ async function renderPlaygroundTargets() {
     const taskOnly = modeCapability(currentMode());
     eligible = TARGETS.filter((t) => keyServes(t, taskOnly ? [taskOnly] : [], []));
   }
-  if (category && eligible.length) {
+  const query = category || currentMode() === "picture" ? modelQuery(currentMode()) : null;
+  if (query && eligible.length) {
     sel.disabled = true;
     clear(sel);
     const busy = document.createElement("option");
@@ -754,7 +771,7 @@ async function renderPlaygroundTargets() {
     busy.textContent = "checking your keys…";
     sel.appendChild(busy);
     const checks = await Promise.all(
-      eligible.map((t) => keyHasModels(t.id, category))
+      eligible.map((t) => keyHasModels(t.id, query))
     );
     if (token !== PG_TARGET_RENDER) return;
     eligible = eligible.filter((_, i) => checks[i]);
@@ -989,9 +1006,9 @@ async function loadPlaygroundModels() {
     updateJudgeRunEnabled();
     return;
   }
-  if (currentMode() === "dictate") {
+  if (currentMode() === "dictate" || currentMode() === "tool") {
     // Nothing to fetch: the dictation endpoint has one fixed model and no
-    // choice to offer. The row is hidden by applyMode; the select still
+    // choice to offer, and a design tool names no model at all. The row is hidden by applyMode; the select still
     // holds a placeholder so nothing reads a stale model id off it.
     const sel = el("pg-model");
     clear(sel);
@@ -1009,7 +1026,7 @@ async function loadPlaygroundModels() {
   const opt = document.createElement("option");
   opt.textContent = "loading models…";
   sel.appendChild(opt);
-  const data = await api(`/api/models?target=${id}&category=${category}`);
+  const data = await api(`/api/models?target=${id}&${modelQuery(currentMode())}`);
   if (ticket !== PG_MODELS_TICKET) return;
   clear(sel);
   if (data.error) {
@@ -1052,6 +1069,7 @@ async function loadPlaygroundModels() {
     none.value = "";
     none.textContent =
       currentMode() === "image" ? "this key has no picture models"
+      : currentMode() === "picture" ? "this key has no models for this step"
       : currentMode() === "video" ? "this key has no video models"
       : currentMode() === "speech" ? "this key has no speech models"
       : currentMode() === "voice" ? "this key has no voice models"
@@ -1216,6 +1234,7 @@ el("pg-target").addEventListener("change", () => {
   // boundary; clamp onto the new range without resetting to its default.
   if (currentMode() === "video") syncVideoDuration(false);
   if (currentMode() === "speech") loadPlaygroundVoices();
+  if (currentMode() === "tool") loadTools();
 });
 
 // Bound the two Playground columns to what is actually left on screen, so
@@ -1258,7 +1277,10 @@ async function applyMode() {
   const sttFile = currentMode() === "transcribe-file";
   const dictate = currentMode() === "dictate";
   const judge = currentMode() === "judge";
-  const nonText = image || video || speech || voice || transcribe || sttFile || dictate || judge;
+  const picture = currentMode() === "picture";
+  const tool = currentMode() === "tool";
+  const nonText =
+    image || video || speech || voice || transcribe || sttFile || dictate || judge || picture || tool;
   el("pg-extras").hidden = nonText;
   el("pg-maxtok-row").hidden = nonText;
   // Neither generate_image() nor generate_video() sends reasoning_effort
@@ -1274,15 +1296,22 @@ async function applyMode() {
   // words back, with no prompt anywhere in it (dictation's steering
   // fields are its own, below). Judgment carries the whole ask in the
   // state and questions; there is no instructions field on that wire.
-  el("pg-system-row").hidden = image || video || speech || transcribe || sttFile || dictate || judge;
+  el("pg-system-row").hidden =
+    image || video || speech || transcribe || sttFile || dictate || judge || picture || tool;
   // The cache marker only reaches generate_text/stream_text; voice runs
   // over its own realtime connection, a different protocol the marker
   // never touches, so the toggle would silently do nothing there.
   el("pg-cache-row").hidden = nonText;
   // Dictation has no model to pick: the endpoint has one. Hiding the row
   // beats a disabled select with nothing in it.
-  el("pg-model-row").hidden = dictate;
+  el("pg-model-row").hidden = dictate || tool;
   el("pg-image-mode-note").hidden = !image;
+  el("pg-picture-mode-note").hidden = !picture;
+  el("pg-tool-mode-note").hidden = !tool;
+  el("pg-picture-op-row").hidden = !picture;
+  el("pg-tool-row").hidden = !tool;
+  el("pg-picture-panel").hidden = !(picture || tool || video);
+  el("pg-tool-run-row").hidden = !tool;
   el("pg-speech-mode-note").hidden = !speech;
   el("pg-voice-row").hidden = !speech;
   el("pg-video-mode-note").hidden = !video;
@@ -1301,8 +1330,8 @@ async function applyMode() {
   // sent. Voice, transcribe, and dictate each have their own microphone
   // control, in their own panel.
   el("pg-mic").hidden = nonText;
-  el("pg-composer").hidden = voice || transcribe || sttFile || dictate || judge;
-  el("pg-composer-hint").hidden = voice || transcribe || sttFile || dictate || judge;
+  el("pg-composer").hidden = voice || transcribe || sttFile || dictate || judge || tool;
+  el("pg-composer-hint").hidden = voice || transcribe || sttFile || dictate || judge || tool;
   el("pg-voice-panel").hidden = !voice;
   el("pg-transcribe-panel").hidden = !transcribe;
   el("pg-stt-panel").hidden = !sttFile;
@@ -1333,6 +1362,7 @@ async function applyMode() {
   // selected.
   await renderPlaygroundTargets();
   loadPlaygroundModels();
+  if (tool) loadTools();
   // renderPlaygroundTargets() can silently swap the selected key (setting
   // .value directly fires no change event), so the per-key gates have to
   // be re-run here too. Without this, a control gated for the previous
@@ -1389,6 +1419,667 @@ function paintVideoDurationLabel() {
 }
 
 el("pg-video-duration").addEventListener("input", paintVideoDurationLabel);
+
+// --- picture tasks ----------------------------------------------------------
+
+// What each picture operation takes, mirroring the viewer route's table:
+// which optional controls apply, whether it needs a description, and which
+// pictures it works from. The key's provider then decides, from the same
+// catalog the library gates on, which of those it honours.
+const PICTURE_OPS = {
+  image_generation: { controls: ["size", "quality", "seed"], prompt: "required", slots: [] },
+  image_edit: {
+    controls: ["size", "quality", "seed"],
+    prompt: "required",
+    slots: ["image", "mask", "reference_images"],
+    placeholder: "Describe the change, for example “make the sky stormy”.",
+    working: "Editing",
+  },
+  image_upscale: {
+    controls: ["factor", "seed"],
+    prompt: "optional",
+    slots: ["image"],
+    placeholder: "Optional: describe what the enlarged picture should keep sharp.",
+    working: "Enlarging",
+  },
+  image_expand: {
+    controls: ["size", "seed"],
+    prompt: "optional",
+    slots: ["image"],
+    sizeRequired: true,
+    placeholder: "Optional: describe what should fill the new edges.",
+    working: "Extending",
+  },
+  background_removal: { controls: [], prompt: "none", slots: ["image"], working: "Removing the background" },
+  background_replacement: {
+    controls: ["quality"],
+    prompt: "required",
+    slots: ["image"],
+    placeholder: "Describe the new background, for example “a quiet beach at dawn”.",
+    working: "Replacing the background",
+  },
+  object_erase: {
+    controls: ["seed"],
+    prompt: "none",
+    slots: ["image", "mask"],
+    maskRequired: true,
+    working: "Erasing",
+  },
+  image_description: { controls: [], prompt: "none", slots: ["image"], working: "Describing" },
+  image_layerize: {
+    controls: ["seed"],
+    prompt: "optional",
+    slots: ["image"],
+    placeholder: "Optional: describe the text to separate.",
+    working: "Separating the text",
+  },
+};
+
+// The optional picture controls in the side panel: catalog parameter name,
+// control id, and the words a refusal uses for it.
+const PICTURE_CONTROLS = [
+  ["factor", "pg-picture-factor", "an enlargement factor"],
+  ["size", "pg-picture-size", "a shape or size"],
+  ["quality", "pg-picture-quality", "a quality setting"],
+  ["seed", "pg-picture-seed", "a seed"],
+];
+
+const MASK_HINT =
+  "A PNG the same size as the picture: white over the area to change, black over the area to keep.";
+
+const PICTURE_SLOTS = {
+  image: { label: "Picture to change", max: 1, noun: "picture", required: true, hint: "" },
+  mask: { label: "Mask", max: 1, noun: "mask", hint: `Optional. ${MASK_HINT}` },
+  reference_images: {
+    label: "Reference pictures",
+    max: 15,
+    noun: "reference picture",
+    hint: "Optional. Pictures that guide the change. They aren't changed themselves.",
+  },
+};
+
+const VIDEO_SLOTS = {
+  image: {
+    label: "First frame",
+    max: 1,
+    noun: "first frame",
+    hint: "Optional. The video starts from this picture.",
+  },
+  last_frame: {
+    label: "Last frame",
+    max: 1,
+    noun: "last frame",
+    hint: "Optional, and needs a first frame. The video ends on this picture.",
+  },
+  reference_images: {
+    label: "Reference pictures",
+    max: 4,
+    noun: "reference picture",
+    hint: "Optional, instead of a first frame. People or things the video should show.",
+  },
+};
+
+// Plain names for a provider tool's inputs. An input missing here shows
+// its own name with the underscores taken out.
+const TOOL_INPUT_NAMES = {
+  image: "Picture",
+  masks: "Masks",
+  materials: "Material pictures",
+  source_image: "Picture of the model",
+  sketch_image: "Sketch",
+  resolution: "Size",
+  platform: "Platform",
+  prompt: "Description",
+  instruction: "Instruction",
+  quality: "Quality",
+  num_images: "How many pictures",
+  seed: "Seed",
+  variation_type: "Kind of variation",
+  colors: "Colours",
+  aspect_ratio: "Shape",
+};
+// Tool inputs that take a number, and the one that takes a list.
+const TOOL_NUMBER_INPUTS = new Set(["num_images", "seed"]);
+const TOOL_LIST_INPUTS = new Set(["colors"]);
+
+// Picked pictures per slot name: [{data_base64, media_type, name, src}].
+const PG_PICTURES = {};
+// The current key's provider tools, from /api/tools.
+let PG_TOOLS = [];
+let PG_TOOLS_TICKET = 0;
+
+function currentTarget() {
+  return TARGETS.find((t) => String(t.id) === el("pg-target").value) || null;
+}
+
+function currentCaps() {
+  const target = currentTarget();
+  return target ? PROVIDER_CAPABILITIES[target.provider] || null : null;
+}
+
+// The picture operation the side panel is set to: generation on Make a
+// picture, the What to do choice on Change a picture.
+function currentPictureOp() {
+  return currentMode() === "image" ? "image_generation" : el("pg-picture-op").value;
+}
+
+// The optional inputs this key's provider honours for an operation, or
+// null when an older server sent no flags (unknown, so nothing is gated).
+function pictureParams(op) {
+  const caps = currentCaps();
+  if (!caps || caps.image_operations === undefined) return null;
+  const support = caps.image_operations[op];
+  return support ? support.params : [];
+}
+
+// Where to go for an input this key lacks: a loaded key that has it, or
+// failing that, the providers that do.
+function elsewhere(serves) {
+  const loaded = [...new Set(TARGETS.filter((t) => serves(PROVIDER_CAPABILITIES[t.provider] || {}))
+    .map((t) => t.provider))];
+  if (loaded.length) return keyPhrase("Pick", "in the Key list", loaded);
+  const all = Object.keys(PROVIDER_CAPABILITIES).filter((name) => serves(PROVIDER_CAPABILITIES[name]));
+  return all.length ? keyPhrase("Load", "", all) : "No provider KeyCall supports takes it yet.";
+}
+
+function opTakes(op, param) {
+  return (caps) => {
+    const support = (caps.image_operations || {})[op];
+    return Boolean(support && support.params.includes(param));
+  };
+}
+
+function humanToolName(name) {
+  const words = name.replace(/[-_]/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function toolInputName(name) {
+  return TOOL_INPUT_NAMES[name] || humanToolName(name);
+}
+
+function currentTool() {
+  return PG_TOOLS.find((t) => t.name === el("pg-tool").value) || null;
+}
+
+// The slots the current task shows, each {name, label, max, noun, hint,
+// required, unavailable}. `unavailable` is the sentence saying why this
+// key can't take that picture, and where to go instead.
+function pictureSlotSpecs() {
+  const mode = currentMode();
+  const target = currentTarget();
+  const caps = currentCaps();
+  if (mode === "picture") {
+    const op = el("pg-picture-op").value;
+    const def = PICTURE_OPS[op];
+    const params = pictureParams(op);
+    const support = caps && caps.image_operations ? caps.image_operations[op] : null;
+    return def.slots.map((name) => {
+      const spec = { name, ...PICTURE_SLOTS[name] };
+      if (name === "mask" && def.maskRequired) {
+        spec.required = true;
+        spec.hint = `Marks what to erase. ${MASK_HINT}`;
+      }
+      if (name === "reference_images" && support && support.max_reference_images) {
+        spec.max = support.max_reference_images;
+      }
+      const optional = !spec.required;
+      if (optional && target && params !== null && !params.includes(name)) {
+        spec.unavailable =
+          `This ${target.provider} key can't take a ${spec.noun} for this step. ` +
+          elsewhere(opTakes(op, name));
+      }
+      return spec;
+    });
+  }
+  if (mode === "video") {
+    const inputs = caps && caps.video_inputs;
+    return Object.entries(VIDEO_SLOTS).map(([name, slot]) => {
+      const spec = { name, ...slot };
+      if (target && Array.isArray(inputs) && !inputs.includes(name)) {
+        spec.unavailable =
+          `This ${target.provider} key can't start a video from a ${slot.noun}. ` +
+          elsewhere((c) => Array.isArray(c.video_inputs) && c.video_inputs.includes(name));
+      }
+      return spec;
+    });
+  }
+  if (mode === "tool") {
+    const tool = currentTool();
+    if (!tool) return [];
+    return Object.entries(tool.files).map(([name, count]) => ({
+      name,
+      label: toolInputName(name),
+      max: count,
+      noun: toolInputName(name).toLowerCase(),
+      required: tool.required.includes(name),
+      hint: tool.required.includes(name)
+        ? count > 1 ? `Required. Up to ${count} pictures.` : "Required."
+        : count > 1 ? `Optional. Up to ${count} pictures.` : "Optional.",
+    }));
+  }
+  return [];
+}
+
+function readPicture(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const src = String(reader.result);
+      resolve({
+        data_base64: src.split(",")[1] || "",
+        media_type: file.type || undefined,
+        name: file.name,
+        src,
+      });
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+// What a picked picture sends: the bytes and the type, not the preview.
+function pictureBody(picture) {
+  return { data_base64: picture.data_base64, media_type: picture.media_type };
+}
+
+// Rebuilds the picture slots for the current task, keeping any picture
+// already picked for a slot the new task still has. A slot this key can't
+// take stays on screen, disabled, with the reason and where to go; its
+// pictures are dropped so nothing unsendable rides along. Returns the
+// slots dropped that way, for the key-switch toast.
+function renderPictureSlots() {
+  const specs = pictureSlotSpecs();
+  const holder = el("pg-picture-slots");
+  clear(holder);
+  const dropped = [];
+  const kept = new Set(specs.filter((s) => !s.unavailable).map((s) => s.name));
+  Object.keys(PG_PICTURES).forEach((name) => {
+    if (!kept.has(name)) {
+      if (PG_PICTURES[name].length && specs.some((s) => s.name === name)) {
+        dropped.push(`attach a ${specs.find((s) => s.name === name).noun}`);
+      }
+      delete PG_PICTURES[name];
+    }
+  });
+  specs.forEach((spec) => {
+    const slot = document.createElement("div");
+    slot.className = "pg-slot";
+    const id = `pg-slot-${spec.name}`;
+    const label = document.createElement("label");
+    label.className = "pg-slot-name";
+    label.htmlFor = id;
+    label.textContent = spec.label;
+    slot.appendChild(label);
+    const input = document.createElement("input");
+    input.type = "file";
+    input.id = id;
+    input.accept = "image/png,image/jpeg,image/webp";
+    input.multiple = spec.max > 1;
+    input.disabled = Boolean(spec.unavailable);
+    slot.appendChild(input);
+    const hint = document.createElement("p");
+    hint.className = spec.unavailable ? "hint pg-unavailable" : "hint";
+    hint.id = `${id}-hint`;
+    hint.textContent = spec.unavailable || spec.hint;
+    if (hint.textContent) {
+      slot.appendChild(hint);
+      input.setAttribute("aria-describedby", hint.id);
+    }
+    const thumbs = document.createElement("div");
+    thumbs.className = "pg-slot-thumbs";
+    slot.appendChild(thumbs);
+    const paint = () => {
+      clear(thumbs);
+      (PG_PICTURES[spec.name] || []).forEach((picture, index) => {
+        const item = document.createElement("div");
+        item.className = "pg-slot-thumb";
+        const img = document.createElement("img");
+        img.src = picture.src;
+        img.alt = `${spec.label}: ${picture.name}`;
+        item.appendChild(img);
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "secondary danger";
+        remove.textContent = "Remove";
+        remove.setAttribute("aria-label", `Remove ${picture.name} from ${spec.label}`);
+        remove.addEventListener("click", () => {
+          PG_PICTURES[spec.name].splice(index, 1);
+          paint();
+          updatePictureRunState();
+          input.focus();
+        });
+        item.appendChild(remove);
+        thumbs.appendChild(item);
+      });
+    };
+    input.addEventListener("change", async () => {
+      const files = [...input.files];
+      input.value = "";
+      if (!files.length) return;
+      let pictures;
+      try {
+        pictures = await Promise.all(files.map(readPicture));
+      } catch {
+        showToast(`Couldn't read that file. Pick a PNG, JPEG, or WebP picture.`);
+        return;
+      }
+      const current = spec.max > 1 ? PG_PICTURES[spec.name] || [] : [];
+      const combined = [...current, ...pictures];
+      if (combined.length > spec.max) {
+        showToast(
+          `${spec.label} takes up to ${spec.max}; kept the first ${spec.max}.`
+        );
+      }
+      PG_PICTURES[spec.name] = combined.slice(0, spec.max);
+      paint();
+      updatePictureRunState();
+    });
+    paint();
+    holder.appendChild(slot);
+  });
+  return dropped;
+}
+
+// The side-panel picture controls for the current operation: a control
+// whose premise is gone for this step is hidden, and one this key's
+// provider wouldn't honour is disabled with the reason beside it. A value
+// set on a control that turns off is cleared and reported.
+function gatePictureControls(off) {
+  const mode = currentMode();
+  const show = mode === "image" || mode === "picture";
+  el("pg-picture-controls").hidden = !show;
+  if (!show) return;
+  const op = currentPictureOp();
+  const def = PICTURE_OPS[op];
+  const target = currentTarget();
+  const params = pictureParams(op);
+  PICTURE_CONTROLS.forEach(([param, id, noun]) => {
+    const applies = def.controls.includes(param);
+    el(`${id}-row`).hidden = !applies;
+    const note = el(`${id}-unavailable`);
+    if (!applies) {
+      note.hidden = true;
+      return;
+    }
+    const required = param === "size" && def.sizeRequired;
+    const ok = required || !target || params === null || params.includes(param);
+    const control = el(id);
+    if (!ok && control.value) {
+      control.value = "";
+      if (off) off.push(`set ${noun}`);
+    }
+    control.disabled = !ok;
+    note.hidden = ok;
+    if (!ok) {
+      note.textContent =
+        `This ${target.provider} key doesn't take ${noun} for this step. ` +
+        elsewhere(opTakes(op, param));
+    }
+  });
+  const sizeLabel = el("pg-picture-size-row").querySelector("label");
+  sizeLabel.textContent = def.sizeRequired ? "New shape or size" : "Shape or size";
+  el("pg-picture-size").placeholder = def.sizeRequired ? "Required, for example 16:9" : "Model default";
+}
+
+// The composer's description box on Change a picture: required, optional,
+// or not taken at all, with the placeholder saying which.
+function gatePicturePrompt() {
+  const prompt = el("pg-prompt");
+  if (currentMode() !== "picture") {
+    prompt.disabled = false;
+    return;
+  }
+  const op = el("pg-picture-op").value;
+  const def = PICTURE_OPS[op];
+  const params = pictureParams(op);
+  const target = currentTarget();
+  const takes =
+    def.prompt === "required" ||
+    (def.prompt === "optional" && (params === null || params.includes("prompt")));
+  prompt.disabled = !takes;
+  if (!takes) prompt.value = "";
+  prompt.placeholder = takes
+    ? `${def.placeholder} Press Send, or ${MOD_KEY}+Enter.`
+    : def.prompt === "none"
+    ? "This step needs no description. Pick a picture below the transcript, then press Send."
+    : `This ${target ? target.provider : ""} key takes no description for this step. Pick a picture, then press Send.`;
+}
+
+// What still stands between the current picture task and Send, as the
+// sentence the disabled button shows, or "" when it's ready.
+function pictureTaskBlocker() {
+  const mode = currentMode();
+  if (mode !== "picture") return "";
+  const def = PICTURE_OPS[el("pg-picture-op").value];
+  if (!(PG_PICTURES.image || []).length) return "Pick the picture to change, below the transcript";
+  if (def.maskRequired && !(PG_PICTURES.mask || []).length) {
+    return "Pick a mask marking what to erase, below the transcript";
+  }
+  if (def.prompt === "required" && !el("pg-prompt").value.trim()) {
+    return "Describe what you want first";
+  }
+  if (def.sizeRequired && !el("pg-picture-size").value.trim()) {
+    return "Set the new shape or size on the left first";
+  }
+  return "";
+}
+
+// Extra provider fields, parsed. Throws with a sentence the user can act
+// on when the box holds something that isn't a JSON object.
+function pictureProviderOptions() {
+  const raw = el("pg-picture-options").value.trim();
+  if (!raw) return undefined;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Extra provider fields must be valid JSON, for example {\"background\": \"transparent\"}.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Extra provider fields must be a JSON object: names and values in curly braces.");
+  }
+  return parsed;
+}
+
+function paintPictureOptionsError() {
+  const note = el("pg-picture-options-error");
+  try {
+    pictureProviderOptions();
+    note.hidden = true;
+  } catch (err) {
+    note.hidden = false;
+    note.textContent = err.message;
+  }
+}
+
+el("pg-picture-options").addEventListener("input", paintPictureOptionsError);
+
+// The side-panel picture settings that apply to the current step, for the
+// request body. Hidden and disabled controls send nothing.
+function pictureFields() {
+  const fields = {};
+  PICTURE_CONTROLS.forEach(([param, id]) => {
+    if (!controlActive(id) || el(id).disabled) return;
+    const value = el(id).value.trim();
+    if (!value) return;
+    fields[param] = param === "seed" || param === "factor" ? Number(value) : value;
+  });
+  const options = pictureProviderOptions();
+  if (options) fields.provider_options = options;
+  return fields;
+}
+
+// The labels a picture turn shows in the transcript, in the "with a ...
+// attached" sentence addUserTurn builds.
+function pictureLabels() {
+  const labels = [];
+  pictureSlotSpecs().forEach((spec) => {
+    const count = (PG_PICTURES[spec.name] || []).length;
+    if (!count) return;
+    labels.push(count === 1 ? spec.noun : `set of ${count} ${spec.noun}s`);
+  });
+  return labels;
+}
+
+function updatePictureRunState() {
+  updateSendEnabled();
+  updateToolRunEnabled();
+}
+
+// --- design tools ---
+
+async function loadTools() {
+  const ticket = ++PG_TOOLS_TICKET;
+  const sel = el("pg-tool");
+  const id = el("pg-target").value;
+  clear(sel);
+  PG_TOOLS = [];
+  if (id !== "") {
+    const data = await api(`/api/tools?target=${id}`);
+    if (ticket !== PG_TOOLS_TICKET) return;
+    PG_TOOLS = data.error ? [] : data.tools;
+  }
+  if (!PG_TOOLS.length) {
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = id === "" ? "—" : "this key has no design tools";
+    sel.appendChild(none);
+    sel.disabled = true;
+  } else {
+    sel.disabled = false;
+    PG_TOOLS.forEach((tool) => {
+      const option = document.createElement("option");
+      option.value = tool.name;
+      option.textContent = humanToolName(tool.name);
+      sel.appendChild(option);
+    });
+  }
+  renderToolForm();
+}
+
+// The tool's plain inputs as labelled fields, and its pictures as slots.
+function renderToolForm() {
+  const tool = currentMode() === "tool" ? currentTool() : null;
+  const holder = el("pg-tool-fields");
+  clear(holder);
+  holder.hidden = !tool || !tool.fields.length;
+  el("pg-tool-note").hidden = !tool || !tool.note;
+  el("pg-tool-note").textContent = tool && tool.note
+    ? tool.note.charAt(0).toUpperCase() + tool.note.slice(1)
+    : "";
+  if (tool) {
+    tool.fields.forEach((name) => {
+      const row = document.createElement("div");
+      row.className = "pg-row";
+      const label = document.createElement("label");
+      label.htmlFor = `pg-tool-field-${name}`;
+      label.textContent = toolInputName(name);
+      const input = document.createElement("input");
+      input.id = `pg-tool-field-${name}`;
+      input.dataset.field = name;
+      input.type = TOOL_NUMBER_INPUTS.has(name) ? "number" : "text";
+      if (TOOL_NUMBER_INPUTS.has(name)) {
+        input.min = name === "num_images" ? "1" : "0";
+        input.step = "1";
+      }
+      const required = tool.required.includes(name);
+      input.placeholder = TOOL_LIST_INPUTS.has(name)
+        ? `${required ? "Required" : "Optional"}. One per mask, separated by commas`
+        : required ? "Required" : "Optional";
+      input.addEventListener("input", updateToolRunEnabled);
+      row.appendChild(label);
+      row.appendChild(input);
+      holder.appendChild(row);
+    });
+  }
+  renderPictureSlots();
+  updateToolRunEnabled();
+}
+
+function toolFieldValues() {
+  const fields = {};
+  el("pg-tool-fields").querySelectorAll("input[data-field]").forEach((input) => {
+    const name = input.dataset.field;
+    const raw = input.value.trim();
+    if (!raw) return;
+    fields[name] = TOOL_NUMBER_INPUTS.has(name)
+      ? Number(raw)
+      : TOOL_LIST_INPUTS.has(name)
+      ? raw.split(",").map((part) => part.trim()).filter(Boolean)
+      : raw;
+  });
+  return fields;
+}
+
+function updateToolRunEnabled() {
+  const btn = el("pg-tool-run");
+  const tool = currentTool();
+  let reason = "";
+  if (!tool) {
+    reason = "Pick a key with design tools, and a tool, on the left first";
+  } else {
+    const fields = toolFieldValues();
+    const missing = tool.required.filter((name) =>
+      name in tool.files ? !(PG_PICTURES[name] || []).length : fields[name] === undefined
+    );
+    if (missing.length) {
+      reason = `Still needed: ${missing.map((name) => toolInputName(name).toLowerCase()).join(", ")}`;
+    }
+  }
+  if (btn.dataset.working) return;
+  btn.disabled = Boolean(reason);
+  btn.title = reason;
+}
+
+el("pg-tool").addEventListener("change", renderToolForm);
+
+el("pg-tool-run").addEventListener("click", async () => {
+  const btn = el("pg-tool-run");
+  const tool = currentTool();
+  if (!tool) return;
+  const files = {};
+  Object.entries(tool.files).forEach(([name, count]) => {
+    const pictures = PG_PICTURES[name] || [];
+    if (!pictures.length) return;
+    files[name] = count > 1 ? pictures.map(pictureBody) : pictureBody(pictures[0]);
+  });
+  const fields = toolFieldValues();
+  addUserTurn(`Run the ${humanToolName(tool.name).toLowerCase()} tool`, pictureLabels());
+  btn.dataset.working = "1";
+  working(btn, "Running…");
+  const placeholder = addBubble("model");
+  const startedAt = Date.now();
+  const paint = () => {
+    placeholder.textContent =
+      `Running the tool. This can take a minute or two… · ${formatElapsed(startedAt)}`;
+  };
+  paint();
+  const ticker = setInterval(paint, 1000);
+  const data = await api("/api/tools/run", {
+    method: "POST",
+    body: { target: Number(el("pg-target").value), tool: tool.name, files, fields },
+  });
+  clearInterval(ticker);
+  placeholder.remove();
+  if (data.error) {
+    renderGeneration(addBubble("model"), data);
+  } else {
+    addImageBubble(data);
+    saveCurrentConversation(`Run the ${humanToolName(tool.name).toLowerCase()} tool`);
+  }
+  delete btn.dataset.working;
+  done(btn);
+  updateToolRunEnabled();
+});
+
+// Changing the step changes which keys, models, controls and pictures
+// apply, so all four are rebuilt, in that order.
+el("pg-picture-op").addEventListener("change", async () => {
+  await renderPlaygroundTargets();
+  loadPlaygroundModels();
+  applyKeyGates();
+});
 
 // --- voice conversation -------------------------------------------------
 
@@ -3189,23 +3880,63 @@ function generationCaption(result) {
   return parts.join(" · ");
 }
 
+// Plain names for the labels a provider puts on its pictures.
+const PICTURE_LABELS = {
+  design: "The full design",
+  base: "The picture with its text taken out",
+};
+
 function addImageBubble(result) {
   const bubble = addBubble("model");
+  if (result.text && !(result.images || []).length) {
+    const body = document.createElement("div");
+    body.className = "result-text";
+    body.textContent = result.text;
+    bubble.appendChild(body);
+  }
   (result.images || []).forEach((image) => {
+    if (image.label) {
+      const caption = document.createElement("p");
+      caption.className = "pg-picture-label";
+      caption.textContent = PICTURE_LABELS[image.label] || image.label;
+      bubble.appendChild(caption);
+    }
     const picture = document.createElement("img");
     picture.className = "pg-picture";
-    picture.alt = "The generated picture";
+    picture.alt = image.label
+      ? PICTURE_LABELS[image.label] || image.label
+      : result.operation === "image_generation" ? "The generated picture" : "The changed picture";
     picture.src = `data:${image.media_type};base64,${image.base64_data}`;
     picture.title = "Click to see it full size";
     picture.addEventListener("click", () => openLightbox(picture.src));
     bubble.appendChild(picture);
     const save = document.createElement("a");
     save.href = picture.src;
-    save.download = `keycall-image.${(image.media_type || "image/png").split("/")[1]}`;
+    save.download =
+      `keycall-image${image.label ? `-${image.label}` : ""}.${(image.media_type || "image/png").split("/")[1]}`;
     save.textContent = "Save this picture";
     save.className = "meta";
     bubble.appendChild(save);
   });
+  const blocks = result.text_blocks || [];
+  if (blocks.length) {
+    const details = document.createElement("details");
+    details.className = "pg-text-blocks";
+    const summary = document.createElement("summary");
+    summary.textContent = `Text found in the picture (${blocks.length})`;
+    details.appendChild(summary);
+    const list = document.createElement("ul");
+    blocks.forEach((block) => {
+      const item = document.createElement("li");
+      const font = [block.font_name, block.font_size ? `${block.font_size}px` : "", block.color]
+        .filter(Boolean)
+        .join(", ");
+      item.textContent = font ? `${block.text} (${font})` : block.text;
+      list.appendChild(item);
+    });
+    details.appendChild(list);
+    bubble.appendChild(details);
+  }
   const meta = document.createElement("div");
   meta.className = "meta";
   meta.textContent = generationCaption(result);
@@ -4008,13 +4739,24 @@ function attachmentsFromInput() {
 function updateSendEnabled() {
   const btn = el("pg-run");
   const hasModel = Boolean(el("pg-model").value);
-  const hasContent = Boolean(el("pg-prompt").value.trim()) || attachmentsFromInput().labels.length > 0;
-  btn.disabled = !hasModel || !hasContent;
+  const picture = currentMode() === "picture";
+  const hasContent =
+    picture || Boolean(el("pg-prompt").value.trim()) || attachmentsFromInput().labels.length > 0;
+  const blocker = pictureTaskBlocker();
+  let optionsError = "";
+  if (currentMode() === "image" || picture) {
+    try {
+      pictureProviderOptions();
+    } catch (err) {
+      optionsError = err.message;
+    }
+  }
+  btn.disabled = !hasModel || !hasContent || Boolean(blocker) || Boolean(optionsError);
   btn.title = !hasModel
     ? "Pick a key and a model on the left first"
     : !hasContent
     ? "Type a message, or attach something, before sending"
-    : "";
+    : blocker || optionsError;
 }
 
 function updateVoiceSendEnabled() {
@@ -4345,6 +5087,29 @@ function gateCapabilities(off) {
     }
   };
   taskGate("image", "image_generation", "make a picture");
+  taskGate("picture", "picture_operations", "change a picture");
+  taskGate("tool", "provider_tools", "run a design tool");
+  // Each step on Change a picture greys out when no loaded key's provider
+  // offers it, with the reason in its tooltip.
+  [...el("pg-picture-op").options].forEach((option) => {
+    const ok =
+      !TARGETS.length ||
+      TARGETS.some((t) => {
+        const c = PROVIDER_CAPABILITIES[t.provider];
+        return !c || c.image_operations === undefined || Boolean(c.image_operations[option.value]);
+      });
+    option.disabled = !ok;
+    option.title = ok ? "" : "None of your keys can do this. " +
+      elsewhere((c) => Boolean((c.image_operations || {})[option.value]));
+  });
+  const opSelect = el("pg-picture-op");
+  if (opSelect.selectedOptions[0] && opSelect.selectedOptions[0].disabled) {
+    const first = [...opSelect.options].find((o) => !o.disabled);
+    if (first) {
+      opSelect.value = first.value;
+      if (currentMode() === "picture") opSelect.dispatchEvent(new Event("change"));
+    }
+  }
   taskGate("video", "video_generation", "make a video");
   taskGate("voice", "realtime", "hold a voice conversation");
   taskGate("transcribe", "transcription", "transcribe speech live");
@@ -4360,6 +5125,9 @@ function applyKeyGates() {
   gateAttachments(off);
   gateCapabilities(off);
   gateSttControls(off);
+  gatePictureControls(off);
+  gatePicturePrompt();
+  if (["picture", "video", "tool"].includes(currentMode())) off.push(...renderPictureSlots());
   // Dictation has no per-provider sub-controls to gate, only a Dictate
   // button that needs a key on the left; the Judge button re-checks the
   // same way, since a key or model swap changes what it can run.
@@ -4375,7 +5143,9 @@ function applyKeyGates() {
 function keyPhrase(verb, where, names) {
   const tail = where ? ` ${where}` : "";
   if (!names.length) return `${verb} a key from a provider that can.`;
-  if (names.length === 1) return `${verb} a ${names[0]} key${tail}.`;
+  // "a" or "an" depends on how the provider id sounds, so the id goes
+  // after "from" where no article touches it.
+  if (names.length === 1) return `${verb} a key${tail} from ${names[0]}.`;
   return `${verb} a key${tail} from any of these: ${names.join(", ")}.`;
 }
 
@@ -4772,7 +5542,7 @@ async function runGeneration({ continuation }) {
     note.textContent = "Pick a key and a model on the left first.";
     return;
   }
-  if (!prompt && !continuation && !hasAttachment) return;
+  if (!prompt && !continuation && !hasAttachment && currentMode() !== "picture") return;
   if (!continuation) {
     // A fresh send abandons any unanswered tool calls: their turn was never
     // recorded, so history stays free of calls with no results.
@@ -4787,12 +5557,30 @@ async function runGeneration({ continuation }) {
     return;
   }
   PG_LAST_REQUEST = { targetId: el("pg-target").value, modelId: model };
+  let pictureExtras;
+  try {
+    pictureExtras =
+      currentMode() === "image" || currentMode() === "picture" ? pictureFields() : {};
+  } catch (err) {
+    renderGeneration(addBubble("model"), { error: { code: "bad_request", message: err.message } });
+    return;
+  }
+  const pictureOp = currentMode() === "picture" ? el("pg-picture-op").value : null;
   working(
     btn,
-    currentMode() === "image" ? "Drawing…" : currentMode() === "video" ? "Rendering…" : "Sending…"
+    currentMode() === "image" ? "Drawing…"
+    : currentMode() === "video" ? "Rendering…"
+    : pictureOp ? `${PICTURE_OPS[pictureOp].working}…`
+    : "Sending…"
   );
   if (!continuation) {
-    addUserTurn(prompt, attached.labels);
+    const stepName = pictureOp
+      ? el("pg-picture-op").selectedOptions[0].textContent
+      : "";
+    addUserTurn(
+      prompt || stepName,
+      pictureOp || currentMode() === "video" ? [...attached.labels, ...pictureLabels()] : attached.labels
+    );
     // The turn is on screen now, so leaving the text in the box invites
     // sending it twice.
     el("pg-prompt").value = "";
@@ -4814,7 +5602,7 @@ async function runGeneration({ continuation }) {
     const ticker = setInterval(paint, 1000);
     const data = await api("/api/generate/image", {
       method: "POST",
-      body: { target: Number(el("pg-target").value), model, prompt },
+      body: { target: Number(el("pg-target").value), model, prompt, ...pictureExtras },
     });
     clearInterval(ticker);
     placeholder.remove();
@@ -4823,6 +5611,40 @@ async function runGeneration({ continuation }) {
     } else {
       addImageBubble(data);
       saveCurrentConversation(prompt);
+    }
+    done(btn);
+    updateSendEnabled();
+    return;
+  }
+  if (pictureOp) {
+    const placeholder = addBubble("model");
+    const startedAt = Date.now();
+    const paint = () => {
+      placeholder.textContent =
+        `${PICTURE_OPS[pictureOp].working}. This usually takes longer than text… · ${formatElapsed(startedAt)}`;
+    };
+    paint();
+    const ticker = setInterval(paint, 1000);
+    const body = {
+      target: Number(el("pg-target").value),
+      model,
+      operation: pictureOp,
+      prompt: prompt || undefined,
+      image: pictureBody(PG_PICTURES.image[0]),
+      ...pictureExtras,
+    };
+    if ((PG_PICTURES.mask || []).length) body.mask = pictureBody(PG_PICTURES.mask[0]);
+    if ((PG_PICTURES.reference_images || []).length) {
+      body.reference_images = PG_PICTURES.reference_images.map(pictureBody);
+    }
+    const data = await api("/api/picture", { method: "POST", body });
+    clearInterval(ticker);
+    placeholder.remove();
+    if (data.error) {
+      renderGeneration(addBubble("model"), data);
+    } else {
+      addImageBubble(data);
+      saveCurrentConversation(prompt || el("pg-picture-op").selectedOptions[0].textContent);
     }
     done(btn);
     updateSendEnabled();
@@ -4876,6 +5698,11 @@ async function runGeneration({ continuation }) {
         model,
         prompt,
         duration_seconds: Number(el("pg-video-duration").value),
+        image: (PG_PICTURES.image || []).length ? pictureBody(PG_PICTURES.image[0]) : undefined,
+        last_frame: (PG_PICTURES.last_frame || []).length
+          ? pictureBody(PG_PICTURES.last_frame[0])
+          : undefined,
+        reference_images: (PG_PICTURES.reference_images || []).map(pictureBody),
       },
     });
     clearInterval(ticker);

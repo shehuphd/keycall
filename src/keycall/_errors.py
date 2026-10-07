@@ -13,12 +13,13 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ._types import BatchJob, TranscriptionJob, VideoJob
+    from ._types import BatchJob, ToolJob, TranscriptionJob, VideoJob
 
 __all__ = [
     "BatchJobTimeout",
     "ErrorCode",
     "KeyCallError",
+    "ToolJobTimeout",
     "TranscriptionJobTimeout",
     "VideoJobTimeout",
 ]
@@ -112,6 +113,23 @@ class TranscriptionJobTimeout(KeyCallError):
             code=ErrorCode.TIMEOUT,
             provider=provider,
             operation="transcription",
+            retryable=True,
+        )
+        self.job = job
+
+
+class ToolJobTimeout(KeyCallError):
+    """run_tool's waiting budget ran out while the tool was still running.
+    ``job`` is the still-valid handle; ``check_tool(error.job)`` picks up
+    polling where the wait left off. Raised with
+    ``code=ErrorCode.TIMEOUT``."""
+
+    def __init__(self, message: str, *, provider: str, job: ToolJob) -> None:
+        super().__init__(
+            message,
+            code=ErrorCode.TIMEOUT,
+            provider=provider,
+            operation="provider_tool",
             retryable=True,
         )
         self.job = job

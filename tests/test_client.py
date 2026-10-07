@@ -235,6 +235,8 @@ BAD_KEY_RESPONSES = {
         401,
         {"detail": {"error_type": "authentication_error", "message": "Invalid API key."}},
     ),
+    # Live 2026-10-02 on a dry-run generate with a made-up key.
+    "ideogram": (401, {"message": "Access denied. Please verify your API Token is valid."}),
 }
 
 

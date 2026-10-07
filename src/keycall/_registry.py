@@ -10,7 +10,8 @@ path — never a chain of if/else.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from functools import lru_cache
 from importlib import resources
@@ -75,6 +76,19 @@ class AliasConvention:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class ImageOperationSupport:
+    """What a provider's picture operation takes, from live evidence.
+    ``params`` are the optional inputs it honours (mask, seed, quality,
+    reference_images, prompt, factor); an input outside the set is refused
+    before any request, because each one changes the result.
+    ``max_reference_images`` is None where no limit was observed."""
+
+    params: frozenset[str] = frozenset()
+    max_reference_images: int | None = None
+    note: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ProviderCapabilities:
     """What a provider can do, as maintained catalog data rather than a
     constant in code. Capability claims are evidence-backed: each entry
@@ -103,8 +117,16 @@ class ProviderCapabilities:
     judgment: bool = False
     embeddings: bool = False
     image_generation: bool = False
+    # Picture operations by Operation value ("image_generation",
+    # "image_edit", "image_upscale", ...). A provider without an entry
+    # doesn't offer that operation; the entry's params say which optional
+    # inputs it honours.
+    image_operations: Mapping[str, ImageOperationSupport] = field(default_factory=dict)
     speech_generation: bool = False
     video_generation: bool = False
+    # Picture inputs the video wire takes: "image" (a first frame),
+    # "last_frame", "reference_images". Empty means prompt only.
+    video_inputs: frozenset[str] = frozenset()
     reasoning_effort: bool = False
     # Whether the provider's own effort enum names a 'minimal' level.
     # Narrower than reasoning_effort: a provider can have a binding
@@ -165,6 +187,19 @@ class ResolvedProvider:
     # Hosts a finished video download may point at when they differ from
     # the provider's own API host, pinned from live evidence.
     video_download_hosts: tuple[str, ...] = ()
+    # Hosts a finished picture's download link may point at, for providers
+    # that answer with an expiring link instead of the picture's bytes.
+    image_download_hosts: tuple[str, ...] = ()
+    # A provider's own named tools (Ideogram's ad tools), each a catalog
+    # row: {name, path, files, fields, required, verified, note}.
+    provider_tools: tuple[dict[str, Any], ...] = ()
+    # The one picture `keycall verify --generate` draws on a provider with
+    # no text models: {model, quality, size}, chosen as its cheapest.
+    verify_generation: dict[str, Any] | None = None
+    # How a picture size is spelled per model family, for providers that
+    # take only pixels or only fixed sizes: {pattern, sizes, ratios, step,
+    # max_edge, max_ratio, long_side, square_side}.
+    image_size_rules: tuple[dict[str, Any], ...] = ()
     capabilities: ProviderCapabilities = ProviderCapabilities()
     # Rolling-alias naming conventions, present only where the catalog
     # records live evidence for one. No entry means "no recorded
@@ -246,8 +281,17 @@ def _parse_capabilities(profile: dict[str, Any]) -> ProviderCapabilities:
         tool_calling=bool(raw.get("tool_calling", False)),
         embeddings=bool(raw.get("embeddings", False)),
         image_generation=bool(raw.get("image_generation", False)),
+        image_operations={
+            str(name): ImageOperationSupport(
+                params=frozenset(str(param) for param in entry.get("params", ())),
+                max_reference_images=entry.get("max_reference_images"),
+                note=str(entry.get("note", "")),
+            )
+            for name, entry in (raw.get("image_operations") or {}).items()
+        },
         speech_generation=bool(raw.get("speech_generation", False)),
         video_generation=bool(raw.get("video_generation", False)),
+        video_inputs=frozenset(str(name) for name in raw.get("video_inputs", ())),
         reasoning_effort=bool(raw.get("reasoning_effort", False)),
         reasoning_effort_minimal=bool(raw.get("reasoning_effort_minimal", False)),
         realtime=bool(raw.get("realtime", False)),
@@ -358,6 +402,29 @@ def providers_with(capability: str) -> frozenset[str]:
         elif value:
             found.add(name)
     return frozenset(found)
+
+
+def providers_with_image_operation(operation: str, param: str | None = None) -> frozenset[str]:
+    """Every catalog provider offering a picture operation, narrowed to
+    those that honour ``param`` when one is named. The gates and the error
+    messages listing the alternatives read this same data."""
+    found = set()
+    for name, profile in _load_catalog()["providers"].items():
+        entry = ((profile.get("capabilities") or {}).get("image_operations") or {}).get(operation)
+        if entry is None:
+            continue
+        if param is None or param in entry.get("params", ()):
+            found.add(name)
+    return frozenset(found)
+
+
+def providers_with_video_input(name: str) -> frozenset[str]:
+    """Every catalog provider whose video wire takes a picture input."""
+    return frozenset(
+        provider
+        for provider, profile in _load_catalog()["providers"].items()
+        if name in ((profile.get("capabilities") or {}).get("video_inputs") or ())
+    )
 
 
 def schema_mechanism(provider: str) -> str | None:
@@ -536,6 +603,10 @@ def resolve_provider(
             catalog_voices_verified=(profile.get("voices") or {}).get("verified"),
             min_max_output_tokens=profile.get("min_max_output_tokens"),
             video_download_hosts=tuple(profile.get("video_download_hosts", ())),
+            image_download_hosts=tuple(profile.get("image_download_hosts", ())),
+            provider_tools=tuple(profile.get("provider_tools", ())),
+            verify_generation=profile.get("verify_generation"),
+            image_size_rules=tuple(profile.get("image_size_rules", ())),
             capabilities=_parse_capabilities(profile),
             alias_conventions=tuple(
                 AliasConvention(

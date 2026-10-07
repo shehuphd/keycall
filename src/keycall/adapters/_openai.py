@@ -5,14 +5,17 @@ from __future__ import annotations
 import base64
 import dataclasses
 import json
+import re
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from .._classify import classify_model_id
 from .._enums import Operation
 from .._errors import ErrorCode, KeyCallError
+from .._mask import mask_to_alpha_edit
 from .._registry import ResolvedProvider
 from .._sanitize import safe_request_id
+from .._size import is_ratio, parse_pixels, parse_ratio, pixels_for_ratio
 from .._transport import RequestSpec
 from .._types import (
     BatchCounts,
@@ -22,7 +25,9 @@ from .._types import (
     CitationFound,
     CodeExecutionOutput,
     FileInput,
+    ImageGenerationRequest,
     ImageInput,
+    ImageOperationRequest,
     InvocationResult,
     Model,
     OutputPart,
@@ -559,13 +564,150 @@ class OpenAIAdapter(FileBatchDialect, ProviderAdapter):
             )
         return models, None  # GET /models is unpaginated
 
-    def build_image_spec(self, request: Any) -> RequestSpec:
+    def _picture_size(self, model: str, size: str, operation: Operation) -> str:
+        """OpenAI takes pixels only. The gpt-image-1 family takes three
+        fixed sizes (1024x1024, 1536x1024, 1024x1536, refused otherwise
+        live 2026-10-02); the gpt-image-2 family takes any size whose sides
+        are multiples of 16, so a ratio converts to one (1536x864 accepted
+        live 2026-10-02). The rules are catalog rows per model family."""
+        rule = next(
+            (
+                entry
+                for entry in self.resolved.image_size_rules
+                if re.match(str(entry["pattern"]), model.lower())
+            ),
+            None,
+        )
+        if rule is None:
+            if is_ratio(size):
+                raise self.refuse_size_form(model, size, 'a pixel size like "1536x1024"', operation)
+            return size
+        if "sizes" in rule:
+            if is_ratio(size):
+                mapped = (rule.get("ratios") or {}).get(size)
+                if mapped is None:
+                    raise self.refuse_size_form(
+                        model, size, "one of the ratios " + ", ".join(rule.get("ratios") or {}), operation
+                    )
+                return str(mapped)
+            if size not in rule["sizes"]:
+                raise self.refuse_size_form(model, size, "one of " + ", ".join(rule["sizes"]), operation)
+            return size
+        step = int(rule["step"])
+        if is_ratio(size):
+            ratio = parse_ratio(size)
+            if max(ratio, 1 / ratio) > float(rule["max_ratio"]):
+                raise self.refuse_size_form(
+                    model, size, f"a ratio no wider than {rule['max_ratio']}:1", operation
+                )
+            width, height = pixels_for_ratio(
+                ratio,
+                long_side=int(rule["long_side"]),
+                square_side=int(rule["square_side"]),
+                step=step,
+            )
+            return f"{width}x{height}"
+        width, height = parse_pixels(size)
+        if width % step or height % step or max(width, height) > int(rule["max_edge"]):
+            raise self.refuse_size_form(
+                model,
+                size,
+                f"sides that are multiples of {step}, at most {rule['max_edge']} pixels",
+                operation,
+            )
+        return size
+
+    def build_image_spec(self, request: ImageGenerationRequest) -> RequestSpec:
         op = self.resolved.operations["image_generation"]
+        operation = Operation.IMAGE_GENERATION
+        body: dict[str, Any] = {"model": request.model, "prompt": request.prompt}
+        if request.size is not None:
+            body["size"] = self._picture_size(request.model, request.size, operation)
+        if request.quality is not None:
+            body["quality"] = request.quality
         return RequestSpec(
             method=op["method"],
             path=op["path"],
-            json_body={"model": request.model, "prompt": request.prompt},
+            json_body=self.merged_provider_options(body, request.provider_options, operation),
         )
+
+    def build_image_operation_spec(self, request: ImageOperationRequest) -> RequestSpec:
+        """Picture edits: POST /images/edits as multipart, the picture and
+        any references as repeated image[] files, the mask redrawn to
+        OpenAI's convention (fully transparent over the area to change).
+        Live 2026-10-02 on gpt-image-1-mini with a mask and a reference."""
+        operation = request.operation
+        given = [name for name in ("mask", "size", "quality") if getattr(request, name) is not None]
+        if request.reference_images:
+            given.append("reference_images")
+        support = self.image_operation_support(operation, given)
+        if (
+            support.max_reference_images is not None
+            and len(request.reference_images) > support.max_reference_images
+        ):
+            raise KeyCallError(
+                f"{self.resolved.provider} takes at most {support.max_reference_images} "
+                f"reference image(s); {len(request.reference_images)} were given",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.resolved.provider,
+                operation=operation.value,
+            )
+        op = self.resolved.operations[operation.value]
+        fields: dict[str, Any] = {"model": request.model, "prompt": request.prompt}
+        if request.size is not None:
+            fields["size"] = self._picture_size(request.model, request.size, operation)
+        if request.quality is not None:
+            fields["quality"] = request.quality
+        fields = self.merged_provider_options(fields, request.provider_options, operation)
+        parts: list[tuple[str, str | None, bytes, str | None]] = [
+            (name, None, (json.dumps(value) if isinstance(value, (dict, list)) else str(value)).encode(), None)
+            for name, value in fields.items()
+        ]
+        for index, picture in enumerate((request.image, *request.reference_images)):
+            parts.append(self._picture_file("image[]", picture, operation, index))
+        if request.mask is not None:
+            if request.mask.data is None:
+                raise KeyCallError(
+                    "the mask must be passed as bytes, ImageInput(data=...)",
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    provider=self.resolved.provider,
+                    operation=operation.value,
+                )
+            mask = mask_to_alpha_edit(
+                request.mask.data, provider=self.resolved.provider, operation=operation.value
+            )
+            parts.append(("mask", "mask.png", mask, "image/png"))
+        return RequestSpec(method=op["method"], path=op["path"], multipart=tuple(parts))
+
+    def _picture_file(
+        self, field: str, picture: ImageInput, operation: Operation, index: int
+    ) -> tuple[str, str | None, bytes, str | None]:
+        if picture.data is None:
+            raise KeyCallError(
+                f"{self.resolved.provider} takes pictures to edit as bytes, not as a URL; "
+                "download the picture and pass ImageInput(data=...)",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.resolved.provider,
+                operation=operation.value,
+            )
+        media_type = image_media_type(picture, provider=self.resolved.provider)
+        return (field, f"image{index}.{media_type.split('/')[-1]}", picture.data, media_type)
+
+    def parse_image_operation(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        request: ImageOperationRequest,
+    ) -> InvocationResult:
+        result = self.parse_image_response(
+            payload,
+            headers=headers,
+            round_trip_duration_ms=round_trip_duration_ms,
+            model=request.model,
+        )
+        return dataclasses.replace(result, operation=request.operation)
 
     def parse_image_response(
         self,

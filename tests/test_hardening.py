@@ -92,6 +92,76 @@ def test_gemini_sampling_lands_in_generation_config():
     assert config == {"maxOutputTokens": 64, "temperature": 0.3, "topP": 0.8}
 
 
+@pytest.mark.parametrize(
+    ("model", "params"),
+    [
+        ("gemini-3.8-flash", {"temperature": 0.0}),
+        ("gemini-3.6-flash", {"top_p": 0.5}),
+        ("gemini-3.5-flash-lite", {"temperature": 0.2}),
+        ("gemini-flash-latest", {"temperature": 1.0}),
+        ("gemini-flash-lite-latest", {"top_p": 0.95}),
+        # The pattern covers versions not yet released, which Google says
+        # will reject the parameters outright.
+        ("gemini-3.10-flash", {"temperature": 0.5}),
+        ("gemini-4.0-pro", {"temperature": 0.5}),
+    ],
+)
+def test_gemini_fixed_sampling_models_refuse_an_explicit_value(model, params):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must fail before any network call")
+
+    with pytest.raises(KeyCallError) as excinfo:
+        make_client(provider="gemini", handler=handler).generate_text(
+            model=model, messages=simple_messages(), **params
+        )
+    assert excinfo.value.code is ErrorCode.MODEL_NOT_SUITABLE
+    assert model in excinfo.value.message
+    assert next(iter(params)) in excinfo.value.message
+
+
+@pytest.mark.parametrize(
+    "model", ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-3.1-pro-preview"]
+)
+def test_gemini_models_that_honour_sampling_still_take_it(model):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"candidates": [], "usageMetadata": {}})
+
+    make_client(provider="gemini", handler=handler).generate_text(
+        model=model, messages=simple_messages(), temperature=0.0
+    )
+    assert captured["body"]["generationConfig"]["temperature"] == 0.0
+
+
+def test_gemini_fixed_sampling_model_sends_no_sampling_by_default():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"candidates": [], "usageMetadata": {}})
+
+    make_client(provider="gemini", handler=handler).generate_text(
+        model="gemini-3.8-flash", messages=simple_messages(), reasoning_effort="low"
+    )
+    config = captured["body"]["generationConfig"]
+    assert "temperature" not in config and "topP" not in config and "topK" not in config
+    assert config["thinkingConfig"] == {"thinkingLevel": "LOW"}
+
+
+def test_gemini_fixed_sampling_refused_inside_a_batch_too():
+    from keycall import BatchRequest
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must fail before any network call")
+
+    item = BatchRequest(model="gemini-3.8-flash", messages=simple_messages(), temperature=0.0)
+    with pytest.raises(KeyCallError) as excinfo:
+        make_client(provider="gemini", handler=handler).start_batch([item])
+    assert excinfo.value.code is ErrorCode.MODEL_NOT_SUITABLE
+
+
 def test_invalid_sampling_values_rejected_at_request_construction():
     from keycall import TextGenerationRequest
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 import dataclasses
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar
 from urllib.parse import quote, urlsplit
 
@@ -20,6 +20,7 @@ from .._enums import ModelCategory, Operation
 from .._errors import ErrorCode, KeyCallError
 from .._registry import ResolvedProvider, providers_with
 from .._sanitize import safe_request_id
+from .._size import is_ratio
 from .._transport import DownloadPlan, RequestSpec
 from .._types import (
     AudioInput,
@@ -30,7 +31,9 @@ from .._types import (
     CitationFound,
     CodeExecutionOutput,
     FileInput,
+    ImageGenerationRequest,
     ImageInput,
+    ImageOperationRequest,
     ImageOutput,
     InvocationResult,
     Model,
@@ -56,6 +59,7 @@ from ._base import (
     StreamAssembler,
     context_limit,
     dedupe_citations,
+    image_media_type,
     media_type_for,
     parse_tool_arguments,
 )
@@ -355,7 +359,53 @@ class GeminiAdapter(ProviderAdapter):
             )
         return models, next_spec
 
-    def build_image_spec(self, request: Any) -> RequestSpec:
+    def _picture_body(
+        self,
+        *,
+        prompt: str,
+        pictures: Sequence[ImageInput],
+        size: str | None,
+        seed: int | None,
+        model: str,
+        options: Mapping[str, Any] | None,
+        operation: Operation,
+    ) -> dict[str, Any]:
+        """generateContent for a picture: the pictures to work from as
+        inline parts ahead of the instruction, a ratio as
+        imageConfig.aspectRatio, a seed as generationConfig.seed. Gemini
+        takes a ratio only, so a pixel size is refused naming that form."""
+        parts: list[dict[str, Any]] = []
+        for picture in pictures:
+            if picture.data is None:
+                raise KeyCallError(
+                    "gemini takes pictures as bytes, not as a URL; download the picture "
+                    "and pass ImageInput(data=...)",
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    provider=self.resolved.provider,
+                    operation=operation.value,
+                )
+            parts.append(
+                {
+                    "inlineData": {
+                        "mimeType": image_media_type(picture, provider=self.resolved.provider),
+                        "data": base64.b64encode(picture.data).decode("ascii"),
+                    }
+                }
+            )
+        parts.append({"text": prompt})
+        body: dict[str, Any] = {"contents": [{"role": "user", "parts": parts}]}
+        config: dict[str, Any] = {}
+        if size is not None:
+            if not is_ratio(size):
+                raise self.refuse_size_form(model, size, 'an aspect ratio like "16:9"', operation)
+            config["imageConfig"] = {"aspectRatio": size}
+        if seed is not None:
+            config["seed"] = seed
+        if config:
+            body["generationConfig"] = config
+        return self.merged_provider_options(body, options, operation)
+
+    def build_image_spec(self, request: ImageGenerationRequest) -> RequestSpec:
         # Gemini's image models take the ordinary generateContent path and
         # answer with an inlineData part instead of text (verified
         # 2026-08-10), so there is no separate image endpoint to call.
@@ -363,10 +413,68 @@ class GeminiAdapter(ProviderAdapter):
         return RequestSpec(
             method=op["method"],
             path=op["path"].replace("{model}", quote(_strip_prefix(request.model), safe="")),
-            json_body={
-                "contents": [{"role": "user", "parts": [{"text": request.prompt}]}]
-            },
+            json_body=self._picture_body(
+                prompt=request.prompt,
+                pictures=(),
+                size=request.size,
+                seed=request.seed,
+                model=request.model,
+                options=request.provider_options,
+                operation=Operation.IMAGE_GENERATION,
+            ),
         )
+
+    def build_image_operation_spec(self, request: ImageOperationRequest) -> RequestSpec:
+        """Picture edits: the same generateContent call with the picture
+        and its references as inline parts (live 2026-10-02 on
+        gemini-3.1-flash-lite-image with one and two pictures). No mask
+        parameter exists, so a mask is refused by the catalog gate."""
+        operation = request.operation
+        given = [name for name in ("mask", "size", "seed", "quality") if getattr(request, name) is not None]
+        if request.reference_images:
+            given.append("reference_images")
+        support = self.image_operation_support(operation, given)
+        if (
+            support.max_reference_images is not None
+            and len(request.reference_images) > support.max_reference_images
+        ):
+            raise KeyCallError(
+                f"gemini takes at most {support.max_reference_images} reference image(s); "
+                f"{len(request.reference_images)} were given",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.resolved.provider,
+                operation=operation.value,
+            )
+        op = self.resolved.operations["image_generation"]
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"].replace("{model}", quote(_strip_prefix(request.model), safe="")),
+            json_body=self._picture_body(
+                prompt=request.prompt or "",
+                pictures=(request.image, *request.reference_images),
+                size=request.size,
+                seed=request.seed,
+                model=request.model,
+                options=request.provider_options,
+                operation=operation,
+            ),
+        )
+
+    def parse_image_operation(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        request: ImageOperationRequest,
+    ) -> InvocationResult:
+        result = self.parse_image_response(
+            payload,
+            headers=headers,
+            round_trip_duration_ms=round_trip_duration_ms,
+            model=request.model,
+        )
+        return dataclasses.replace(result, operation=request.operation)
 
     def parse_image_response(
         self,

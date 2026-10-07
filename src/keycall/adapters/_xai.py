@@ -40,11 +40,14 @@ from urllib.parse import quote
 from .._enums import ModelCategory, Operation
 from .._errors import ErrorCode, KeyCallError
 from .._sanitize import safe_request_id
+from .._size import is_ratio
 from .._transport import DownloadPlan, RequestSpec
 from .._types import (
     BatchCounts,
     BatchJob,
     BatchStatus,
+    ImageGenerationRequest,
+    ImageOperationRequest,
     InvocationResult,
     Model,
     TextGenerationRequest,
@@ -53,7 +56,7 @@ from .._types import (
 )
 from ._base import BatchItemOutcome, BatchSubmission, StreamAssembler
 from ._openai import OpenAIAdapter
-from ._openai_compat import OpenAICompatibleAdapter
+from ._openai_compat import OpenAICompatibleAdapter, _image_url
 
 
 class XAIAdapter(OpenAICompatibleAdapter):
@@ -188,20 +191,92 @@ class XAIAdapter(OpenAICompatibleAdapter):
 
     # --- image generation ---
 
-    def build_image_spec(self, request: Any) -> RequestSpec:
+    def _picture_fields(
+        self, model: str, size: str | None, quality: str | None, operation: Operation
+    ) -> dict[str, Any]:
+        """xAI takes a ratio as aspect_ratio and a quality tier; it has no
+        pixel-size field, so a pixel size is refused naming the ratio form."""
+        fields: dict[str, Any] = {
+            "model": model,
+            # The default answer is a URL on imgen.x.ai; asking for
+            # b64_json keeps the result in bytes like every other
+            # image-generating provider (verified live 2026-08-13).
+            "response_format": "b64_json",
+        }
+        if size is not None:
+            if not is_ratio(size):
+                raise self.refuse_size_form(model, size, 'an aspect ratio like "16:9"', operation)
+            fields["aspect_ratio"] = size
+        if quality is not None:
+            fields["quality"] = quality
+        return fields
+
+    def build_image_spec(self, request: ImageGenerationRequest) -> RequestSpec:
         op = self.resolved.operations["image_generation"]
+        operation = Operation.IMAGE_GENERATION
+        body = {
+            "prompt": request.prompt,
+            **self._picture_fields(request.model, request.size, request.quality, operation),
+        }
         return RequestSpec(
             method=op["method"],
             path=op["path"],
-            json_body={
-                "model": request.model,
-                "prompt": request.prompt,
-                # The default answer is a URL on imgen.x.ai; asking for
-                # b64_json keeps the result in bytes like every other
-                # image-generating provider (verified live 2026-08-13).
-                "response_format": "b64_json",
-            },
+            json_body=self.merged_provider_options(body, request.provider_options, operation),
         )
+
+    def build_image_operation_spec(self, request: ImageOperationRequest) -> RequestSpec:
+        """Picture edits: POST /v1/images/edits as JSON, one picture as
+        ``image`` or several as ``images`` (live 2026-10-02 on
+        grok-imagine-image-2.0). A picture travels as a URL or a data URI.
+        xAI ignores fields it doesn't know, so a mask or seed would be
+        dropped without a word; the catalog gate refuses both."""
+        operation = request.operation
+        given = [name for name in ("mask", "size", "seed", "quality") if getattr(request, name) is not None]
+        if request.reference_images:
+            given.append("reference_images")
+        support = self.image_operation_support(operation, given)
+        if (
+            support.max_reference_images is not None
+            and len(request.reference_images) > support.max_reference_images
+        ):
+            raise KeyCallError(
+                f"xai takes at most {support.max_reference_images} reference image(s); "
+                f"{len(request.reference_images)} were given",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.resolved.provider,
+                operation=operation.value,
+            )
+        op = self.resolved.operations[operation.value]
+        pictures = [{"url": _image_url(picture)} for picture in (request.image, *request.reference_images)]
+        body: dict[str, Any] = {
+            "prompt": request.prompt,
+            **self._picture_fields(request.model, request.size, request.quality, operation),
+        }
+        if len(pictures) == 1:
+            body["image"] = pictures[0]
+        else:
+            body["images"] = pictures
+        return RequestSpec(
+            method=op["method"],
+            path=op["path"],
+            json_body=self.merged_provider_options(body, request.provider_options, operation),
+        )
+
+    def parse_image_operation(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        request: ImageOperationRequest,
+    ) -> InvocationResult:
+        result = self.parse_image_response(
+            payload,
+            headers=headers,
+            round_trip_duration_ms=round_trip_duration_ms,
+            model=request.model,
+        )
+        return dataclasses.replace(result, operation=request.operation)
 
     def parse_image_response(
         self,

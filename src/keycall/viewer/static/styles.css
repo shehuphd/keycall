@@ -1111,3 +1111,39 @@ a { color: var(--accent); }
   .pg-history-list { max-height: 14rem; overflow-y: auto; }
   .bubble { max-width: 100%; }
 }
+
+/* Picture, video and tool tasks: the pictures they work from, above the
+   composer. One slot per input, laid out in a wrapping row so a phone
+   gets one per line. */
+.pg-row textarea { width: 100%; font: inherit; }
+.pg-picture-panel {
+  margin: 0.75rem 0 0.5rem;
+  /* Scrolls inside itself past this, so the transcript above always
+     keeps room to show the result. */
+  max-height: 40vh;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.pg-picture-slots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.75rem 1.25rem;
+}
+.pg-slot label.pg-slot-name { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.25rem; }
+.pg-slot input[type="file"] { max-width: 100%; min-height: 44px; }
+.pg-slot .hint { margin-top: 0.25rem; }
+.pg-slot-thumbs { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.4rem; }
+.pg-slot-thumb { display: flex; flex-direction: column; align-items: flex-start; gap: 0.25rem; }
+.pg-slot-thumb img {
+  width: 4rem;
+  height: 4rem;
+  object-fit: contain;
+  background: var(--border);
+  border-radius: 6px;
+}
+.pg-slot-thumb button { min-height: 44px; }
+.pg-tool-fields { display: grid; gap: 0.5rem; margin-top: 0.75rem; max-width: 36rem; }
+.pg-tool-fields .pg-row { margin-bottom: 0; }
+.pg-picture-label { font-size: 0.85rem; font-weight: 600; margin: 0 0 0.25rem; }
+.pg-text-blocks { margin-top: 0.5rem; }
+.pg-text-blocks ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }

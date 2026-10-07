@@ -32,6 +32,7 @@ from ._errors import (
     BatchJobTimeout,
     ErrorCode,
     KeyCallError,
+    ToolJobTimeout,
     TranscriptionJobTimeout,
     VideoJobTimeout,
 )
@@ -40,6 +41,7 @@ from ._registry import (
     catalog_age_days,
     catalog_is_stale,
     catalog_version,
+    providers_with_video_input,
     resolve_provider,
     retired_model_fact,
     supported_service_providers,
@@ -53,6 +55,8 @@ from ._types import (
     DictationResult,
     EmbeddingRequest,
     ImageGenerationRequest,
+    ImageInput,
+    ImageOperationRequest,
     InvocationResult,
     JudgmentQuestion,
     JudgmentRequest,
@@ -61,6 +65,7 @@ from ._types import (
     Message,
     Model,
     ModelDiscovery,
+    ProviderTool,
     RealtimeConfig,
     ServiceReport,
     ServiceStatus,
@@ -68,6 +73,7 @@ from ._types import (
     StreamEvent,
     TextGenerationRequest,
     Tool,
+    ToolJob,
     TranscriptionConfig,
     TranscriptionJob,
     TranscriptionRequest,
@@ -79,7 +85,14 @@ from ._types import (
     WithheldModel,
 )
 from .adapters import ProviderAdapter, adapter_for
-from .adapters._base import BatchSubmission, InbandStreamError, StreamAssembler
+from .adapters._base import (
+    BatchSubmission,
+    InbandStreamError,
+    PendingImageDownloads,
+    PendingImageJob,
+    StreamAssembler,
+    image_media_type,
+)
 
 __all__ = ["AsyncKeyCall", "AsyncTextStream", "KeyCall", "TextStream"]
 
@@ -531,27 +544,121 @@ class _BaseClient:
 
     def _image_spec(self, request: ImageGenerationRequest) -> Any:
         # The refusal lives in ProviderAdapter.build_image_spec, whose
-        # default covers every adapter without an implementation.
+        # default covers every adapter without an implementation; the
+        # catalog gate refuses an input the provider wouldn't honour.
         self._require_model_not_retired(request.model)
+        given = [
+            name for name in ("size", "quality", "seed") if getattr(request, name) is not None
+        ]
+        if given:
+            self._adapter.image_operation_support(Operation.IMAGE_GENERATION, given)
         return self._adapter.build_image_spec(request)
 
     def _parse_image(
-        self, request: ImageGenerationRequest, result: Any, trace: Any
-    ) -> InvocationResult:
-        invocation = self._adapter.parse_image_response(
+        self, request: ImageGenerationRequest, result: Any
+    ) -> InvocationResult | PendingImageJob | PendingImageDownloads:
+        outcome: InvocationResult | PendingImageJob | PendingImageDownloads = (
+            self._adapter.parse_image_response(
+                result.payload,
+                headers=result.headers,
+                round_trip_duration_ms=result.duration_ms,
+                model=request.model,
+            )
+        )
+        return outcome
+
+    def _image_operation_spec(self, request: ImageOperationRequest) -> Any:
+        self._require_model_not_retired(request.model)
+        return self._adapter.build_image_operation_spec(request)
+
+    def _parse_image_operation(
+        self, request: ImageOperationRequest, result: Any
+    ) -> InvocationResult | PendingImageJob | PendingImageDownloads:
+        return self._adapter.parse_image_operation(
             result.payload,
             headers=result.headers,
             round_trip_duration_ms=result.duration_ms,
-            model=request.model,
+            request=request,
         )
+
+    def _image_job_timeout(self, pending: PendingImageJob) -> KeyCallError:
+        return KeyCallError(
+            f"the provider was still working on this picture after "
+            f"{_IMAGE_JOB_BUDGET_SECONDS:g}s; it may still finish provider-side, "
+            "but this call has stopped waiting",
+            code=ErrorCode.TIMEOUT,
+            provider=self.provider,
+            operation=pending.operation.value,
+            retryable=True,
+        )
+
+    def _downloaded_picture(self, result: Any, operation: Operation) -> tuple[bytes, str]:
+        content = result.payload
+        if not isinstance(content, bytes) or not content:
+            raise KeyCallError(
+                "picture download did not return the file's bytes",
+                code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                provider=self.provider,
+                operation=operation.value,
+            )
+        declared = str(result.headers.get("content-type", "")).split(";")[0].strip()
+        try:
+            media_type = image_media_type(ImageInput(data=content), provider=self.provider)
+        except KeyCallError:
+            media_type = declared or "application/octet-stream"
+        return content, media_type
+
+    def _trace_picture(self, trace: Any, invocation: InvocationResult) -> None:
+        pictures = sum(1 for part in invocation.parts if getattr(part, "kind", "") == "image")
         trace.event(
             "model",
-            operation="image_generation",
+            operation=invocation.operation.value,
             target=invocation.model,
             duration_ms=invocation.round_trip_duration_ms,
-            result={"images": len(invocation.parts)},
+            provider=self.provider,
+            **_trace_token_fields(invocation.usage),
+            result={"images": pictures, "parts": len(invocation.parts)},
         )
-        return invocation
+
+    def _tool_row(self, tool: str) -> dict[str, Any]:
+        for row in self._resolved.provider_tools:
+            if row.get("name") == tool:
+                return dict(row)
+        names = ", ".join(str(row.get("name")) for row in self._resolved.provider_tools)
+        raise KeyCallError(
+            f"provider {self.provider!r} has no tool {tool!r}"
+            + (f"; its tools are: {names}" if names else "; it has no tools"),
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.provider,
+            operation=Operation.PROVIDER_TOOL.value,
+        )
+
+    def list_tools(self) -> tuple[ProviderTool, ...]:
+        """The provider's own named tools and the inputs each takes, from
+        the catalog. Empty for a provider with none."""
+        return tuple(
+            ProviderTool(
+                name=str(row["name"]),
+                required=tuple(str(name) for name in row.get("required", ())),
+                files={str(name): int(count) for name, count in (row.get("files") or {}).items()},
+                fields=tuple(str(name) for name in row.get("fields", ())),
+                note=str(row.get("note", "")),
+            )
+            for row in self._resolved.provider_tools
+        )
+
+    def _require_tool_job(self, job: ToolJob) -> None:
+        if not isinstance(job, ToolJob):
+            raise TypeError(f"expected a ToolJob, got {type(job).__name__}")
+        if job.provider != self.provider:
+            raise KeyCallError(
+                f"this job belongs to provider {job.provider!r}; this client is bound "
+                f"to {self.provider!r} and its credential must not poll another "
+                "provider's job",
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.provider,
+                operation=Operation.PROVIDER_TOOL.value,
+            )
 
     def _speech_spec(self, request: SpeechGenerationRequest) -> Any:
         # The refusal lives in ProviderAdapter.build_speech_spec, whose
@@ -576,6 +683,31 @@ class _BaseClient:
             result={"clips": len(invocation.parts)},
         )
         return invocation
+
+    def _require_video_inputs(self, request: VideoGenerationRequest) -> None:
+        """Refuse a picture input this provider's video wire doesn't take,
+        before the request: each one changes the video."""
+        accepted = self._resolved.capabilities.video_inputs
+        given = [
+            name
+            for name, value in (
+                ("image", request.image),
+                ("last_frame", request.last_frame),
+                ("reference_images", request.reference_images),
+            )
+            if value
+        ]
+        for name in given:
+            if name not in accepted:
+                raise KeyCallError(
+                    f"provider {self.provider!r} doesn't take {name} for video; it changes "
+                    "the video, so it isn't dropped. Video "
+                    f"{name} is taken on: "
+                    + (", ".join(sorted(providers_with_video_input(name))) or "no provider in this catalog"),
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    provider=self.provider,
+                    operation="video_generation",
+                )
 
     def _require_video_job(self, job: VideoJob) -> None:
         if not isinstance(job, VideoJob):
@@ -885,11 +1017,48 @@ class _BaseClient:
             status=invocation.finish_reason or "ok",
             duration_ms=invocation.round_trip_duration_ms,
             provider=self.provider,
-            tokens_in=invocation.usage.input_tokens,
-            tokens_out=invocation.usage.output_tokens,
+            **_trace_token_fields(invocation.usage),
             result={"parts": len(invocation.parts)},
         )
         return invocation
+
+
+def _trace_token_fields(usage: Usage) -> dict[str, int]:
+    """Token counts for a TraceAct model event, in the field names its
+    cost estimator reads (1.6.0 prices the cache fields; older releases
+    keep them as plain extras). ``tokens_in`` is the whole input and the
+    three cache fields are disjoint parts of it: reads, writes at the
+    standard rate, and writes at the 1-hour rate, each sent only where the
+    provider reported a count. A write the provider didn't split by rate
+    is a standard-rate write."""
+    fields: dict[str, int] = {}
+    if usage.input_tokens is not None:
+        fields["tokens_in"] = usage.input_tokens
+    if usage.output_tokens is not None:
+        fields["tokens_out"] = usage.output_tokens
+    if usage.cached_input_tokens is not None:
+        fields["tokens_cached_in"] = usage.cached_input_tokens
+    units = dict(usage.provider_units or ())
+    standard = units.get("cache_write_5m_input_tokens")
+    hour = units.get("cache_write_1h_input_tokens")
+    if standard is None and hour is None:
+        if usage.cache_write_input_tokens is not None:
+            fields["tokens_cache_write_in"] = usage.cache_write_input_tokens
+    else:
+        if standard is not None:
+            fields["tokens_cache_write_in"] = int(standard)
+        if hour is not None:
+            fields["tokens_cache_write_1h_in"] = int(hour)
+    return fields
+
+
+# How long a picture operation waits on a provider job (Ideogram answers
+# some routes with a job to poll). Observed completions run 4 to 40
+# seconds; the budget is ten times the slowest, and the poll interval
+# grows from one second to five so a quick job returns quickly.
+_IMAGE_JOB_BUDGET_SECONDS = 600.0
+_IMAGE_POLL_FIRST_SECONDS = 1.0
+_IMAGE_POLL_MAX_SECONDS = 5.0
 
 
 # A provider that keeps demanding server-tool echo rounds past this many
@@ -1385,22 +1554,402 @@ class KeyCall(_BaseClient):
                 retryable=True,
             )
 
-    def generate_image(self, *, model: str, prompt: str) -> InvocationResult:
-        """Generate a picture. The result's parts are ImageOutput values
-        carrying base64 data and the media type the provider produced."""
-        self._require_open()
-        request = ImageGenerationRequest(model=model, prompt=prompt)
-        spec = self._image_spec(request)
+    def _drive_picture(
+        self,
+        operation: Operation,
+        model: str,
+        spec: Any,
+        parse: Any,
+    ) -> InvocationResult:
+        """Send one picture request and carry it to a finished result:
+        poll a job the provider answers with, then download any links it
+        hands back. The caller gets bytes either way."""
+        started = time.monotonic()
         with _tracing.span(
-            "keycall.image_generation", provider=self.provider, model=model
+            f"keycall.{operation.value}", provider=self.provider, model=model
         ) as trace:
             result = self._transport.request(
                 spec,
-                operation="image_generation",
+                operation=operation.value,
                 retry_policy="generation",
                 translate_error=self._adapter.translate_error,
             )
-            return self._parse_image(request, result, trace)
+            outcome = parse(result)
+            deadline = started + _IMAGE_JOB_BUDGET_SECONDS
+            delay = _IMAGE_POLL_FIRST_SECONDS
+            while isinstance(outcome, PendingImageJob):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise self._image_job_timeout(outcome)
+                time.sleep(min(delay, remaining))
+                delay = min(delay * 1.5, _IMAGE_POLL_MAX_SECONDS)
+                status = self._transport.request(
+                    self._adapter.build_image_job_status_spec(outcome),
+                    operation=operation.value,
+                    retry_policy="list",
+                    translate_error=self._adapter.translate_error,
+                )
+                outcome = self._adapter.parse_image_job_status(
+                    status.payload,
+                    headers=status.headers,
+                    round_trip_duration_ms=status.duration_ms,
+                    pending=outcome,
+                )
+            if isinstance(outcome, PendingImageDownloads):
+                downloads = []
+                for plan in outcome.plans:
+                    fetched = self._transport.download(
+                        plan,
+                        operation=operation.value,
+                        translate_error=self._adapter.translate_error,
+                    )
+                    downloads.append(self._downloaded_picture(fetched, operation))
+                outcome = self._adapter.image_download_result(
+                    outcome,
+                    downloads,
+                    round_trip_duration_ms=(time.monotonic() - started) * 1000.0,
+                )
+            if not isinstance(outcome, InvocationResult):
+                raise KeyCallError(
+                    "provider answer could not be carried to a finished picture",
+                    code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                    provider=self.provider,
+                    operation=operation.value,
+                )
+            self._trace_picture(trace, outcome)
+            return outcome
+
+    def generate_image(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        size: str | None = None,
+        quality: str | None = None,
+        seed: int | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Generate a picture. The result's parts are ImageOutput values
+        carrying base64 data and the media type the provider produced.
+        ``size`` is an aspect ratio ("16:9") or a pixel size
+        ("1280x768"). ``size``, ``quality`` and ``seed`` are refused,
+        before any request, on a provider or model that wouldn't honour
+        them. ``provider_options`` are extra request fields sent as given;
+        code that uses them is tied to that provider."""
+        self._require_open()
+        request = ImageGenerationRequest(
+            model=model,
+            prompt=prompt,
+            size=size,
+            quality=quality,
+            seed=seed,
+            provider_options=provider_options,
+        )
+        spec = self._image_spec(request)
+        return self._drive_picture(
+            Operation.IMAGE_GENERATION,
+            model,
+            spec,
+            lambda result: self._parse_image(request, result),
+        )
+
+    def _picture_operation(self, request: ImageOperationRequest) -> InvocationResult:
+        self._require_open()
+        spec = self._image_operation_spec(request)
+        return self._drive_picture(
+            request.operation,
+            request.model,
+            spec,
+            lambda result: self._parse_image_operation(request, result),
+        )
+
+    def edit_image(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        image: ImageInput,
+        reference_images: Sequence[ImageInput] = (),
+        mask: ImageInput | None = None,
+        size: str | None = None,
+        quality: str | None = None,
+        seed: int | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Change a picture as ``prompt`` describes. ``reference_images``
+        guide the edit and are never changed themselves. ``mask`` limits
+        the edit: a PNG the same size as ``image``, white over the area to
+        change and black over the area to keep; KeyCall redraws it for a
+        provider whose own convention differs. Inputs a provider or model
+        wouldn't honour are refused before any request."""
+        return self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.IMAGE_EDIT,
+                model=model,
+                prompt=prompt,
+                image=image,
+                reference_images=reference_images,
+                mask=mask,
+                size=size,
+                quality=quality,
+                seed=seed,
+                provider_options=provider_options,
+            )
+        )
+
+    def upscale_image(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        factor: int | None = None,
+        prompt: str | None = None,
+        seed: int | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Enlarge a picture. ``factor`` is how many times larger each side
+        becomes; leave it out for the model's own default. ``prompt``
+        guides a generative upscaler where the model takes one."""
+        return self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.IMAGE_UPSCALE,
+                model=model,
+                image=image,
+                factor=factor,
+                prompt=prompt,
+                seed=seed,
+                provider_options=provider_options,
+            )
+        )
+
+    def expand_image(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        size: str,
+        prompt: str | None = None,
+        seed: int | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Extend a picture to a new shape, generating what lies beyond its
+        edges. ``size`` is an aspect ratio ("16:9") or a pixel size
+        ("1280x768"); each model takes one form or both."""
+        return self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.IMAGE_EXPAND,
+                model=model,
+                image=image,
+                size=size,
+                prompt=prompt,
+                seed=seed,
+                provider_options=provider_options,
+            )
+        )
+
+    def remove_background(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Cut the subject out of a picture. The result is a PNG with a
+        transparent background."""
+        return self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.BACKGROUND_REMOVAL,
+                model=model,
+                image=image,
+                provider_options=provider_options,
+            )
+        )
+
+    def replace_background(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        prompt: str,
+        quality: str | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Keep the subject and generate a new background from ``prompt``."""
+        return self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.BACKGROUND_REPLACEMENT,
+                model=model,
+                image=image,
+                prompt=prompt,
+                quality=quality,
+                provider_options=provider_options,
+            )
+        )
+
+    def erase_object(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        mask: ImageInput,
+        seed: int | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Remove what the mask marks and fill the space it leaves. The
+        mask is a PNG the same size as ``image``, white over what to
+        remove and black elsewhere."""
+        return self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.OBJECT_ERASE,
+                model=model,
+                image=image,
+                mask=mask,
+                seed=seed,
+                provider_options=provider_options,
+            )
+        )
+
+    def describe_image(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Describe a picture in words. The result's ``text`` is the
+        description."""
+        return self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.IMAGE_DESCRIPTION,
+                model=model,
+                image=image,
+                provider_options=provider_options,
+            )
+        )
+
+    def layerize_image(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        prompt: str | None = None,
+        seed: int | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Split a design into its picture and its text. The result holds
+        the design (ImageOutput labelled "design"), the same design with
+        its text removed (labelled "base"), and one TextBlockOutput per
+        block of text with its position and best-matching font."""
+        return self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.IMAGE_LAYERIZE,
+                model=model,
+                image=image,
+                prompt=prompt,
+                seed=seed,
+                provider_options=provider_options,
+            )
+        )
+
+    def start_tool(self, *, tool: str, inputs: Mapping[str, Any]) -> ToolJob:
+        """Start one of the provider's own named tools and return its job
+        handle. list_tools() names each tool and the inputs it takes; a
+        picture input is an ImageInput, or a sequence of them where the
+        tool takes several. Poll with check_tool(), then fetch_tool(), or
+        let run_tool() do all three."""
+        self._require_open()
+        row = self._tool_row(tool)
+        spec = self._adapter.build_tool_start_spec(row, inputs)
+        with _tracing.span(
+            "keycall.provider_tool.start", provider=self.provider, model=tool
+        ) as trace:
+            result = self._transport.request(
+                spec,
+                operation=Operation.PROVIDER_TOOL.value,
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            job = self._adapter.parse_tool_start(result.payload, tool=tool)
+            trace.event(
+                "model",
+                operation=Operation.PROVIDER_TOOL.value,
+                target=tool,
+                duration_ms=result.duration_ms,
+                provider=self.provider,
+                result={"job": "started"},
+            )
+            return job
+
+    def check_tool(self, job: ToolJob) -> ToolJob:
+        """Ask the provider where a tool run stands. Returns a new ToolJob;
+        a job that already finished is returned as-is without a request."""
+        self._require_open()
+        self._require_tool_job(job)
+        if job.status != "running":
+            return job
+        result = self._transport.request(
+            self._adapter.build_tool_status_spec(job),
+            operation=Operation.PROVIDER_TOOL.value,
+            retry_policy="list",
+            translate_error=self._adapter.translate_error,
+        )
+        return self._adapter.parse_tool_status(result.payload, job=job)
+
+    def fetch_tool(self, job: ToolJob) -> InvocationResult:
+        """Download a finished tool run's pictures."""
+        self._require_open()
+        self._require_tool_job(job)
+        if job.status == "failed":
+            raise KeyCallError(
+                f"the tool run failed: {job.error_message or 'no detail from the provider'}",
+                code=ErrorCode.PROVIDER_UNAVAILABLE,
+                provider=self.provider,
+                operation=Operation.PROVIDER_TOOL.value,
+            )
+        if job.status != "succeeded":
+            raise ValueError("this job has not succeeded yet; call check_tool() until it does")
+        started = time.monotonic()
+        pending = self._adapter.tool_downloads(job)
+        downloads = []
+        for plan in pending.plans:
+            fetched = self._transport.download(
+                plan,
+                operation=Operation.PROVIDER_TOOL.value,
+                translate_error=self._adapter.translate_error,
+            )
+            downloads.append(self._downloaded_picture(fetched, Operation.PROVIDER_TOOL))
+        return self._adapter.image_download_result(
+            pending,
+            downloads,
+            round_trip_duration_ms=(time.monotonic() - started) * 1000.0,
+        )
+
+    def run_tool(
+        self,
+        *,
+        tool: str,
+        inputs: Mapping[str, Any],
+        timeout: float,
+        poll_interval: float = 5.0,
+    ) -> InvocationResult:
+        """Start, poll, and download a tool run in one call. ``timeout`` is
+        the caller's waiting budget in seconds; when it runs out the raised
+        error carries the still-valid job as ``error.job``."""
+        job = self.start_tool(tool=tool, inputs=inputs)
+        deadline = time.monotonic() + timeout
+        while True:
+            job = self.check_tool(job)
+            if job.status != "running":
+                return self.fetch_tool(job)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ToolJobTimeout(
+                    f"tool run still going after {timeout:g}s; the job remains "
+                    "valid: poll it with check_tool(error.job)",
+                    provider=self.provider,
+                    job=job,
+                )
+            time.sleep(min(poll_interval, remaining))
 
     def embed(self, *, model: str, inputs: Sequence[str]) -> InvocationResult:
         """Embed one or more strings. The result's parts are EmbeddingOutput
@@ -1482,6 +2031,9 @@ class KeyCall(_BaseClient):
         prompt: str,
         duration_seconds: int | None = None,
         aspect_ratio: str | None = None,
+        image: ImageInput | None = None,
+        last_frame: ImageInput | None = None,
+        reference_images: Sequence[ImageInput] = (),
     ) -> VideoJob:
         """Start a video render and return its job handle immediately.
         Rendering takes anywhere from seconds to many minutes depending on
@@ -1495,7 +2047,11 @@ class KeyCall(_BaseClient):
             prompt=prompt,
             duration_seconds=duration_seconds,
             aspect_ratio=aspect_ratio,
+            image=image,
+            last_frame=last_frame,
+            reference_images=reference_images,
         )
+        self._require_video_inputs(request)
         spec = self._adapter.build_video_start_spec(request)
         with _tracing.span(
             "keycall.video_generation.start", provider=self.provider, model=model
@@ -1573,6 +2129,9 @@ class KeyCall(_BaseClient):
         timeout: float,
         duration_seconds: int | None = None,
         aspect_ratio: str | None = None,
+        image: ImageInput | None = None,
+        last_frame: ImageInput | None = None,
+        reference_images: Sequence[ImageInput] = (),
         poll_interval: float = 10.0,
     ) -> InvocationResult:
         """Start, poll, and download in one call. ``timeout`` is the
@@ -1587,6 +2146,9 @@ class KeyCall(_BaseClient):
             prompt=prompt,
             duration_seconds=duration_seconds,
             aspect_ratio=aspect_ratio,
+            image=image,
+            last_frame=last_frame,
+            reference_images=reference_images,
         )
         deadline = time.monotonic() + timeout
         while True:
@@ -2431,21 +2993,375 @@ class AsyncKeyCall(_BaseClient):
                 retryable=True,
             )
 
-    async def generate_image(self, *, model: str, prompt: str) -> InvocationResult:
-        """Async twin of KeyCall.generate_image()."""
-        self._require_open()
-        request = ImageGenerationRequest(model=model, prompt=prompt)
-        spec = self._image_spec(request)
+    async def _drive_picture(
+        self,
+        operation: Operation,
+        model: str,
+        spec: Any,
+        parse: Any,
+    ) -> InvocationResult:
+        """Async twin of the sync driver."""
+        import anyio
+
+        started = time.monotonic()
         with _tracing.span(
-            "keycall.image_generation", provider=self.provider, model=model
+            f"keycall.{operation.value}", provider=self.provider, model=model
         ) as trace:
             result = await self._transport.request(
                 spec,
-                operation="image_generation",
+                operation=operation.value,
                 retry_policy="generation",
                 translate_error=self._adapter.translate_error,
             )
-            return self._parse_image(request, result, trace)
+            outcome = parse(result)
+            deadline = started + _IMAGE_JOB_BUDGET_SECONDS
+            delay = _IMAGE_POLL_FIRST_SECONDS
+            while isinstance(outcome, PendingImageJob):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise self._image_job_timeout(outcome)
+                await anyio.sleep(min(delay, remaining))
+                delay = min(delay * 1.5, _IMAGE_POLL_MAX_SECONDS)
+                status = await self._transport.request(
+                    self._adapter.build_image_job_status_spec(outcome),
+                    operation=operation.value,
+                    retry_policy="list",
+                    translate_error=self._adapter.translate_error,
+                )
+                outcome = self._adapter.parse_image_job_status(
+                    status.payload,
+                    headers=status.headers,
+                    round_trip_duration_ms=status.duration_ms,
+                    pending=outcome,
+                )
+            if isinstance(outcome, PendingImageDownloads):
+                downloads = []
+                for plan in outcome.plans:
+                    fetched = await self._transport.download(
+                        plan,
+                        operation=operation.value,
+                        translate_error=self._adapter.translate_error,
+                    )
+                    downloads.append(self._downloaded_picture(fetched, operation))
+                outcome = self._adapter.image_download_result(
+                    outcome,
+                    downloads,
+                    round_trip_duration_ms=(time.monotonic() - started) * 1000.0,
+                )
+            if not isinstance(outcome, InvocationResult):
+                raise KeyCallError(
+                    "provider answer could not be carried to a finished picture",
+                    code=ErrorCode.INVALID_PROVIDER_RESPONSE,
+                    provider=self.provider,
+                    operation=operation.value,
+                )
+            self._trace_picture(trace, outcome)
+            return outcome
+
+    async def generate_image(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        size: str | None = None,
+        quality: str | None = None,
+        seed: int | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Async twin of KeyCall.generate_image()."""
+        self._require_open()
+        request = ImageGenerationRequest(
+            model=model,
+            prompt=prompt,
+            size=size,
+            quality=quality,
+            seed=seed,
+            provider_options=provider_options,
+        )
+        spec = self._image_spec(request)
+        return await self._drive_picture(
+            Operation.IMAGE_GENERATION,
+            model,
+            spec,
+            lambda result: self._parse_image(request, result),
+        )
+
+    async def _picture_operation(self, request: ImageOperationRequest) -> InvocationResult:
+        self._require_open()
+        spec = self._image_operation_spec(request)
+        return await self._drive_picture(
+            request.operation,
+            request.model,
+            spec,
+            lambda result: self._parse_image_operation(request, result),
+        )
+
+    async def edit_image(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        image: ImageInput,
+        reference_images: Sequence[ImageInput] = (),
+        mask: ImageInput | None = None,
+        size: str | None = None,
+        quality: str | None = None,
+        seed: int | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Async twin of KeyCall.edit_image()."""
+        return await self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.IMAGE_EDIT,
+                model=model,
+                prompt=prompt,
+                image=image,
+                reference_images=reference_images,
+                mask=mask,
+                size=size,
+                quality=quality,
+                seed=seed,
+                provider_options=provider_options,
+            )
+        )
+
+    async def upscale_image(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        factor: int | None = None,
+        prompt: str | None = None,
+        seed: int | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Async twin of KeyCall.upscale_image()."""
+        return await self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.IMAGE_UPSCALE,
+                model=model,
+                image=image,
+                factor=factor,
+                prompt=prompt,
+                seed=seed,
+                provider_options=provider_options,
+            )
+        )
+
+    async def expand_image(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        size: str,
+        prompt: str | None = None,
+        seed: int | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Async twin of KeyCall.expand_image()."""
+        return await self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.IMAGE_EXPAND,
+                model=model,
+                image=image,
+                size=size,
+                prompt=prompt,
+                seed=seed,
+                provider_options=provider_options,
+            )
+        )
+
+    async def remove_background(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Async twin of KeyCall.remove_background()."""
+        return await self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.BACKGROUND_REMOVAL,
+                model=model,
+                image=image,
+                provider_options=provider_options,
+            )
+        )
+
+    async def replace_background(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        prompt: str,
+        quality: str | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Async twin of KeyCall.replace_background()."""
+        return await self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.BACKGROUND_REPLACEMENT,
+                model=model,
+                image=image,
+                prompt=prompt,
+                quality=quality,
+                provider_options=provider_options,
+            )
+        )
+
+    async def erase_object(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        mask: ImageInput,
+        seed: int | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Async twin of KeyCall.erase_object()."""
+        return await self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.OBJECT_ERASE,
+                model=model,
+                image=image,
+                mask=mask,
+                seed=seed,
+                provider_options=provider_options,
+            )
+        )
+
+    async def describe_image(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Async twin of KeyCall.describe_image()."""
+        return await self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.IMAGE_DESCRIPTION,
+                model=model,
+                image=image,
+                provider_options=provider_options,
+            )
+        )
+
+    async def layerize_image(
+        self,
+        *,
+        model: str,
+        image: ImageInput,
+        prompt: str | None = None,
+        seed: int | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> InvocationResult:
+        """Async twin of KeyCall.layerize_image()."""
+        return await self._picture_operation(
+            ImageOperationRequest(
+                operation=Operation.IMAGE_LAYERIZE,
+                model=model,
+                image=image,
+                prompt=prompt,
+                seed=seed,
+                provider_options=provider_options,
+            )
+        )
+
+    async def start_tool(self, *, tool: str, inputs: Mapping[str, Any]) -> ToolJob:
+        """Async twin of KeyCall.start_tool()."""
+        self._require_open()
+        row = self._tool_row(tool)
+        spec = self._adapter.build_tool_start_spec(row, inputs)
+        with _tracing.span(
+            "keycall.provider_tool.start", provider=self.provider, model=tool
+        ) as trace:
+            result = await self._transport.request(
+                spec,
+                operation=Operation.PROVIDER_TOOL.value,
+                retry_policy="generation",
+                translate_error=self._adapter.translate_error,
+            )
+            job = self._adapter.parse_tool_start(result.payload, tool=tool)
+            trace.event(
+                "model",
+                operation=Operation.PROVIDER_TOOL.value,
+                target=tool,
+                duration_ms=result.duration_ms,
+                provider=self.provider,
+                result={"job": "started"},
+            )
+            return job
+
+    async def check_tool(self, job: ToolJob) -> ToolJob:
+        """Async twin of KeyCall.check_tool()."""
+        self._require_open()
+        self._require_tool_job(job)
+        if job.status != "running":
+            return job
+        result = await self._transport.request(
+            self._adapter.build_tool_status_spec(job),
+            operation=Operation.PROVIDER_TOOL.value,
+            retry_policy="list",
+            translate_error=self._adapter.translate_error,
+        )
+        return self._adapter.parse_tool_status(result.payload, job=job)
+
+    async def fetch_tool(self, job: ToolJob) -> InvocationResult:
+        """Async twin of KeyCall.fetch_tool()."""
+        self._require_open()
+        self._require_tool_job(job)
+        if job.status == "failed":
+            raise KeyCallError(
+                f"the tool run failed: {job.error_message or 'no detail from the provider'}",
+                code=ErrorCode.PROVIDER_UNAVAILABLE,
+                provider=self.provider,
+                operation=Operation.PROVIDER_TOOL.value,
+            )
+        if job.status != "succeeded":
+            raise ValueError("this job has not succeeded yet; call check_tool() until it does")
+        started = time.monotonic()
+        pending = self._adapter.tool_downloads(job)
+        downloads = []
+        for plan in pending.plans:
+            fetched = await self._transport.download(
+                plan,
+                operation=Operation.PROVIDER_TOOL.value,
+                translate_error=self._adapter.translate_error,
+            )
+            downloads.append(self._downloaded_picture(fetched, Operation.PROVIDER_TOOL))
+        return self._adapter.image_download_result(
+            pending,
+            downloads,
+            round_trip_duration_ms=(time.monotonic() - started) * 1000.0,
+        )
+
+    async def run_tool(
+        self,
+        *,
+        tool: str,
+        inputs: Mapping[str, Any],
+        timeout: float,
+        poll_interval: float = 5.0,
+    ) -> InvocationResult:
+        """Async twin of KeyCall.run_tool()."""
+        import anyio
+
+        job = await self.start_tool(tool=tool, inputs=inputs)
+        deadline = time.monotonic() + timeout
+        while True:
+            job = await self.check_tool(job)
+            if job.status != "running":
+                return await self.fetch_tool(job)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ToolJobTimeout(
+                    f"tool run still going after {timeout:g}s; the job remains "
+                    "valid: poll it with check_tool(error.job)",
+                    provider=self.provider,
+                    job=job,
+                )
+            await anyio.sleep(min(poll_interval, remaining))
 
     async def embed(self, *, model: str, inputs: Sequence[str]) -> InvocationResult:
         """Async twin of KeyCall.embed()."""
@@ -2515,6 +3431,9 @@ class AsyncKeyCall(_BaseClient):
         prompt: str,
         duration_seconds: int | None = None,
         aspect_ratio: str | None = None,
+        image: ImageInput | None = None,
+        last_frame: ImageInput | None = None,
+        reference_images: Sequence[ImageInput] = (),
     ) -> VideoJob:
         """Async twin of KeyCall.start_video()."""
         self._require_open()
@@ -2524,7 +3443,11 @@ class AsyncKeyCall(_BaseClient):
             prompt=prompt,
             duration_seconds=duration_seconds,
             aspect_ratio=aspect_ratio,
+            image=image,
+            last_frame=last_frame,
+            reference_images=reference_images,
         )
+        self._require_video_inputs(request)
         spec = self._adapter.build_video_start_spec(request)
         with _tracing.span(
             "keycall.video_generation.start", provider=self.provider, model=model
@@ -2597,6 +3520,9 @@ class AsyncKeyCall(_BaseClient):
         timeout: float,
         duration_seconds: int | None = None,
         aspect_ratio: str | None = None,
+        image: ImageInput | None = None,
+        last_frame: ImageInput | None = None,
+        reference_images: Sequence[ImageInput] = (),
         poll_interval: float = 10.0,
     ) -> InvocationResult:
         """Async twin of KeyCall.generate_video()."""
@@ -2607,6 +3533,9 @@ class AsyncKeyCall(_BaseClient):
             prompt=prompt,
             duration_seconds=duration_seconds,
             aspect_ratio=aspect_ratio,
+            image=image,
+            last_frame=last_frame,
+            reference_images=reference_images,
         )
         deadline = time.monotonic() + timeout
         while True:

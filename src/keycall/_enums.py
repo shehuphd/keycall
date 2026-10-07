@@ -12,6 +12,11 @@ class ModelCategory(str, Enum):
 
     TEXT_GENERATION = "text_generation"
     IMAGE_GENERATION = "image_generation"
+    # Works on a picture it is given (edit, upscale, expand, background
+    # and object removal, description). A model can carry this beside
+    # IMAGE_GENERATION; an upscaler carries it alone, so it never enters a
+    # picker of models that draw from a prompt.
+    IMAGE_EDITING = "image_editing"
     EMBEDDING = "embedding"
     TRANSCRIPTION = "transcription"
     SPEECH_GENERATION = "speech_generation"
@@ -54,6 +59,11 @@ class ProviderProtocol(str, Enum):
     # questions in, typed answers with probabilities out. Single-vendor,
     # so custom targets cannot claim this protocol either.
     TYPESAFE = "typesafe"
+    # Ideogram's image and video wire: the model is a path segment
+    # (POST /v2/{content}/{action}/{model}), results come back as
+    # expiring links, and some endpoints answer with a job to poll.
+    # Single-vendor, so custom targets cannot claim this protocol either.
+    IDEOGRAM = "ideogram"
 
 
 class Operation(str, Enum):
@@ -65,6 +75,19 @@ class Operation(str, Enum):
     BATCH_GENERATION = "batch_generation"
     BATCH_EMBEDDING = "batch_embedding"
     IMAGE_GENERATION = "image_generation"
+    # Picture-in, picture-out operations. Each is its own member so a
+    # provider's support is declared per operation, not as one flag.
+    IMAGE_EDIT = "image_edit"
+    IMAGE_UPSCALE = "image_upscale"
+    IMAGE_EXPAND = "image_expand"
+    BACKGROUND_REMOVAL = "background_removal"
+    BACKGROUND_REPLACEMENT = "background_replacement"
+    OBJECT_ERASE = "object_erase"
+    IMAGE_LAYERIZE = "image_layerize"
+    # Picture in, text out.
+    IMAGE_DESCRIPTION = "image_description"
+    # A provider's own named tool, run as a job (Ideogram's ad tools).
+    PROVIDER_TOOL = "provider_tool"
     SPEECH_GENERATION = "speech_generation"
     VIDEO_GENERATION = "video_generation"
     TRANSCRIPTION = "transcription"

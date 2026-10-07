@@ -24,6 +24,9 @@ from keycall.viewer._api import (
     generate_video,
     judge,
     list_targets,
+    list_tools,
+    picture_operation,
+    run_tool,
     set_settings,
     transcribe_file,
     verify_target,
@@ -1272,7 +1275,8 @@ def test_generate_image_returns_the_picture_and_its_media_type():
     finally:
         reg.close()
 
-    assert body["images"] == [{"base64_data": "QUJD", "media_type": "image/png"}]
+    assert body["images"] == [{"base64_data": "QUJD", "media_type": "image/png", "label": None}]
+    assert body["text_blocks"] == []
     assert body["operation"] == "image_generation"
     assert CANARY not in json.dumps(body)
 
@@ -1290,6 +1294,150 @@ def test_generate_image_reports_a_provider_that_cannot():
     # and the mock refuses it; the shape is what matters here.
     assert "error" in body or "images" in body
     assert missing["error"]["code"] == "bad_request"
+
+
+def _png_pixel() -> str:
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    data = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\x00\xff"))
+        + chunk(b"IEND", b"")
+    )
+    return base64.b64encode(data).decode()
+
+
+def _openai_picture_registry(seen: list[httpx.Request]) -> Registry:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "gpt-image-2"}, {"id": "gpt-4o-mini"}]})
+        seen.append(request)
+        return httpx.Response(
+            200, json={"output_format": "png", "data": [{"b64_json": "QUJD"}], "usage": {}}
+        )
+
+    return Registry(
+        [Target(provider="openai", key=CANARY, name="my-openai")],
+        httpx_transport=httpx.MockTransport(handler),
+    )
+
+
+def test_generate_image_passes_size_quality_and_provider_options():
+    seen: list[httpx.Request] = []
+    reg = _openai_picture_registry(seen)
+    try:
+        body = generate_image(
+            reg,
+            0,
+            {
+                "target": 0,
+                "model": "gpt-image-2",
+                "prompt": "a blue circle",
+                "size": "16:9",
+                "quality": "low",
+                "provider_options": {"background": "opaque"},
+            },
+        )
+        refused = generate_image(
+            reg, 0, {"target": 0, "model": "gpt-image-2", "prompt": "x", "seed": 7}
+        )
+        bad = generate_image(
+            reg, 0, {"target": 0, "model": "gpt-image-2", "prompt": "x", "provider_options": [1]}
+        )
+    finally:
+        reg.close()
+    assert "error" not in body
+    sent = json.loads(seen[0].content)
+    assert (sent["size"], sent["quality"], sent["background"]) == ("1536x864", "low", "opaque")
+    # OpenAI rejects a seed, so the library refuses it before any request.
+    assert refused["error"]["code"] == "unsupported_operation"
+    assert len(seen) == 1
+    assert bad["error"]["code"] == "bad_request"
+
+
+def test_picture_operation_edits_through_the_named_method():
+    seen: list[httpx.Request] = []
+    reg = _openai_picture_registry(seen)
+    picture = {"data_base64": _png_pixel(), "media_type": "image/png"}
+    try:
+        body = picture_operation(
+            reg,
+            0,
+            {
+                "target": 0,
+                "operation": "image_edit",
+                "model": "gpt-image-2",
+                "prompt": "make it red",
+                "image": picture,
+                "reference_images": [picture],
+                "quality": "low",
+            },
+        )
+        unknown = picture_operation(
+            reg, 0, {"target": 0, "operation": "paint", "model": "gpt-image-2", "image": picture}
+        )
+        no_picture = picture_operation(
+            reg, 0, {"target": 0, "operation": "image_edit", "model": "gpt-image-2", "prompt": "x"}
+        )
+        unoffered = picture_operation(
+            reg,
+            0,
+            {"target": 0, "operation": "image_upscale", "model": "gpt-image-2", "image": picture},
+        )
+    finally:
+        reg.close()
+    assert body["operation"] == "image_edit"
+    assert body["images"][0]["base64_data"] == "QUJD"
+    assert seen[0].url.path == "/v1/images/edits"
+    assert seen[0].content.count(b'name="image[]"') == 2
+    assert unknown["error"]["code"] == "bad_request"
+    assert no_picture["error"]["message"] == "pick a picture to work on"
+    assert unoffered["error"]["code"] == "unsupported_operation"
+    assert len(seen) == 1
+
+
+def test_models_filter_by_picture_operation():
+    reg = _openai_picture_registry([])
+    try:
+        edit = browse_models(reg, 0, category=None, refresh=False, operation="image_edit")
+        upscale = browse_models(reg, 0, category=None, refresh=False, operation="image_upscale")
+    finally:
+        reg.close()
+    assert [m["id"] for m in edit["models"]] == ["gpt-image-2"]
+    assert upscale["models"] == []
+
+
+def test_targets_carry_picture_operation_flags_and_tool_providers():
+    reg = make_registry()
+    try:
+        body = list_targets(reg)
+    finally:
+        reg.close()
+    ideogram = body["provider_capabilities"]["ideogram"]
+    assert "mask" in ideogram["image_operations"]["image_edit"]["params"]
+    assert ideogram["video_inputs"] == ["image", "last_frame", "reference_images"]
+    assert body["provider_capabilities"]["openai"]["image_operations"]["image_edit"][
+        "max_reference_images"
+    ] == 15
+    assert ideogram["picture_operations"] and ideogram["provider_tools"]
+    assert not body["provider_capabilities"]["openai"]["provider_tools"]
+    assert not body["provider_capabilities"]["anthropic"]["picture_operations"]
+
+
+def test_tools_list_and_refuse_before_any_request():
+    reg = make_registry()
+    try:
+        none = list_tools(reg, 0)
+        refused = run_tool(reg, 0, {"target": 0, "tool": "colorways", "files": {}, "fields": {}})
+    finally:
+        reg.close()
+    assert none == {"tools": []}
+    assert refused["error"]["code"] in ("unsupported_operation", "bad_request")
 
 
 GEMINI_VIDEO_OP = "models/veo-3.1-lite-generate-preview/operations/y5lxdapaztmq"

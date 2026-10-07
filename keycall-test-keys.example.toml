@@ -71,6 +71,14 @@ provider = "typesafe"
 key = "REPLACE-ME"
 name = "typesafe-test"
 
+# Picture and video provider: --generate proves the key by drawing one
+# small picture (about a cent).
+
+[[targets]]
+provider = "ideogram"
+key = "REPLACE-ME"
+name = "ideogram-test"
+
 # Service providers: no models, so verification probes each service
 # category instead (--generate adds nothing here).
 

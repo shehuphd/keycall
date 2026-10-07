@@ -21,7 +21,7 @@ keycall verify
 ```
 
 ```
-Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram, elevenlabs, typesafe, google_maps): openai
+Provider (openai, anthropic, gemini, deepseek, perplexity, moonshot, xai, assemblyai, deepgram, elevenlabs, typesafe, ideogram, google_maps): openai
 API key:
 ✓ openai (openai): key accepted, 79 text model(s), list digest 6d356bc3f4c24389, selection rule v4
 ```
@@ -37,13 +37,13 @@ keycall verify --provider openai --source env:OPENAI_API_KEY --generate
 ✓ OPENAI_API_KEY: generated with gpt-5.6-luna (filtered position 0, provider-list position 123, 830 ms, total tokens: 18)
 ```
 
-Then open the same key in the local viewer and click around: a live dashboard, a browsable model list, and a Playground for chatting, showing a model a picture, recording a voice message in the page, holding a live voice conversation, transcribing your speech live, transcribing an audio file, attaching a PDF, offering a tool, or generating an image.
+Then open the same key in the local viewer and click around: a live dashboard, a browsable model list, and a Playground for chatting, showing a model a picture, recording a voice message in the page, holding a live voice conversation, transcribing your speech live, transcribing an audio file, attaching a PDF, offering a tool, generating or changing a picture, or running one of Ideogram's design tools.
 
 ```bash
 keycall view --provider openai --source env:OPENAI_API_KEY
 ```
 
-Swap `openai` for `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, or `xai`; an `assemblyai`, `deepgram`, or `elevenlabs` key verifies too, with `--generate` left off, since a speech provider has no text models to generate with. A `typesafe` key takes `--generate` as well: its billable proof is one minimal judgment instead of a text call. To load several keys at once, put them in a file and use `--source ./keys.toml` instead; see [`keycall-test-keys.example.toml`](keycall-test-keys.example.toml) for the format. The rest of this document is the full reference.
+Swap `openai` for `anthropic`, `gemini`, `deepseek`, `perplexity`, `moonshot`, or `xai`; an `assemblyai`, `deepgram`, or `elevenlabs` key verifies too, with `--generate` left off, since a speech provider has no text models to generate with. A `typesafe` key takes `--generate` as well: its billable proof is one minimal judgment instead of a text call. So does an `ideogram` key, whose proof is one small picture from `p-image-ideogram` (about a cent). To load several keys at once, put them in a file and use `--source ./keys.toml` instead; see [`keycall-test-keys.example.toml`](keycall-test-keys.example.toml) for the format. The rest of this document is the full reference.
 
 ## Clients
 
@@ -234,10 +234,10 @@ result = client.invoke(request)
 
 Avoid leaving a call on the model's own default: that default is often high, so a call meant to be repeatable varies run to run. Set `temperature` (and `top_p`) on purpose, low for extraction, classification, and anything feeding a stored record.
 
-Some models constrain sampling, and KeyCall raises `MODEL_NOT_SUITABLE` before any network call rather than letting the provider 400. Two forms:
+Some models constrain sampling, and KeyCall raises `MODEL_NOT_SUITABLE` before any network call rather than letting the provider 400 or silently ignore the value. Two forms:
 
 - **One value accepted**: every Moonshot Kimi model takes `temperature=1.0` and `top_p=0.95`; Anthropic's Opus 4.7+, Opus 5+, Sonnet 5+, Fable, and Mythos take `temperature=1.0` and reject any explicit `top_p`. That one value passes through, and the error names it for every other.
-- **No explicit value accepted**: OpenAI's o-series and gpt-5 family. Omit `temperature` and `top_p`.
+- **No explicit value accepted**: OpenAI's o-series and gpt-5 family, and Gemini 3.5 Flash-Lite, Gemini 3.6 and later, and the `gemini-flash-latest` and `gemini-flash-lite-latest` aliases. Omit `temperature` and `top_p`. On those Gemini models sampling is fixed at the model's defaults: Google deprecated both parameters in July 2026, the models ignored any value sent in KeyCall's tests, and Google has said upcoming models will return an error for them. Earlier Gemini models (3 Flash Preview, 3.1, 3.5 Flash) still honour both.
 
 `seed` narrows run-to-run variance for repeatable sampling. It is forwarded only to providers whose generation API defines the field, live-verified 2026-09-08:
 
@@ -253,7 +253,7 @@ Some models constrain sampling, and KeyCall raises `MODEL_NOT_SUITABLE` before a
 
 A `seed` set for a provider without one is refused before the network rather than dropped, so reproducibility a caller asked for never silently disappears. No provider guarantees determinism from a seed; it narrows variance rather than removing it, which every provider that has the field states.
 
-The evidence lives in the bundled catalog per provider, with the date each claim was last checked against the live API, and two release probes re-verify that the seed-supporting providers still accept a seed and the pinned models still reject a non-default temperature. A provider that merely announces a deprecation isn't gated: Gemini announced `temperature` and `top_p` as deprecated in July 2026 and still accepts both, so KeyCall passes them through.
+The evidence lives in the bundled catalog per provider, with the date each claim was last checked against the live API, and release probes re-verify that the seed-supporting providers still accept a seed, the pinned models still reject a non-default temperature, and the newest Gemini Flash still ignores temperature while Gemini 3.5 Flash still honours it.
 
 ## Streaming
 
@@ -921,8 +921,10 @@ Both providers batch: pass every string in one call rather than looping, which i
 
 ```python
 result = client.generate_image(
-    model="gpt-image-1",
+    model="gpt-image-2",
     prompt="A flat illustration of a blue circle on a white background",
+    size="16:9",       # optional: an aspect ratio, or pixels like "1280x768"
+    quality="low",     # optional, in the provider's own words
 )
 
 image = result.parts[0]
@@ -935,13 +937,80 @@ Path("out.png").write_bytes(base64.b64decode(image.base64_data))
 | OpenAI | yes | `gpt-image-1`, `gpt-image-2` | base64 PNG from `/images/generations` |
 | Gemini | yes | `gemini-3.1-flash-image` | base64 JPEG, from the ordinary content endpoint |
 | xAI | yes | `grok-imagine-image` | base64 JPEG from `/images/generations` |
+| Ideogram | yes | `ideogram-4-5`, `p-image-ideogram`, and hosted models such as `gpt-image-2` and `nano-banana-pro` | PNG, downloaded from the provider's signed link |
 | Anthropic, DeepSeek, Perplexity, Moonshot | no | | |
 
-- **The request is a model and a prompt, nothing else.** OpenAI accepts a size and a count; Gemini's image models accept neither, and a parameter that silently does nothing on half the providers is worse than no parameter.
-- **`media_type` reports what the provider produced**, so the bytes you write to disk carry the right extension. It is read from the response, never assumed.
-- **A response with no image raises** rather than returning an empty result. Gemini answers refusals and clarifying questions as text instead of a picture, so the error repeats what the model said.
-- Generation is slow: these calls take tens of seconds, and the default 60-second read timeout can be tight. Pass a larger `read_timeout` on the client for image work.
+The optional inputs, and which providers honour them:
+
+| Input | OpenAI | Gemini | xAI | Ideogram |
+|---|---|---|---|---|
+| `size` | pixels; a ratio is converted | ratio only | ratio only | per model: ratio, pixels, or both |
+| `quality` | `low`, `medium`, `high`, `auto` | not taken | `low`, `medium` (the API also names `high` and `auto`) | per model, for example `low`, `medium`, `high` on `ideogram-4-5` |
+| `seed` | not taken | sent | not taken | sent |
+
+- **An input the provider or model wouldn't honour refuses before the network**, naming the providers that do. A provider that ignores an unknown field without saying so would otherwise return a picture that silently skipped what you asked for.
+- **`size` takes a ratio (`"16:9"`) or pixels (`"1280x768"`).** OpenAI takes pixels only, so KeyCall converts a ratio under each model family's rules: the `gpt-image-1` family has three sizes (`1:1`, `3:2`, `2:3`), while `gpt-image-2` takes any size whose sides are multiples of 16, up to 3840 on the long edge and 3:1 at most, so `"16:9"` becomes 1536x864. Gemini and xAI take a ratio only and refuse pixels.
+- **A seed doesn't reproduce a picture.** KeyCall sends `seed` where the provider documents it (Gemini, Ideogram) and refuses it where the provider rejects it (OpenAI) or doesn't document it (xAI). In live tests on 2026-10-02, two pictures from the same seed and prompt still differed on every provider that takes one.
+- **`provider_options` sends extra request fields as written**, for a provider setting KeyCall doesn't name (`{"background": "transparent"}` on OpenAI). A field KeyCall already sets from its own parameter refuses, so a setting is never written two ways in one request. Code that uses it is tied to that provider.
+- **`media_type` reports what the provider produced**, read from the bytes, so the file you write carries the right extension.
+- **A response with no image raises** rather than returning an empty result. Gemini answers refusals and clarifying questions as text instead of a picture, so the error repeats what the model said, and a picture Ideogram's safety review withholds is reported in a warning, or as an error when it withholds every picture.
+- Generation is slow: these calls take tens of seconds, and the default 60-second read timeout can be tight. Pass a larger `read_timeout` on the client for image work. Ideogram's hosted models answer with a job that KeyCall polls for up to ten minutes before raising `TIMEOUT`.
 - Image *generation* is separate from image *input*. Sending a picture to a model is `ImageInput` on `generate_text()`, described above.
+
+## Changing pictures
+
+Each change to an existing picture is its own method, and each returns the same `InvocationResult` with `ImageOutput` parts that `generate_image()` does:
+
+```python
+from keycall import ImageInput
+
+result = client.edit_image(
+    model="gpt-image-1-mini",
+    prompt="Make the sky stormy",
+    image=ImageInput(data=photo_bytes),
+    mask=ImageInput(data=mask_png),                  # optional: white = change, black = keep
+    reference_images=[ImageInput(data=style_bytes)],  # optional: guides the edit, never changed
+    quality="low",
+)
+```
+
+| Method | What it does | Providers |
+|---|---|---|
+| `edit_image()` | Changes a picture as the prompt describes | OpenAI, Gemini, xAI, Ideogram |
+| `upscale_image()` | Enlarges it; `factor` is how many times larger each side becomes (2, 4, or 8 on Ideogram) | Ideogram |
+| `expand_image()` | Extends it to a new `size`, generating what lies beyond its edges | Ideogram |
+| `remove_background()` | Cuts out the subject, returning a PNG with a transparent background | Ideogram |
+| `replace_background()` | Keeps the subject and generates a new background from the prompt | Ideogram |
+| `erase_object()` | Removes what the mask marks and fills the space | Ideogram |
+| `describe_image()` | Describes it in words, in `result.text` | Ideogram |
+| `layerize_image()` | Splits a design into the design itself (`label="design"`), the same picture with its text removed (`label="base"`), and one `TextBlockOutput` per block of text with its position and best-matching font | Ideogram |
+
+- **One mask convention everywhere.** A mask is a PNG the same size as the picture, white over the area to change and black over the area to keep, which is the convention most image providers use. KeyCall redraws it for a provider whose own convention differs: black for the edit area on Ideogram, fully transparent on OpenAI. A mask that isn't an 8-bit PNG, or that marks all or nothing, refuses before the network; to change the whole picture, send no mask.
+- **Edit inputs vary by provider.** OpenAI takes a mask and up to 15 reference pictures; Gemini up to 13 and no mask; xAI up to 4 and no mask; Ideogram's limits are per model (`ideogram-4-5` takes four reference pictures, or three with a mask). `quality`, `seed`, and `size` follow the generation table above.
+- **Ideogram's models each serve their own operations.** `list_models()` lists them all, with each model's operations in `Model.capabilities`, and a model asked for an operation it doesn't serve refuses naming the models that do: the `topaz-*` models only enlarge, and `ideogram-1` removes backgrounds and erases.
+- **An Ideogram key stops working when the account balance reaches zero.** Ideogram pauses every key on the account until credits are added, and a paused key gets the same 401 as a wrong one, so `INVALID_API_KEY` from Ideogram names both causes; topping up unpauses the same key.
+- Pictures go as bytes on every provider. `ImageInput(url=...)` is refused on Ideogram and Gemini, which don't fetch links.
+- `AsyncKeyCall` has every method, awaited.
+
+## Provider tools
+
+Some providers offer named endpoints that don't map onto a shared operation, such as Ideogram's ad resizer and colorways. `list_tools()` names each one and the inputs it takes, from the catalog, and `run_tool()` runs one:
+
+```python
+for tool in client.list_tools():
+    print(tool.name, tool.required, dict(tool.files), tool.fields)
+
+result = client.run_tool(
+    tool="sketch-to-render",
+    inputs={"sketch_image": ImageInput(data=sketch_png), "instruction": "A ceramic teapot"},
+    timeout=300.0,
+)
+```
+
+- **Ideogram's six tools:** `ad-resizer`, `ad-variations`, `colorways`, `material-swap`, `model-pose-variants`, and `sketch-to-render`. A picture input takes an `ImageInput`, or a list where the tool takes several (`colorways` takes up to four `masks`, paired by position with its `colors`).
+- **Inputs are checked against the catalog before the request:** a missing required input, an input the tool doesn't take, or too many pictures refuses, naming what the tool takes.
+- **A tool runs as a job.** `start_tool()` returns a `ToolJob` handle, `check_tool()` polls it, and `fetch_tool()` downloads the pictures; `run_tool()` does all three against your `timeout`, and running out raises `ToolJobTimeout` carrying the still-valid job.
+- Providers with no tools return an empty tuple from `list_tools()`, and `start_tool()` refuses there.
 
 ## Speech generation
 
@@ -1006,6 +1075,18 @@ clip.url                       # the provider's own download URL, while it lives
 Path("out.mp4").write_bytes(base64.b64decode(clip.base64_data))
 ```
 
+Start from pictures where the provider takes them: `image` is the first frame, `last_frame` the frame the video ends on (it needs a first frame), and `reference_images` are people or things the video should show (instead of a first frame):
+
+```python
+result = client.generate_video(
+    model="kling-3-standard",
+    prompt="The light slowly fades to dusk",
+    image=ImageInput(data=first_png),
+    last_frame=ImageInput(data=last_png),
+    timeout=900.0,
+)
+```
+
 Or drive the three phases yourself — the handle is plain data you can store and poll later, even from another process:
 
 ```python
@@ -1019,11 +1100,13 @@ if job.status == "succeeded":
 |---|---|---|---|
 | Gemini | yes | `veo-3.1-lite-generate-preview`, `veo-3.1-fast-generate-preview` | MP4 from Gemini's own host, kept about 2 days |
 | xAI | yes | `grok-imagine-video-1.5` | MP4 from `vidgen.x.ai`, as a temporary unsigned URL |
+| Ideogram | yes, from text, a first frame (with an optional last frame), or reference pictures | `kling-3-standard`, `minimax-h3`, `seedance-2`, `seedance-2-5` | MP4 from a signed `ideogram.ai` link |
 | OpenAI, Anthropic, DeepSeek, Perplexity, Moonshot | no | | |
 
 - **`timeout` on `generate_video()` has no default.** Only you know how long is too long for your caller. When the budget runs out KeyCall raises `VideoJobTimeout`, whose `.job` is the still-valid handle: the render keeps going provider-side, and `check_video(error.job)` picks up where the wait left off. You never lose a render you paid to start.
 - **`job.status` is a closed set** — `running`, `succeeded`, `failed` — and `job.provider_status` carries the provider's own word verbatim (xAI's `expired` arrives as `failed` with `provider_status="expired"`). A failed render keeps the provider's message in `job.error_message`.
 - **Job failures are outcomes, not HTTP errors.** Veo under load refuses renders with "high demand" messages inside a successful poll response; KeyCall reports these as failed jobs with the provider's wording, and never silently re-renders — a retry would be a second billable job.
+- **Picture inputs are Ideogram's alone so far.** `image`, `last_frame`, and `reference_images` refuse on Gemini and xAI before the network, naming Ideogram. Each Ideogram model takes its own set: `kling-3-standard` takes a first and last frame but no reference pictures, while `minimax-h3` and both Seedance models take all three. Ideogram prices per clip rather than per second (quoted 2026-10-02 at $0.42 for `kling-3-standard`, $0.65 for `minimax-h3`, $2.40 for `seedance-2`, and $6.93 for `seedance-2-5` at each model's default length), and spells `aspect_ratio` `16x9`, which KeyCall converts from `16:9`.
 - **Downloads are pinned.** The URL a job reports is only followed to hosts live-verified for that provider, the credential is only ever sent to the provider's own API host, and xAI's download URL works with no credential at all — treat that URL as a secret, since anyone holding it can fetch the file while it lives.
 
 ## Batch generation
@@ -1161,7 +1244,7 @@ except KeyCallError as error:
 | `MODEL_RETIRED` | The catalog records this model as shut down by its provider; refused before the network, with the retirement date and replacement in the message where the provider publishes them (see [Retired models](#retired-models)) | no |
 | `MODEL_NOT_SUITABLE` | Model can't serve this request: sampling parameters it pins or refuses, or a feature the provider has that this model lacks (web search on an older model) | no |
 | `UNSUPPORTED_PROVIDER` | Unknown name or invalid custom target | no |
-| `UNSUPPORTED_OPERATION` | Request shape not supported in this version, or a refused configuration (a proxy variable set for a guarded custom target, an unsupported cache TTL) | no |
+| `UNSUPPORTED_OPERATION` | Request shape not supported in this version, or a refused configuration (a proxy variable set for a guarded custom target, an unsupported cache TTL, a picture input the provider or model wouldn't honour, an unreadable mask) | no |
 | `CATALOG_UPDATE_REQUIRED` | Bundled catalog too old for this client | no |
 
 Error messages are sanitized: no credentials, no raw request bodies, no unsanitized provider text.
@@ -1282,7 +1365,7 @@ Each tab has its own URL (`/models`, `/playground`, `/verify`, `/traces`; `/` is
 
 - **Dashboard** — every loaded target; click one for a live key check and its model count, or press **Test all keys** to run the same check on every row at once.
 - **Models** — browse a target's full model list, filtered by category (text, image, embedding, and so on), with the classification source. `Refresh` bypasses the cache.
-- **Playground** — pick a target and model, write a prompt (optional system prompt), toggle web search or tool calling, attach a picture, a recording (from a file, or the microphone button in the message box, which encodes to 16 kHz mono WAV in the browser), or a document, and send it to the provider. Results show text, timing, token usage, finish reason, and rendered citation links. The conversation carries across turns: each settled exchange is replayed with the next request, so follow-up questions keep their context, and switching the key or model mid-conversation hands the whole exchange to the new model. New chat clears the transcript and starts over. Attachments belong to the turn that sent them and are not replayed on later turns (each replay would be billed again); a short label stands in for the media. An attachment kind the selected key can't send is disabled with a line naming which of your keys to use instead, read from the same catalog the adapters gate on. Switch the task to **Make a picture** to call an image model instead, or **Make a video** for a video model (Gemini Veo, xAI Grok Imagine): a render runs far longer than a picture, from under a minute to over ten, and the reply bubble shows a running elapsed-time clock while it waits. A Reasoning effort select sends `reasoning_effort`, gated per key the same way as the other Extras. A Cache standing instructions toggle sends them with `cacheable=True`, gated per key the same way (on for Anthropic and OpenAI, disabled with an inline note everywhere else). The reply budget field starts at a suggestion computed from what's selected: reasoning effort, web search, tool offering, and attachments all tend to spend more tokens than a bare reply, so the suggestion rises with them and drops back to a low floor when nothing token-intensive is on. Typing a value in by hand replaces the suggestion for the rest of the conversation; New chat resumes suggesting. A Timeout slider sets how many seconds the viewer waits on a provider before giving up (60 to 300, default 180); pictures routinely need more than a text reply. The task drives the Key select: picking a task narrows the list to keys whose own model list has at least one model for it, so a key that can't serve the task is never offered. Switch the task to **Have a voice conversation** for a live session on a realtime-capable key (OpenAI, xAI, Gemini): the viewer's server bridges a WebSocket in the browser to a `realtime()` session, so tapping the microphone once starts streaming caller audio and a second tap ends the session; the model's reply plays back as it arrives either way. Standing instructions above become the session's system prompt, set once when the session starts; ending the session or leaving voice mode closes the connection. Switch the task to **Transcribe speech live** for live speech-to-text on a streaming-transcription key (AssemblyAI, Deepgram, ElevenLabs): tap the microphone and talk, interim words appear as they are recognized and firm up into final bubbles (with the provider's confidence when it reports one), and tapping again finishes the session and shows the seconds of audio billed, when the provider reports them. Switch the task to **Transcribe a recording** for file speech-to-text on a transcription key (OpenAI, AssemblyAI, Deepgram, ElevenLabs): pick an audio file, record one, or paste a link, press Transcribe, and the finished text arrives in one reply with the seconds of audio billed when the provider reports them. Switch the task to **Dictate a short note** for one-shot dictation on an AssemblyAI key: tap the microphone and say a note (up to two minutes), or pick a WAV file, press Dictate, and the reply shows the cleaned rewrite with the words as spoken beneath it, plus the confidence and the seconds of audio billed. There is no model to pick; two optional fields on the left describe what the note is about and list words to listen for, and both steer recognition. Switch the task to **Judge a situation** for typed judgments on a TypeSafe key: describe the situation, add up to ten questions (each one yes/no, pick-one, or rate-on-a-scale, with its own options or scale where the kind takes one), and press Judge. Every question is asked in one call, and the reply shows each answer as a row per option with a bar and its probability, the pick in bold, plus the resolved model that answered and the tokens spent. A scale answer leads with its most likely level, and says it falls between two levels only when they're neighbours in the list and share the odds. The situation and questions fold away under one heading, survive a reload, and come back when the judgment is reopened from History. Switch the task to **Speak text** for speech generation on a speaking key (OpenAI, Gemini, ElevenLabs): type the words, pick a voice where one applies (the Voice select lists the key's voices, filtered to the ones the selected model takes), and the reply bubble is a playable audio clip with a save link. A conversation is saved to the History pane as it grows — text tasks save each settled exchange, a transcription saves each finalized utterance — titled from the first prompt or the first recognized words, and clicking a saved conversation restores its transcript, key, and model. The chevron beside the History heading folds the pane away, and the viewer remembers that choice.
+- **Playground** — pick a target and model, write a prompt (optional system prompt), toggle web search or tool calling, attach a picture, a recording (from a file, or the microphone button in the message box, which encodes to 16 kHz mono WAV in the browser), or a document, and send it to the provider. Results show text, timing, token usage, finish reason, and rendered citation links. The conversation carries across turns: each settled exchange is replayed with the next request, so follow-up questions keep their context, and switching the key or model mid-conversation hands the whole exchange to the new model. New chat clears the transcript and starts over. Attachments belong to the turn that sent them and are not replayed on later turns (each replay would be billed again); a short label stands in for the media. An attachment kind the selected key can't send is disabled with a line naming which of your keys to use instead, read from the same catalog the adapters gate on. Switch the task to **Make a picture** to call an image model instead, with optional Shape or size, Quality, Seed, and Extra provider fields controls, each disabled with the reason on a key whose provider wouldn't honour it. **Change a picture** works on a picture you pick below the transcript: choose what to do (edit it from a description, enlarge it, extend its edges, remove or replace the background, erase part of it, describe it, or separate its text into layers), add a mask or reference pictures where the step takes them, and press Send; the Key and Model lists offer only keys and models that can do the chosen step. **Run a design tool** lists the selected key's provider tools (Ideogram's ad resizer, colorways, and the rest), with a field for each input and Run tool enabled once the required ones are filled. **Make a video** calls a video model (Gemini Veo, xAI Grok Imagine, Ideogram's hosted models), optionally from a first frame, last frame, or reference pictures on a key that takes them: a render runs far longer than a picture, from under a minute to over ten, and the reply bubble shows a running elapsed-time clock while it waits. A Reasoning effort select sends `reasoning_effort`, gated per key the same way as the other Extras. A Cache standing instructions toggle sends them with `cacheable=True`, gated per key the same way (on for Anthropic and OpenAI, disabled with an inline note everywhere else). The reply budget field starts at a suggestion computed from what's selected: reasoning effort, web search, tool offering, and attachments all tend to spend more tokens than a bare reply, so the suggestion rises with them and drops back to a low floor when nothing token-intensive is on. Typing a value in by hand replaces the suggestion for the rest of the conversation; New chat resumes suggesting. A Timeout slider sets how many seconds the viewer waits on a provider before giving up (60 to 300, default 180); pictures routinely need more than a text reply. The task drives the Key select: picking a task narrows the list to keys whose own model list has at least one model for it, so a key that can't serve the task is never offered. Switch the task to **Have a voice conversation** for a live session on a realtime-capable key (OpenAI, xAI, Gemini): the viewer's server bridges a WebSocket in the browser to a `realtime()` session, so tapping the microphone once starts streaming caller audio and a second tap ends the session; the model's reply plays back as it arrives either way. Standing instructions above become the session's system prompt, set once when the session starts; ending the session or leaving voice mode closes the connection. Switch the task to **Transcribe speech live** for live speech-to-text on a streaming-transcription key (AssemblyAI, Deepgram, ElevenLabs): tap the microphone and talk, interim words appear as they are recognized and firm up into final bubbles (with the provider's confidence when it reports one), and tapping again finishes the session and shows the seconds of audio billed, when the provider reports them. Switch the task to **Transcribe a recording** for file speech-to-text on a transcription key (OpenAI, AssemblyAI, Deepgram, ElevenLabs): pick an audio file, record one, or paste a link, press Transcribe, and the finished text arrives in one reply with the seconds of audio billed when the provider reports them. Switch the task to **Dictate a short note** for one-shot dictation on an AssemblyAI key: tap the microphone and say a note (up to two minutes), or pick a WAV file, press Dictate, and the reply shows the cleaned rewrite with the words as spoken beneath it, plus the confidence and the seconds of audio billed. There is no model to pick; two optional fields on the left describe what the note is about and list words to listen for, and both steer recognition. Switch the task to **Judge a situation** for typed judgments on a TypeSafe key: describe the situation, add up to ten questions (each one yes/no, pick-one, or rate-on-a-scale, with its own options or scale where the kind takes one), and press Judge. Every question is asked in one call, and the reply shows each answer as a row per option with a bar and its probability, the pick in bold, plus the resolved model that answered and the tokens spent. A scale answer leads with its most likely level, and says it falls between two levels only when they're neighbours in the list and share the odds. The situation and questions fold away under one heading, survive a reload, and come back when the judgment is reopened from History. Switch the task to **Speak text** for speech generation on a speaking key (OpenAI, Gemini, ElevenLabs): type the words, pick a voice where one applies (the Voice select lists the key's voices, filtered to the ones the selected model takes), and the reply bubble is a playable audio clip with a save link. A conversation is saved to the History pane as it grows — text tasks save each settled exchange, a transcription saves each finalized utterance — titled from the first prompt or the first recognized words, and clicking a saved conversation restores its transcript, key, and model. The chevron beside the History heading folds the pane away, and the viewer remembers that choice.
 - **Verify** — run the same walk as `keycall verify` (optionally with generation) across every target and read the per-model attempt report.
 - **Traces** — every request this viewer run has made, newest first: which key and model, how long it took, and how it ended. When a button seems slow or silent, the answer is here — a reasoning model can think for most of a minute before its first visible token, and the trace shows that time. A search box filters rows as you type, and clicking a column header sorts by it, in either direction. Prompts and replies are never recorded, only timing and outcomes, and the log lives in the server process's memory for the run; Clear traces wipes it without a restart.
 
@@ -1292,7 +1375,7 @@ Security properties, in brief: a fresh auth token is generated per run, required
 
 ## Tracing (optional)
 
-If the host application configures [TraceAct](https://github.com/traceact/traceact), KeyCall emits `keycall.list_models` and `keycall.text_generation` spans with safe fields only: provider, model IDs, counts, status, durations, token totals. Text-generation model events carry `provider`, `tokens_in`, and `tokens_out` as event fields, the convention TraceAct's cost estimator prices from. Prompts, responses, and credentials are never captured. On its own spans, KeyCall pins every capture flag off (function inputs, event inputs, outputs) and both redaction layers on (field-name and value-pattern, with the `api_keys`/`ai_prompts` presets), regardless of the host's global TraceAct settings.
+If the host application configures [TraceAct](https://github.com/traceact/traceact), KeyCall emits `keycall.list_models` and `keycall.text_generation` spans with safe fields only: provider, model IDs, counts, status, durations, token totals. Text-generation model events carry `provider`, `tokens_in`, and `tokens_out` as event fields, the convention TraceAct's cost estimator prices from, plus `tokens_cached_in`, `tokens_cache_write_in`, and `tokens_cache_write_1h_in` where the provider reports cache reads and writes: disjoint parts of `tokens_in`, with a write the provider doesn't split by lifetime counted at the standard rate. TraceAct 1.6.0 prices the cache fields; earlier releases keep them as plain event fields. Picture and provider-tool calls emit their own spans (`keycall.image_generation`, `keycall.image_edit`, `keycall.provider_tool.start`, and so on) with the model and timing, never the pictures. Prompts, responses, and credentials are never captured. On its own spans, KeyCall pins every capture flag off (function inputs, event inputs, outputs) and both redaction layers on (field-name and value-pattern, with the `api_keys`/`ai_prompts` presets), regardless of the host's global TraceAct settings.
 
 ```python
 import traceact

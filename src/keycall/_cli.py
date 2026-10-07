@@ -256,6 +256,8 @@ def _render(result: VerifyResult) -> list[str]:
         # A judgment provider lists decision models and no text ones;
         # counting "0 text model(s)" at it would read as a fault.
         model_count = f"{result.decision_model_count} decision model(s)"
+    elif result.picture_model_count is not None:
+        model_count = f"{result.picture_model_count} picture model(s)"
     else:
         model_count = f"{result.text_model_count} text model(s)"
     lines.append(
@@ -270,16 +272,18 @@ def _render(result: VerifyResult) -> list[str]:
         lines.append(f"✗ {result.label}: no text models available to generate with")
         return lines
 
-    verb = "judged" if result.outcome == "judged" else "generated"
+    verb = {"judged": "judged", "drew": "drew a picture"}.get(result.outcome, "generated")
     for attempt in result.attempts:
         if attempt.ok:
             skipped = f", {attempt.position} advertised model(s) skipped" if attempt.position else ""
             usage = attempt.total_tokens if attempt.total_tokens is not None else "unreported"
+            # A picture is billed per image, not in tokens.
+            spend = "" if result.outcome == "drew" else f", total tokens: {usage}"
             lines.append(
                 f"✓ {result.label}: {verb} with {attempt.model_id} "
                 f"(filtered position {attempt.position}, "
                 f"provider-list position {attempt.raw_position}{skipped}, "
-                f"{attempt.round_trip_duration_ms:.0f} ms, total tokens: {usage})"
+                f"{attempt.round_trip_duration_ms:.0f} ms{spend})"
             )
         else:
             lines.append(
@@ -290,10 +294,14 @@ def _render(result: VerifyResult) -> list[str]:
 
     if result.outcome == "credential_rejected":
         lines.append(f"✗ {result.label}: credential rejected")
-    advertised = (
-        result.decision_model_count
-        if result.decision_model_count is not None
-        else result.text_model_count
+    advertised = next(
+        count
+        for count in (
+            result.decision_model_count,
+            result.picture_model_count,
+            result.text_model_count,
+        )
+        if count is not None
     )
     if result.outcome == "rate_limited_unverified":
         tried = len(result.attempts)

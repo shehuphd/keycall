@@ -1631,6 +1631,93 @@ def test_live_seed_and_temperature_support_still_holds():
     print("seed and temperature support current on every probed provider")
 
 
+def test_live_gemini_sampling_still_fixed_on_newer_models():
+    """Drift probe for the Gemini sampling_constraints entries (evidence
+    2026-10-07), probed raw. The newest listed Gemini model the catalog
+    pattern covers is asked for a random noun six times at temperature
+    2.0: a model that honours temperature spreads across five or six
+    answers there (3.5 Flash gave five of five), while the affected
+    models gave two or three. A 400 means the model now rejects the
+    parameter, which the gate already covers. The control, gemini-3.5-flash,
+    must still honour temperature 0 with one repeated answer, so the gate
+    hasn't become too narrow either."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import re
+
+    import httpx
+
+    from keycall._registry import resolve_provider
+
+    targets, _ = load_targets(source)
+    gem = next((t for t in targets if t.provider == "gemini"), None)
+    if gem is None:
+        pytest.skip("no gemini target in the live source")
+    patterns = [c.pattern for c in resolve_provider("gemini").capabilities.sampling_constraints]
+    base = "https://generativelanguage.googleapis.com/v1beta/models"
+    headers = {"x-goog-api-key": gem.key}
+    prompt = "Name one random English noun. Reply with the single word only."
+
+    def ask(client, model, temperature):
+        r = client.post(
+            f"{base}/{model}:generateContent",
+            headers=headers,
+            json={
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "maxOutputTokens": 1024,
+                    "temperature": temperature,
+                    "thinkingConfig": {"thinkingLevel": "LOW"},
+                },
+            },
+        )
+        if r.status_code != 200:
+            return r.status_code, r.text[:200]
+        parts = r.json()["candidates"][0]["content"]["parts"]
+        return 200, parts[-1]["text"].strip().lower().strip(".")
+
+    with httpx.Client(timeout=180) as client:
+        listing = client.get(base, params={"pageSize": 1000}, headers=headers)
+        listing.raise_for_status()
+        ids = [
+            m["name"].removeprefix("models/")
+            for m in listing.json()["models"]
+            if "generateContent" in m.get("supportedGenerationMethods", [])
+            and "thinking" in m and m.get("thinking")
+        ]
+        covered = sorted(
+            (i for i in ids if re.fullmatch(r"gemini-\d+\.\d+-flash", i)
+             and any(re.match(p, i) for p in patterns)),
+            key=lambda i: tuple(int(n) for n in re.findall(r"\d+", i)),
+        )
+        if not covered:
+            pytest.skip("no listed Gemini Flash model falls under the sampling_constraints patterns")
+        model = covered[-1]
+        answers = [ask(client, model, 2.0) for _ in range(6)]
+        if all(status == 400 for status, _ in answers):
+            print(f"{model} now rejects an explicit temperature (400); the gate already refuses it")
+        else:
+            words = {text for status, text in answers if status == 200}
+            assert len(words) < 5, (
+                f"{model} gave {len(words)} different answers in six at temperature 2.0 "
+                f"({sorted(words)}): it may honour temperature again. Re-probe, then narrow the "
+                "gemini sampling_constraints patterns in the catalog, USAGE's sampling notes, "
+                "and this probe"
+            )
+            print(f"{model}: {len(words)} distinct answers in six at temperature 2.0, still fixed")
+
+        if "gemini-3.5-flash" in ids:
+            control = [ask(client, "gemini-3.5-flash", 0.0) for _ in range(4)]
+            words = {text for status, text in control if status == 200}
+            assert all(status == 200 for status, _ in control) and len(words) == 1, (
+                f"gemini-3.5-flash no longer repeats itself at temperature 0 ({control}): "
+                "sampling may be fixed there too. Re-probe, then widen the gemini "
+                "sampling_constraints patterns, USAGE's sampling notes, and this probe"
+            )
+            print("gemini-3.5-flash still honours temperature 0")
+
+
 def test_live_grok_voice_dialect_evidence_still_holds():
     """Capability-drift probe for the three pieces of live evidence the
     xAI realtime support rests on (captured 2026-08-14). Probed raw, not
@@ -2826,6 +2913,8 @@ def test_live_image_generation():
         "openai": "gpt-image-1",
         "gemini": "gemini-3.1-flash-image",
         "xai": "grok-imagine-image",
+        # The cheapest picture Ideogram makes (under a cent, 2026-10-02).
+        "ideogram": "p-image-ideogram",
     }
     signatures = ((b"\x89PNG\r\n\x1a\n", "png"), (b"\xff\xd8\xff", "jpeg"),
                   (b"RIFF", "webp"))
@@ -2941,7 +3030,10 @@ def test_live_video_generation():
     supporting = providers_with("video_generation")
     checked = []
     for target in targets:
-        if target.provider not in supporting:
+        # Ideogram's hosted video models are priced per clip, not per
+        # second, and its picture inputs need their own renders, so it has
+        # its own test below rather than a guess at its cheapest model.
+        if target.provider not in supporting or target.provider == "ideogram":
             continue
         client = KeyCall(
             provider=target.provider,
@@ -2977,6 +3069,287 @@ def test_live_video_generation():
         finally:
             client.close()
     assert checked, "no video-capable target in the live source"
+
+
+def _solid_png(width, height, rgb):
+    """A plain RGB PNG, built here so the live tests carry no picture
+    fixtures."""
+    import struct
+    import zlib
+
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    row = b"\x00" + bytes(rgb) * width
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(row * height))
+        + chunk(b"IEND", b"")
+    )
+
+
+def _ideogram_target(source):
+    targets, _ = load_targets(source)
+    target = next((t for t in targets if t.provider == "ideogram"), None)
+    if target is None:
+        pytest.skip("no ideogram target in the live source")
+    return target
+
+
+_PICTURE_SIGNATURES = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"),
+                       (b"RIFF", "image/webp"))
+
+
+def _assert_picture(result, label):
+    """Every picture part decodes to the format its media_type names."""
+    import base64
+
+    from keycall import ImageOutput
+
+    pictures = [part for part in result.parts if isinstance(part, ImageOutput)]
+    assert pictures, f"{label}: no picture returned"
+    for picture in pictures:
+        raw = base64.b64decode(picture.base64_data or "")
+        kind = next((media for magic, media in _PICTURE_SIGNATURES if raw.startswith(magic)), None)
+        assert kind == picture.media_type, (
+            f"{label}: media_type {picture.media_type!r} but the bytes start {raw[:8]!r}"
+        )
+    return pictures
+
+
+def _corner_mask(width, height):
+    """A greyscale PNG mask, white (change) over the top-left quarter."""
+    import struct
+    import zlib
+
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    rows = b"".join(
+        b"\x00" + bytes(255 if (x < width // 2 and y < height // 2) else 0 for x in range(width))
+        for y in range(height)
+    )
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+
+
+def test_live_picture_edits_every_supporting_target():
+    """edit_image() on every provider that edits, each over its own wire:
+    OpenAI multipart with a mask redrawn transparent, Gemini inline parts,
+    xAI JSON with data URLs, and Ideogram's precise edit with a mask
+    redrawn black. Each sends a reference picture too where the provider
+    takes one, at the lowest quality offered. About 10 cents a run
+    (2026-10-02)."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    from keycall import ImageInput, KeyCall
+    from keycall._registry import providers_with_image_operation
+
+    picture = ImageInput(data=_solid_png(512, 512, (40, 90, 200)))
+    reference = ImageInput(data=_solid_png(512, 512, (220, 120, 30)))
+    mask = ImageInput(data=_corner_mask(512, 512))
+    plans = {
+        "openai": {"model": "gpt-image-1-mini", "quality": "low", "mask": mask,
+                   "reference_images": [reference]},
+        "gemini": {"model": "gemini-3.1-flash-lite-image", "reference_images": [reference]},
+        "xai": {"model": "grok-imagine-image", "quality": "low", "reference_images": [reference]},
+        "ideogram": {"model": "ideogram-4-5", "quality": "very_low", "mask": mask,
+                     "reference_images": [reference]},
+    }
+    targets, _ = load_targets(source)
+    supporting = providers_with_image_operation("image_edit")
+    checked = []
+    for target in targets:
+        if target.provider not in supporting or target.provider in checked:
+            continue
+        plan = dict(plans[target.provider])
+        model = plan.pop("model")
+        client = KeyCall(
+            provider=target.provider,
+            api_key=target.key,
+            protocol=target.protocol,
+            base_url=target.base_url,
+            read_timeout=180.0,
+        )
+        try:
+            result = client.edit_image(
+                model=model,
+                prompt="Paint a small yellow star in the top-left corner",
+                image=picture,
+                **plan,
+            )
+            _assert_picture(result, f"{target.display_name} {model}")
+            print(f"{target.display_name}: {model} edited ({', '.join(plan)})")
+            _spend.record(target.provider, "image_edit", images=1)
+            checked.append(target.provider)
+        finally:
+            client.close()
+    assert checked, "no picture-editing target in the live source"
+
+
+def test_live_ideogram_picture_operations():
+    """Every Ideogram picture operation once, on a poster with a line of
+    text drawn first, plus the ad resizer tool. The cheapest model for
+    each; about 40 cents a run at the dry-run prices of 2026-10-02."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import base64
+
+    from keycall import ImageInput, KeyCall, TextBlockOutput
+
+    target = _ideogram_target(source)
+    client = KeyCall(provider="ideogram", api_key=target.key, read_timeout=180.0)
+    try:
+        drawn = client.generate_image(
+            model="p-image-ideogram",
+            prompt='A plain poster with the single word "SALE" in large black letters on a pale background',
+            size="1:1",
+            quality="very_low",
+            seed=7,
+        )
+        (poster_part,) = _assert_picture(drawn, "p-image-ideogram")[:1]
+        poster = ImageInput(data=base64.b64decode(poster_part.base64_data))
+        width, height = _png_size(base64.b64decode(poster_part.base64_data))
+        mask = ImageInput(data=_corner_mask(width, height))
+        _spend.record("ideogram", "image_generate", images=1)
+
+        described = client.describe_image(model="ideogram-4", image=poster)
+        assert described.text.strip(), "describe_image returned no text"
+        print(f"describe: {described.text[:80]!r}")
+
+        steps = [
+            ("remove_background", {"model": "ideogram-1"}),
+            ("erase_object", {"model": "ideogram-1", "mask": mask}),
+            ("upscale_image", {"model": "topaz-standard-2", "factor": 2}),
+            ("expand_image", {"model": "ideogram-3", "size": "1280x800"}),
+            ("replace_background", {"model": "ideogram-3", "prompt": "A quiet beach at dawn"}),
+        ]
+        for method, inputs in steps:
+            result = getattr(client, method)(image=poster, **inputs)
+            _assert_picture(result, f"{method} on {inputs['model']}")
+            print(f"{method}: {inputs['model']} ok")
+            _spend.record("ideogram", method, images=1)
+
+        layered = client.layerize_image(model="ideogram-3", image=poster)
+        labels = [p.label for p in _assert_picture(layered, "layerize_image")]
+        assert "design" in labels and "base" in labels, f"layerize labels were {labels}"
+        blocks = [p for p in layered.parts if isinstance(p, TextBlockOutput)]
+        assert blocks, "layerize_image found no text block on a poster that reads SALE"
+        print(f"layerize: {labels}, text blocks {[b.text for b in blocks]}")
+        _spend.record("ideogram", "layerize_image", images=2)
+
+        resized = client.run_tool(
+            tool="ad-resizer",
+            inputs={"image": poster, "resolution": "1080x1080"},
+            timeout=600.0,
+        )
+        _assert_picture(resized, "ad-resizer")
+        print("ad-resizer: ok")
+        _spend.record("ideogram", "provider_tool", images=1)
+    finally:
+        client.close()
+
+
+def _png_size(data):
+    import struct
+
+    if data.startswith(b"\x89PNG"):
+        return struct.unpack(">II", data[16:24])
+    raise AssertionError(f"expected a PNG poster, got bytes starting {data[:8]!r}")
+
+
+def test_live_ideogram_video_routes_still_price():
+    """Every catalog video route (text, first frame, references) on every
+    Ideogram video model, checked with dry_run, which validates the
+    request and quotes its price without a render. Free, so it runs on
+    every live pass; a route that stops answering 200 with a price quote
+    has moved or changed its inputs."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    import httpx
+
+    from keycall._registry import resolve_provider
+
+    target = _ideogram_target(source)
+    frame = _solid_png(512, 512, (40, 90, 200))
+    quotes = []
+    with httpx.Client(
+        base_url="https://api.ideogram.ai", timeout=60, headers={"Api-Key": target.key}
+    ) as raw:
+        for entry in resolve_provider("ideogram").catalog_models:
+            for kind, route in entry.get("routes", {}).get("video_generation", {}).items():
+                if kind == "text":
+                    response = raw.post(
+                        route["path"], params={"dry_run": "true"}, json={"prompt": "a calm sea"}
+                    )
+                else:
+                    field = route.get("image_field") or route.get("reference_field")
+                    response = raw.post(
+                        route["path"],
+                        params={"dry_run": "true"},
+                        data={"prompt": "a calm sea"},
+                        files={field: ("frame.png", frame, "image/png")},
+                    )
+                body = response.json() if response.status_code == 200 else {}
+                assert response.status_code == 200 and body.get("object") == "price_quote", (
+                    f"{entry['id']} {kind} route {route['path']} answered "
+                    f"HTTP {response.status_code}: {response.text[:300]}"
+                )
+                quotes.append(f"{entry['id']} {kind} ${body['usd_micros'] / 1e6:.2f}")
+    assert quotes, "the catalog lists no Ideogram video routes"
+    print("; ".join(quotes))
+
+
+def test_live_ideogram_video_from_pictures():
+    """Two renders through generate_video(): Kling 3 Standard from a
+    first and a last frame ($0.42 quoted 2026-10-02), and MiniMax H3 from
+    a reference picture ($0.65), the cheapest model on each picture route.
+    Opt-in with the other video renders."""
+    source = os.environ.get("KEYCALL_LIVE_SOURCE")
+    if not source:
+        pytest.skip("KEYCALL_LIVE_SOURCE not set; live verification needs a target file")
+    if not os.environ.get("KEYCALL_LIVE_VIDEO"):
+        pytest.skip(
+            "video generation is billable and slow; set KEYCALL_LIVE_VIDEO=1 to run it "
+            "(required for any release that changes video code)"
+        )
+    import base64
+
+    from keycall import ImageInput, KeyCall
+
+    target = _ideogram_target(source)
+    first = ImageInput(data=_solid_png(768, 768, (40, 90, 200)))
+    last = ImageInput(data=_solid_png(768, 768, (220, 120, 30)))
+    plans = [
+        ("kling-3-standard", {"image": first, "last_frame": last}, 0.42),
+        ("minimax-h3", {"reference_images": [first]}, 0.65),
+    ]
+    client = KeyCall(provider="ideogram", api_key=target.key, read_timeout=120.0)
+    try:
+        for model, inputs, quoted in plans:
+            result = client.generate_video(
+                model=model,
+                prompt="The colour slowly changes while soft light moves across the frame",
+                timeout=900.0,
+                **inputs,
+            )
+            assert result.parts, f"{model}: no video part returned"
+            raw = base64.b64decode(result.parts[0].base64_data or "")
+            assert raw[4:8] == b"ftyp", (
+                f"{model} returned bytes that are not an MP4 (first bytes {raw[:16]!r})"
+            )
+            print(f"ideogram {model} from {', '.join(inputs)}: {len(raw)} bytes")
+            _spend.record("ideogram", "video_generate", usd=quoted)
+    finally:
+        client.close()
 
 
 def test_live_prerecorded_transcription_every_supporting_target():
@@ -4096,6 +4469,15 @@ def test_live_retired_models_still_refused_by_their_providers():
         # inconclusive rather than a pass.
         if response.status_code == 200:
             return fix + " (HTTP 200)"
+        if response.status_code in (401, 402, 403, 429):
+            # The account refused the call (bad key, no credit, rate
+            # limit) before the model was looked at: inconclusive, and
+            # named as such so nobody removes a valid retirement entry.
+            return (
+                f"{provider}/{model} could not be checked: the account refused the call "
+                f"(HTTP {response.status_code}: {response.text[:120]}); fix the key or its "
+                "billing and re-run"
+            )
         text = response.text.lower()
         gone = any(
             marker in text

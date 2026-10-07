@@ -38,6 +38,10 @@ DEFAULT_ATTEMPTS = 8
 DEFAULT_JUDGMENT_STATE = "The quick brown fox jumps over the lazy dog."
 DEFAULT_JUDGMENT_QUESTION = "Is this sentence written in English?"
 
+# The picture twin: a plain subject any picture model draws without a
+# safety review refusing it.
+DEFAULT_PICTURE_PROMPT = "A plain red apple on a white table"
+
 # Bumped whenever the candidate-selection procedure changes, so an old
 # report can be read against the rule that produced it. "1" selected the
 # first filtered candidate and made a single attempt; "2" is the
@@ -150,7 +154,10 @@ class VerifyResult:
     # Kept apart from text_model_count so neither number lies about what
     # kind of call verified it.
     decision_model_count: int | None = None
-    # "listed" | "generated" | "judged" | "no_text_models" |
+    # A picture provider's model count (one with no text models); None
+    # for every other provider.
+    picture_model_count: int | None = None
+    # "listed" | "generated" | "judged" | "drew" | "no_text_models" |
     # "credential_rejected" | "rate_limited_unverified" |
     # "no_model_invocable" | "list_failed" | "services_probed" |
     # "unresolvable_target"
@@ -266,6 +273,21 @@ def run_verify(
         judgment_capable = bool(decision_models) and (
             client._resolved.capabilities.judgment
         )
+        # A picture provider (Ideogram) advertises picture models and no
+        # text ones; its generate-mode proof is the one cheap picture the
+        # catalog names for it.
+        picture_models = [
+            model
+            for model in discovery.models
+            if ModelCategory.IMAGE_GENERATION in model.categories
+            or ModelCategory.IMAGE_EDITING in model.categories
+        ]
+        picture_capable = (
+            not text_models
+            and not judgment_capable
+            and bool(picture_models)
+            and client._resolved.verify_generation is not None
+        )
         if not generate:
             return VerifyResult(
                 label=label,
@@ -273,10 +295,15 @@ def run_verify(
                 listed_ok=True,
                 text_model_count=len(text_models),
                 decision_model_count=(len(decision_models) if judgment_capable else None),
+                picture_model_count=(len(picture_models) if picture_capable else None),
                 model_list_digest=digest,
                 outcome="listed",
             )
         if not text_models:
+            if picture_capable:
+                return _run_picture_check(
+                    client, label=label, digest=digest, picture_models=picture_models
+                )
             if judgment_capable:
                 return _run_judgment_walk(
                     client,
@@ -370,6 +397,81 @@ def run_verify(
     finally:
         if owns_client:
             client.close()
+
+
+def _run_picture_check(
+    client: KeyCall,
+    *,
+    label: str,
+    digest: str,
+    picture_models: list[Model],
+) -> VerifyResult:
+    """The generate-mode proof for a picture provider: one picture from
+    the cheapest model and settings the catalog names for it. One call,
+    not a walk: the catalog chose the model, so a failure is the answer."""
+    plan = client._resolved.verify_generation or {}
+    model_id = str(plan.get("model", ""))
+    position = next(
+        (index for index, model in enumerate(picture_models) if model.id == model_id), 0
+    )
+    source = picture_models[position].classification_source if picture_models else "unknown"
+    total = len(picture_models)
+    try:
+        result = client.generate_image(
+            model=model_id,
+            prompt=DEFAULT_PICTURE_PROMPT,
+            quality=plan.get("quality"),
+            size=plan.get("size"),
+        )
+    except KeyCallError as error:
+        attempt = ModelAttempt(
+            model_id=model_id,
+            position=0,
+            raw_position=position,
+            classification_source=source,
+            ok=False,
+            error_code=error.code.value,
+            error_message=error.message,
+            retryable=error.retryable,
+        )
+        if error.code in _CREDENTIAL_FAILURES:
+            outcome = "credential_rejected"
+        elif error.code is ErrorCode.RATE_LIMITED:
+            outcome = "rate_limited_unverified"
+        else:
+            outcome = "no_model_invocable"
+        return VerifyResult(
+            label=label,
+            provider=client.provider,
+            listed_ok=True,
+            text_model_count=0,
+            picture_model_count=total,
+            generate_requested=True,
+            attempts=(attempt,),
+            model_list_digest=digest,
+            outcome=outcome,
+        )
+    return VerifyResult(
+        label=label,
+        provider=client.provider,
+        listed_ok=True,
+        text_model_count=0,
+        picture_model_count=total,
+        generate_requested=True,
+        generate_ok=True,
+        attempts=(
+            ModelAttempt(
+                model_id=model_id,
+                position=0,
+                raw_position=position,
+                classification_source=source,
+                ok=True,
+                round_trip_duration_ms=result.round_trip_duration_ms,
+            ),
+        ),
+        model_list_digest=digest,
+        outcome="drew",
+    )
 
 
 def _run_judgment_walk(

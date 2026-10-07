@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "catalog_version": "2026.10.01.1",
+  "catalog_version": "2026.10.07.1",
   "verified_at": "2026-08-10T00:00:00Z",
   "providers": {
     "openai": {
@@ -63,6 +63,10 @@
         "transcription": {
           "method": "POST",
           "path": "/audio/transcriptions"
+        },
+        "image_edit": {
+          "method": "POST",
+          "path": "/images/edits"
         }
       },
       "provider_request_id_header": "x-request-id",
@@ -137,7 +141,25 @@
           "live",
           "realtime"
         ],
-        "streaming_only_transcription_families_note": "OpenAI's model list mixes transcription models that serve only the realtime socket in with the ones the stored-file endpoint takes, and nothing in the listing tells them apart. POST /v1/audio/transcriptions answers 404 'Invalid URL' for gpt-live-transcribe and gpt-realtime-whisper, while gpt-transcribe, whisper-1, and the whole gpt-4o transcribe family (gpt-4o-transcribe, gpt-4o-mini-transcribe, their dated snapshots, and gpt-4o-transcribe-diarize) answer 200 (all nine live-probed 2026-09-10). Matched as substrings of the lowercased id so a later snapshot of the same family is covered; a release probe checks both directions, so a family wrongly listed here fails loudly rather than hiding a model that works."
+        "streaming_only_transcription_families_note": "OpenAI's model list mixes transcription models that serve only the realtime socket in with the ones the stored-file endpoint takes, and nothing in the listing tells them apart. POST /v1/audio/transcriptions answers 404 'Invalid URL' for gpt-live-transcribe and gpt-realtime-whisper, while gpt-transcribe, whisper-1, and the whole gpt-4o transcribe family (gpt-4o-transcribe, gpt-4o-mini-transcribe, their dated snapshots, and gpt-4o-transcribe-diarize) answer 200 (all nine live-probed 2026-09-10). Matched as substrings of the lowercased id so a later snapshot of the same family is covered; a release probe checks both directions, so a family wrongly listed here fails loudly rather than hiding a model that works.",
+        "image_operations": {
+          "image_generation": {
+            "params": [
+              "quality",
+              "size"
+            ]
+          },
+          "image_edit": {
+            "params": [
+              "mask",
+              "quality",
+              "reference_images",
+              "size"
+            ],
+            "max_reference_images": 15
+          }
+        },
+        "image_operations_note": "Live 2026-10-02: quality low/medium/high/auto on generate (a bad value 400s naming them); seed 400s unknown_parameter on generate and edit. POST /images/edits multipart with repeated image[] files and an alpha mask (fully transparent marks the area to change) worked on gpt-image-1-mini with a mask and a second picture; the reference allows 16 pictures per edit."
       },
       "voices": {
         "verified": "2026-08-31",
@@ -434,6 +456,31 @@
           "retired": "2023-03-23",
           "replacement": "gpt-4o",
           "note": "Deprecations page; absent from the model listing 2026-09-04."
+        }
+      ],
+      "image_size_rules": [
+        {
+          "pattern": "^gpt-image-1",
+          "sizes": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536"
+          ],
+          "ratios": {
+            "1:1": "1024x1024",
+            "3:2": "1536x1024",
+            "2:3": "1024x1536"
+          },
+          "note": "Any other size 400s naming these three (gpt-image-1-mini, live 2026-10-02)."
+        },
+        {
+          "pattern": "^gpt-image-2",
+          "step": 16,
+          "max_edge": 3840,
+          "max_ratio": 3,
+          "long_side": 1536,
+          "square_side": 1024,
+          "note": "Any size with sides divisible by 16, a long side up to 3840 and a ratio up to 3:1 (OpenAI images reference, read 2026-10-02); 1536x864 accepted on gpt-image-2 live 2026-10-02. A ratio converts to a 1536-pixel long side, 1024x1024 for 1:1."
         }
       ]
     },
@@ -773,9 +820,25 @@
         "code_interpreter": true,
         "code_interpreter_note": "codeExecution tool, live on the standard generateContent/streamGenerateContent endpoints. Live-verified 2026-08-22 on gemini-3.7-flash, streaming and not: a paired executableCode/codeExecutionResult part per run, matched by id; a generated image returns as a separate inlineData part with the bytes inline, needing no further download.",
         "reasoning_effort": true,
-        "reasoning_effort_note": "Maps to generationConfig.thinkingConfig.thinkingLevel, uppercased. Thought-token counts follow the level (verified live 2026-08-14 on gemini-flash-latest).",
+        "reasoning_effort_note": "Maps to generationConfig.thinkingConfig.thinkingLevel, uppercased. Thought-token counts follow the level (verified live 2026-08-14 on gemini-flash-latest). Allowed levels differ by model: LOW, MEDIUM and HIGH answered on every current text model probed 2026-10-07 (3-flash-preview, 3.1-pro-preview, 3.1-flash-lite, 3.5-flash, 3.5-flash-lite, 3.6-flash, 3.7-flash, 3.8-flash), while MINIMAL is refused with a 400 on 3.1-pro-preview, 3.7-flash and 3.8-flash, which is why reasoning_effort_minimal stays off for this provider.",
         "schema_enforcement": "native",
-        "sampling_constraints": [],
+        "sampling_constraints": [
+          {
+            "pattern": "^gemini-3\\.5-flash-lite",
+            "allowed": {},
+            "note": "sampling is fixed at the model's defaults: an explicit temperature or top_p has no effect. Live 2026-10-07: changelog 2026-07-21 deprecated temperature, top_p and top_k with the release of 3.6 Flash and 3.5 Flash-Lite, the latest-model guide says to strip them, and Google's deprecation notice says upcoming models will return an error. Probed the same day: five picks of a random noun at temperature 0 and five at 2.0 gave one answer at 0 and five at 2.0 on 3-flash-preview, 3.1-flash-lite and 3.5-flash (honoured), and two or three distinct answers at both settings on 3.5-flash-lite, 3.6-flash, 3.7-flash and 3.8-flash (ignored); none returned an error yet."
+          },
+          {
+            "pattern": "^gemini-(?:3\\.(?:[6-9]|\\d\\d+)|(?:[4-9]|\\d\\d+)\\.)",
+            "allowed": {},
+            "note": "Gemini 3.6 and later: sampling is fixed at the model's defaults and explicit values have no effect; upcoming models reject them. Live 2026-10-07: changelog 2026-07-21 deprecated temperature, top_p and top_k with the release of 3.6 Flash and 3.5 Flash-Lite, the latest-model guide says to strip them, and Google's deprecation notice says upcoming models will return an error. Probed the same day: five picks of a random noun at temperature 0 and five at 2.0 gave one answer at 0 and five at 2.0 on 3-flash-preview, 3.1-flash-lite and 3.5-flash (honoured), and two or three distinct answers at both settings on 3.5-flash-lite, 3.6-flash, 3.7-flash and 3.8-flash (ignored); none returned an error yet."
+          },
+          {
+            "pattern": "^gemini-flash(?:-lite)?-latest$",
+            "allowed": {},
+            "note": "the Flash and Flash-Lite aliases point at affected models (gemini-flash-latest refuses thinkingLevel MINIMAL like 3.7 and 3.8 Flash, and gemini-flash-lite-latest varied at temperature 0, 2026-10-07). Live 2026-10-07: changelog 2026-07-21 deprecated temperature, top_p and top_k with the release of 3.6 Flash and 3.5 Flash-Lite, the latest-model guide says to strip them, and Google's deprecation notice says upcoming models will return an error. Probed the same day: five picks of a random noun at temperature 0 and five at 2.0 gave one answer at 0 and five at 2.0 on 3-flash-preview, 3.1-flash-lite and 3.5-flash (honoured), and two or three distinct answers at both settings on 3.5-flash-lite, 3.6-flash, 3.7-flash and 3.8-flash (ignored); none returned an error yet."
+          }
+        ],
         "non_text_model_families": [
           "antigravity",
           "computer-use",
@@ -806,7 +869,24 @@
         "batch_generation_note": "Inline requests (under 20MB total; a file path exists for up to 2GB, not wired) with the model in the URL, at a 50% discount. A malformed request refuses the whole create with a 400 naming the request index; a bad model 404s at create. States BATCH_STATE_PENDING/RUNNING/SUCCEEDED/FAILED/CANCELLED/EXPIRED (48h runtime cap), batchStats counts arrive as strings, results ride response.inlinedResponses.inlinedResponses[] with each request's metadata key echoed; results kept 6 weeks. Live-verified end to end 2026-09-02.",
         "batch_embeddings": true,
         "batch_embeddings_note": "POST /models/{model}:asyncBatchEmbedContent, same batch envelope with EmbedContentRequest items ({model, content}); results carry embedding.values inline. Live-verified 2026-09-02.",
-        "supports_seed": true
+        "supports_seed": true,
+        "image_operations": {
+          "image_generation": {
+            "params": [
+              "seed",
+              "size"
+            ]
+          },
+          "image_edit": {
+            "params": [
+              "reference_images",
+              "seed",
+              "size"
+            ],
+            "max_reference_images": 13
+          }
+        },
+        "image_operations_note": "Edits are the same generateContent call with the pictures as inline parts ahead of the instruction (live 2026-10-02, gemini-3.1-flash-lite-image, one and two pictures). Size is generationConfig.imageConfig.aspectRatio, a ratio only; seed is generationConfig.seed (two same-seed pictures still differed live 2026-10-02). No mask parameter. Up to 14 pictures per request on the 3.x image models (Gemini image guide, read 2026-10-02)."
       },
       "voices": {
         "verified": "2026-08-31",
@@ -1607,6 +1687,10 @@
         "batch_cancel": {
           "method": "POST",
           "path": "/v1/batches/{batch_id}:cancel"
+        },
+        "image_edit": {
+          "method": "POST",
+          "path": "/v1/images/edits"
         }
       },
       "provider_request_id_header": "x-request-id",
@@ -1646,7 +1730,24 @@
         "batch_generation": true,
         "batch_generation_note": "Its own dialect: create a named batch container, add batch_requests (each wrapping a chat_get_completion body) in a second call, poll counters (num_pending/num_success/num_error/num_cancelled \u2014 no status string; the state is derived), fetch paginated results whose batch_result.response.chat_get_completion is a standard chat.completion. Only a subset of models is batch-eligible; an ineligible model rejects the whole add call atomically. grok-4.3 verified live end to end 2026-09-02, processed in 13s. Media result URLs expire after an hour; discounts are per model page.",
         "batch_embeddings": false,
-        "supports_seed": true
+        "supports_seed": true,
+        "image_operations": {
+          "image_generation": {
+            "params": [
+              "quality",
+              "size"
+            ]
+          },
+          "image_edit": {
+            "params": [
+              "quality",
+              "reference_images",
+              "size"
+            ],
+            "max_reference_images": 4
+          }
+        },
+        "image_operations_note": "Live 2026-10-02 on grok-imagine-image-2.0: quality low/medium (auto and high also named by the 422 for a bad value); POST /v1/images/edits takes JSON with image {url} or images [...] (up to 5), a data URI accepted as the url. seed and mask aren't in the REST reference and an unknown field is accepted and ignored (a made-up field returned 200), so both are refused here. Size is aspect_ratio, a ratio only."
       },
       "video_download_hosts": [
         "vidgen.x.ai"
@@ -2018,6 +2119,1111 @@
       ],
       "capabilities": {
         "verified": "2026-09-10"
+      }
+    },
+    "ideogram": {
+      "aliases": [],
+      "protocol": "ideogram",
+      "base_url": "https://api.ideogram.ai",
+      "auth": {
+        "scheme": "api_key",
+        "header": "Api-Key"
+      },
+      "operations": {
+        "list_models": {
+          "method": "POST",
+          "path": "/v2/image/generate/ideogram-4-5"
+        },
+        "generation_status": {
+          "method": "GET",
+          "path": "/v2/generations/{generation_id}"
+        }
+      },
+      "provider_request_id_header": "x-request-id",
+      "model_discovery": "catalog",
+      "model_discovery_note": "No model-list endpoint: the model is a path segment (POST /v2/{content}/{action}/{model}), so the list is maintained here from developer.ideogram.ai's v2 reference (read 2026-10-02), each route confirmed by a free dry run the same day. The key is checked by a dry-run generate (?dry_run=true validates and prices with nothing generated or billed, live 2026-10-02): 401 {\"message\": \"Access denied. Please verify your API Token is valid.\"} on a bad key, 200 price_quote on a valid one, including a valid key with no credits. GET /v2/account/api-keys answers only to an organization admin's key, so it isn't used. An unknown model is a 404 with a problem body. Unknown request fields are accepted and ignored (a seed on remix/ideogram-4 prices normally), so each route's honoured inputs are listed here and gated before the request.",
+      "image_download_hosts": [
+        "ideogram.ai"
+      ],
+      "verify_generation": {
+        "model": "p-image-ideogram",
+        "quality": "very_low",
+        "size": "1:1",
+        "note": "The cheapest picture this provider makes (dry-run quote under $0.01, 2026-10-02); keycall verify --generate draws it to prove the key can spend."
+      },
+      "video_download_hosts": [
+        "ideogram.ai"
+      ],
+      "models": [
+        {
+          "id": "ideogram-4-5",
+          "categories": [
+            "image_generation",
+            "image_editing"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/ideogram-4-5",
+              "body": "json",
+              "params": [
+                "quality",
+                "seed",
+                "size"
+              ],
+              "quality_values": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "size": {
+                "pixel_field": "size"
+              },
+              "async": true
+            },
+            "image_edit": {
+              "path": "/v2/image/precise-edit/ideogram-4-5",
+              "body": "multipart",
+              "image_field": "image",
+              "reference_field": "reference_images",
+              "max_reference_images": 4,
+              "mask_field": "mask",
+              "mask_edit": "black",
+              "mask_takes_reference_slot": true,
+              "params": [
+                "reference_images",
+                "mask",
+                "seed",
+                "quality"
+              ],
+              "quality_values": [
+                "very_low",
+                "low",
+                "medium",
+                "high"
+              ],
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "ideogram-4",
+          "categories": [
+            "image_generation",
+            "image_editing"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/ideogram-4",
+              "body": "json",
+              "params": [
+                "seed",
+                "size"
+              ],
+              "size": {
+                "pixel_field": "resolution"
+              },
+              "async": true
+            },
+            "image_edit": {
+              "path": "/v2/image/remix/ideogram-4",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [
+                "size"
+              ],
+              "size": {
+                "pixel_field": "resolution"
+              },
+              "async": true
+            },
+            "image_description": {
+              "path": "/v2/image/describe/ideogram-4",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [],
+              "dry_run": false
+            }
+          }
+        },
+        {
+          "id": "ideogram-3",
+          "categories": [
+            "image_generation",
+            "image_editing"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/ideogram-3",
+              "body": "multipart",
+              "params": [
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": "x",
+                "pixel_field": "resolution"
+              },
+              "async": true
+            },
+            "image_edit": {
+              "path": "/v2/image/remix/ideogram-3",
+              "masked_path": "/v2/image/inpaint/ideogram-3",
+              "masked_excludes": [
+                "size"
+              ],
+              "body": "multipart",
+              "image_field": "image",
+              "mask_field": "mask",
+              "mask_edit": "black",
+              "params": [
+                "mask",
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": "x",
+                "pixel_field": "resolution"
+              },
+              "async": true
+            },
+            "image_expand": {
+              "path": "/v2/image/reframe/ideogram-3",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [
+                "seed"
+              ],
+              "size": {
+                "pixel_field": "resolution"
+              },
+              "delivery": "job",
+              "async": true
+            },
+            "background_replacement": {
+              "path": "/v2/image/replace-background/ideogram-3",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [],
+              "delivery": "job"
+            },
+            "image_description": {
+              "path": "/v2/image/describe/ideogram-3",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [],
+              "dry_run": false
+            },
+            "image_layerize": {
+              "path": "/v2/design/layerize/ideogram-3",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [
+                "prompt",
+                "seed"
+              ],
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "ideogram-3-transparent",
+          "categories": [
+            "image_generation"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/ideogram-3-transparent",
+              "body": "json",
+              "params": [
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": "x"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "ideogram-4-transparent",
+          "categories": [
+            "image_generation"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/ideogram-4-transparent",
+              "body": "json",
+              "params": [
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": "x"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "ideogram-2a",
+          "categories": [
+            "image_generation"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/ideogram-2a",
+              "body": "json",
+              "params": [
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": "x"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "ideogram-2",
+          "categories": [
+            "image_generation"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/ideogram-2",
+              "body": "json",
+              "params": [
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": "x"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "ideogram-1",
+          "categories": [
+            "image_editing"
+          ],
+          "routes": {
+            "background_removal": {
+              "path": "/v2/image/remove-background/ideogram-1",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [],
+              "async": true
+            },
+            "object_erase": {
+              "path": "/v2/image/remove-object/ideogram-1",
+              "body": "multipart",
+              "image_field": "image",
+              "mask_field": "mask",
+              "mask_edit": "white",
+              "params": [
+                "seed"
+              ],
+              "delivery": "job"
+            }
+          }
+        },
+        {
+          "id": "auto",
+          "categories": [
+            "image_generation",
+            "image_editing"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/auto",
+              "body": "multipart",
+              "params": [
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": "x",
+                "pixel_field": "resolution"
+              },
+              "async": true
+            },
+            "image_edit": {
+              "path": "/v2/image/remix/auto",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": "x",
+                "pixel_field": "resolution"
+              },
+              "async": true
+            },
+            "image_upscale": {
+              "path": "/v2/image/upscale/auto",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [
+                "factor",
+                "seed"
+              ],
+              "factor_field": "upscale_factor",
+              "factor_values": {
+                "2": "x2",
+                "4": "x4",
+                "8": "x8"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "p-image-ideogram",
+          "categories": [
+            "image_generation"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/p-image-ideogram",
+              "body": "json",
+              "params": [
+                "quality",
+                "seed",
+                "size"
+              ],
+              "quality_values": [
+                "very_low",
+                "low",
+                "medium",
+                "high",
+                "very_high"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": "x"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "z-image",
+          "categories": [
+            "image_generation"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/z-image",
+              "body": "json",
+              "params": [
+                "seed",
+                "size"
+              ],
+              "size": {
+                "pixel_field": "resolution"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "gpt-image-2",
+          "categories": [
+            "image_generation",
+            "image_editing"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/gpt-image-2",
+              "body": "multipart",
+              "params": [
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": ":",
+                "pixel_field": "resolution"
+              },
+              "async": true
+            },
+            "image_edit": {
+              "path": "/v2/image/generate/gpt-image-2",
+              "body": "multipart",
+              "image_field": "images",
+              "reference_field": "images",
+              "max_reference_images": 15,
+              "params": [
+                "reference_images",
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": ":",
+                "pixel_field": "resolution"
+              },
+              "async": true
+            },
+            "background_replacement": {
+              "path": "/v2/image/replace-background/gpt-image-2",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [
+                "quality"
+              ],
+              "quality_values": [
+                "low",
+                "medium",
+                "high",
+                "auto"
+              ],
+              "delivery": "job"
+            }
+          }
+        },
+        {
+          "id": "gpt-image-2-5-flare",
+          "categories": [
+            "image_generation",
+            "image_editing"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/gpt-image-2-5-flare",
+              "body": "multipart",
+              "params": [
+                "quality",
+                "seed",
+                "size"
+              ],
+              "quality_values": [
+                "low",
+                "medium",
+                "high",
+                "auto"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": ":",
+                "pixel_field": "resolution"
+              },
+              "async": true
+            },
+            "image_edit": {
+              "path": "/v2/image/generate/gpt-image-2-5-flare",
+              "body": "multipart",
+              "image_field": "images",
+              "reference_field": "images",
+              "max_reference_images": 15,
+              "params": [
+                "mask",
+                "quality",
+                "reference_images",
+                "seed",
+                "size"
+              ],
+              "mask_field": "mask",
+              "mask_edit": "transparent",
+              "quality_values": [
+                "low",
+                "medium",
+                "high",
+                "auto"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": ":",
+                "pixel_field": "resolution"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "gpt-image-2-5-sunburst",
+          "categories": [
+            "image_generation",
+            "image_editing"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/gpt-image-2-5-sunburst",
+              "body": "multipart",
+              "params": [
+                "quality",
+                "seed",
+                "size"
+              ],
+              "quality_values": [
+                "low",
+                "medium",
+                "high",
+                "auto"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": ":",
+                "pixel_field": "resolution"
+              },
+              "async": true
+            },
+            "image_edit": {
+              "path": "/v2/image/generate/gpt-image-2-5-sunburst",
+              "body": "multipart",
+              "image_field": "images",
+              "reference_field": "images",
+              "max_reference_images": 15,
+              "params": [
+                "mask",
+                "quality",
+                "reference_images",
+                "seed",
+                "size"
+              ],
+              "mask_field": "mask",
+              "mask_edit": "transparent",
+              "quality_values": [
+                "low",
+                "medium",
+                "high",
+                "auto"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": ":",
+                "pixel_field": "resolution"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "nano-banana-2",
+          "categories": [
+            "image_generation",
+            "image_editing"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/nano-banana-2",
+              "body": "multipart",
+              "params": [
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": ":"
+              },
+              "async": true
+            },
+            "image_edit": {
+              "path": "/v2/image/generate/nano-banana-2",
+              "body": "multipart",
+              "image_field": "images",
+              "reference_field": "images",
+              "max_reference_images": 9,
+              "params": [
+                "reference_images",
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": ":"
+              },
+              "async": true
+            },
+            "image_expand": {
+              "path": "/v2/image/reframe/nano-banana-2",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [
+                "seed"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": ":"
+              }
+            }
+          }
+        },
+        {
+          "id": "nano-banana-pro",
+          "categories": [
+            "image_generation",
+            "image_editing"
+          ],
+          "routes": {
+            "image_generation": {
+              "path": "/v2/image/generate/nano-banana-pro",
+              "body": "multipart",
+              "params": [
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": ":"
+              },
+              "async": true
+            },
+            "image_edit": {
+              "path": "/v2/image/generate/nano-banana-pro",
+              "body": "multipart",
+              "image_field": "images",
+              "reference_field": "images",
+              "max_reference_images": 9,
+              "params": [
+                "reference_images",
+                "seed",
+                "size"
+              ],
+              "size": {
+                "ratio_field": "aspect_ratio",
+                "ratio_separator": ":"
+              },
+              "async": true
+            },
+            "image_upscale": {
+              "path": "/v2/image/upscale/nano-banana-pro",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [
+                "prompt",
+                "seed"
+              ],
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "topaz-standard-2",
+          "categories": [
+            "image_editing"
+          ],
+          "routes": {
+            "image_upscale": {
+              "path": "/v2/image/upscale/topaz-standard-2",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [
+                "factor"
+              ],
+              "factor_field": "upscale_factor",
+              "factor_values": {
+                "2": "x2",
+                "4": "x4",
+                "8": "x8"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "topaz-text-refine",
+          "categories": [
+            "image_editing"
+          ],
+          "routes": {
+            "image_upscale": {
+              "path": "/v2/image/upscale/topaz-text-refine",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [
+                "factor",
+                "seed"
+              ],
+              "factor_field": "upscale_factor",
+              "factor_values": {
+                "2": "x2",
+                "4": "x4",
+                "8": "x8"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "topaz-wonder-3-5",
+          "categories": [
+            "image_editing"
+          ],
+          "routes": {
+            "image_upscale": {
+              "path": "/v2/image/upscale/topaz-wonder-3-5",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [
+                "factor",
+                "seed"
+              ],
+              "factor_field": "upscale_factor",
+              "factor_values": {
+                "2": "x2",
+                "4": "x4",
+                "8": "x8"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "topaz-redefine",
+          "categories": [
+            "image_editing"
+          ],
+          "routes": {
+            "image_upscale": {
+              "path": "/v2/image/upscale/topaz-redefine",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [
+                "factor",
+                "prompt",
+                "seed"
+              ],
+              "factor_field": "upscale_factor",
+              "factor_values": {
+                "2": "x2",
+                "4": "x4",
+                "8": "x8"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "topaz-bloom-2",
+          "categories": [
+            "image_editing"
+          ],
+          "routes": {
+            "image_upscale": {
+              "path": "/v2/image/upscale/topaz-bloom-2",
+              "body": "multipart",
+              "image_field": "image",
+              "params": [
+                "factor",
+                "prompt",
+                "seed"
+              ],
+              "factor_field": "upscale_factor",
+              "factor_values": {
+                "2": "x2",
+                "4": "x4",
+                "8": "x8"
+              },
+              "async": true
+            }
+          }
+        },
+        {
+          "id": "kling-3-standard",
+          "categories": [
+            "video_generation"
+          ],
+          "routes": {
+            "video_generation": {
+              "text": {
+                "path": "/v2/video/generate/kling-3-standard-text-to-video",
+                "body": "json"
+              },
+              "image": {
+                "path": "/v2/video/generate/kling-3-standard-image-to-video",
+                "body": "multipart",
+                "image_field": "image",
+                "last_frame_field": "end_image",
+                "aspect_ratio": false
+              }
+            }
+          }
+        },
+        {
+          "id": "minimax-h3",
+          "categories": [
+            "video_generation"
+          ],
+          "routes": {
+            "video_generation": {
+              "text": {
+                "path": "/v2/video/generate/minimax-h3-text-to-video",
+                "body": "json"
+              },
+              "image": {
+                "path": "/v2/video/generate/minimax-h3-image-to-video",
+                "body": "multipart",
+                "image_field": "image",
+                "last_frame_field": "end_image",
+                "aspect_ratio": false
+              },
+              "references": {
+                "path": "/v2/video/generate/minimax-h3-reference-to-video",
+                "body": "multipart",
+                "reference_field": "reference_images"
+              }
+            }
+          }
+        },
+        {
+          "id": "seedance-2",
+          "categories": [
+            "video_generation"
+          ],
+          "routes": {
+            "video_generation": {
+              "text": {
+                "path": "/v2/video/generate/seedance-2-text-to-video",
+                "body": "json"
+              },
+              "image": {
+                "path": "/v2/video/generate/seedance-2-image-to-video",
+                "body": "multipart",
+                "image_field": "image",
+                "last_frame_field": "end_image",
+                "aspect_ratio": true
+              },
+              "references": {
+                "path": "/v2/video/generate/seedance-2-reference-to-video",
+                "body": "multipart",
+                "reference_field": "reference_images"
+              }
+            }
+          }
+        },
+        {
+          "id": "seedance-2-5",
+          "categories": [
+            "video_generation"
+          ],
+          "routes": {
+            "video_generation": {
+              "text": {
+                "path": "/v2/video/generate/seedance-2-5-text-to-video",
+                "body": "json"
+              },
+              "image": {
+                "path": "/v2/video/generate/seedance-2-5-image-to-video",
+                "body": "multipart",
+                "image_field": "image",
+                "last_frame_field": "end_image",
+                "aspect_ratio": false
+              },
+              "references": {
+                "path": "/v2/video/generate/seedance-2-5-reference-to-video",
+                "body": "multipart",
+                "reference_field": "reference_images"
+              }
+            }
+          }
+        }
+      ],
+      "provider_tools": [
+        {
+          "name": "ad-resizer",
+          "path": "/v2/tool/ad-resizer",
+          "files": {
+            "image": 1
+          },
+          "required": [
+            "image",
+            "resolution"
+          ],
+          "fields": [
+            "resolution",
+            "platform",
+            "prompt",
+            "quality",
+            "num_images"
+          ],
+          "dry_run": true,
+          "verified": "2026-10-02"
+        },
+        {
+          "name": "ad-variations",
+          "path": "/v2/tool/ad-variations",
+          "files": {
+            "image": 1
+          },
+          "required": [
+            "image",
+            "variation_type"
+          ],
+          "fields": [
+            "variation_type",
+            "prompt",
+            "quality",
+            "num_images"
+          ],
+          "dry_run": false,
+          "verified": "2026-10-02"
+        },
+        {
+          "name": "colorways",
+          "path": "/v2/tool/colorways",
+          "files": {
+            "image": 1,
+            "masks": 4
+          },
+          "required": [
+            "image",
+            "masks",
+            "colors"
+          ],
+          "fields": [
+            "colors",
+            "aspect_ratio",
+            "quality"
+          ],
+          "dry_run": true,
+          "verified": "2026-10-02",
+          "note": "masks pair by position with colors; white marks the region to recolor."
+        },
+        {
+          "name": "material-swap",
+          "path": "/v2/tool/material-swap",
+          "files": {
+            "image": 1,
+            "masks": 4,
+            "materials": 4
+          },
+          "required": [
+            "image",
+            "masks",
+            "materials"
+          ],
+          "fields": [
+            "aspect_ratio",
+            "quality"
+          ],
+          "dry_run": true,
+          "verified": "2026-10-02"
+        },
+        {
+          "name": "model-pose-variants",
+          "path": "/v2/tool/model-pose-variants",
+          "files": {
+            "source_image": 1
+          },
+          "required": [
+            "source_image",
+            "instruction"
+          ],
+          "fields": [
+            "instruction",
+            "aspect_ratio",
+            "quality",
+            "seed",
+            "num_images"
+          ],
+          "dry_run": false,
+          "verified": "2026-10-02"
+        },
+        {
+          "name": "sketch-to-render",
+          "path": "/v2/tool/sketch-to-render",
+          "files": {
+            "sketch_image": 1
+          },
+          "required": [
+            "sketch_image",
+            "instruction"
+          ],
+          "fields": [
+            "instruction",
+            "aspect_ratio",
+            "quality",
+            "seed",
+            "num_images"
+          ],
+          "dry_run": false,
+          "verified": "2026-10-02"
+        }
+      ],
+      "capabilities": {
+        "verified": "2026-10-02",
+        "image_generation": true,
+        "image_generation_note": "POST /v2/image/generate/{model}, JSON or multipart by model. Sync answer {generation_id, seed, data: [{prompt, resolution, is_image_safe, seed, url}]}; url is an expiring signed link on ideogram.ai fetched without the key (live 2026-10-02, ideogram-4-5 low quality, 968 KB PNG). Per-image billing with no token counts; ?dry_run=true returns a price_quote. Without credits a generate is 402 {error, reject_reason: insufficient_funds} while dry runs still answer. 422 means the prompt failed safety review. Quality tiers are per model: ideogram-4-5 low/medium/high (very_low is 400 'Invalid quality.' without source images), gpt-image-2-5 low/medium/high/auto, p-image very_low..very_high.",
+        "image_operations": {
+          "image_generation": {
+            "params": [
+              "quality",
+              "seed",
+              "size"
+            ]
+          },
+          "image_edit": {
+            "params": [
+              "mask",
+              "quality",
+              "reference_images",
+              "seed",
+              "size"
+            ],
+            "max_reference_images": 15
+          },
+          "image_upscale": {
+            "params": [
+              "factor",
+              "prompt",
+              "seed"
+            ]
+          },
+          "image_expand": {
+            "params": [
+              "seed"
+            ]
+          },
+          "background_removal": {
+            "params": []
+          },
+          "background_replacement": {
+            "params": [
+              "quality"
+            ]
+          },
+          "object_erase": {
+            "params": [
+              "seed"
+            ]
+          },
+          "image_description": {
+            "params": []
+          },
+          "image_layerize": {
+            "params": [
+              "prompt",
+              "seed"
+            ]
+          }
+        },
+        "image_operations_note": "Routes per model are in models[].routes. Precise edit (ideogram-4-5) took a source image, a black-for-edit mask and a seed live 2026-10-02 and returned the picture at the source size. Mask polarity is per route: black marks the edit area on precise-edit and inpaint, white on remove-object, full transparency on the hosted gpt-image-2-5 models. A masked precise edit takes three reference images, an unmasked one four ('At most 4 source images are allowed.'). reframe/ideogram-3, remove-object, and both replace-background routes answer with a generation_id to poll at GET /v2/generations/{generation_id}. describe ignores dry_run and runs. upscale_factor is x2/x4/x8.",
+        "video_generation": true,
+        "video_generation_note": "POST /v2/video/generate/{model}-{text|image|reference}-to-video, every one a job polled at GET /v2/generations/{generation_id}. Dry-run prices 2026-10-02: kling-3-standard $0.42, minimax-h3 $0.65, seedance-2 $2.40, seedance-2-5 $6.93 per default clip. aspect_ratio is spelled 16x9.",
+        "image_input": {
+          "bytes": true,
+          "url": false
+        },
+        "video_inputs": [
+          "image",
+          "last_frame",
+          "reference_images"
+        ]
       }
     }
   }

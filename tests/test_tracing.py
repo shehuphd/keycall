@@ -185,3 +185,52 @@ def test_token_counts_reach_traces_unredacted_as_event_kwargs(trace_file):
     assert found.get("tokens_in") == 8
     assert found.get("tokens_out") == 2
     assert "[redacted]" not in json.dumps(event)
+
+
+def test_cache_token_fields_split_by_rate():
+    # TraceAct 1.6.0 prices reads, standard-rate writes, and 1-hour writes
+    # separately, and gives no estimate when a count has no price or the
+    # parts outgrow tokens_in. Each field is a disjoint part of tokens_in
+    # and appears only when the provider reported a count.
+    from keycall import Usage
+    from keycall._client import _trace_token_fields
+
+    split = Usage(
+        input_tokens=21823,
+        output_tokens=4,
+        cached_input_tokens=0,
+        cache_write_input_tokens=21813,
+        provider_units=(("cache_write_1h_input_tokens", 21813.0),),
+    )
+    assert _trace_token_fields(split) == {
+        "tokens_in": 21823,
+        "tokens_out": 4,
+        "tokens_cached_in": 0,
+        "tokens_cache_write_1h_in": 21813,
+    }
+    both = Usage(
+        input_tokens=300,
+        output_tokens=1,
+        cached_input_tokens=100,
+        cache_write_input_tokens=150,
+        provider_units=(
+            ("cache_write_5m_input_tokens", 50.0),
+            ("cache_write_1h_input_tokens", 100.0),
+        ),
+    )
+    fields = _trace_token_fields(both)
+    assert (fields["tokens_cache_write_in"], fields["tokens_cache_write_1h_in"]) == (50, 100)
+    assert (
+        fields["tokens_cached_in"] + fields["tokens_cache_write_in"] + fields["tokens_cache_write_1h_in"]
+        <= fields["tokens_in"]
+    )
+    # A write with no rate split is a standard-rate write (OpenAI's
+    # explicit cache reports one count).
+    unsplit = Usage(input_tokens=500, output_tokens=2, cache_write_input_tokens=400)
+    assert _trace_token_fields(unsplit) == {
+        "tokens_in": 500,
+        "tokens_out": 2,
+        "tokens_cache_write_in": 400,
+    }
+    # Unreported counts stay out rather than arriving as zero.
+    assert _trace_token_fields(Usage()) == {}

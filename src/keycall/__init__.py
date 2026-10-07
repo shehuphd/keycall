@@ -8,6 +8,7 @@ from ._errors import (
     BatchJobTimeout,
     ErrorCode,
     KeyCallError,
+    ToolJobTimeout,
     TranscriptionJobTimeout,
     VideoJobTimeout,
 )
@@ -38,6 +39,7 @@ from ._types import (
     FinalTranscript,
     ImageGenerationRequest,
     ImageInput,
+    ImageOperationRequest,
     ImageOutput,
     InputPart,
     InterimTranscript,
@@ -64,6 +66,7 @@ from ._types import (
     NoulAnswer,
     NoulQuestion,
     OutputPart,
+    ProviderTool,
     RealtimeAudioDelta,
     RealtimeConfig,
     RealtimeEvent,
@@ -81,6 +84,7 @@ from ._types import (
     StreamEvent,
     StreamFinish,
     StreamStart,
+    TextBlockOutput,
     TextDelta,
     TextGenerationRequest,
     TextInput,
@@ -90,6 +94,8 @@ from ._types import (
     ToolCallArgumentsDelta,
     ToolCallComplete,
     ToolCallStarted,
+    ToolJob,
+    ToolJobStatus,
     ToolResult,
     TranscriptionConfig,
     TranscriptionEvent,
@@ -115,7 +121,7 @@ from ._types import (
     WithheldModel,
 )
 
-__version__ = "1.18.0"
+__version__ = "1.19.0"
 
 __all__ = [
     "AliasFact",
@@ -148,6 +154,7 @@ __all__ = [
     "FinalTranscript",
     "ImageGenerationRequest",
     "ImageInput",
+    "ImageOperationRequest",
     "ImageOutput",
     "InputPart",
     "InterimTranscript",
@@ -180,6 +187,7 @@ __all__ = [
     "Operation",
     "OutputPart",
     "ProviderProtocol",
+    "ProviderTool",
     "RealtimeAudioDelta",
     "RealtimeConfig",
     "RealtimeEvent",
@@ -198,6 +206,7 @@ __all__ = [
     "StreamEvent",
     "StreamFinish",
     "StreamStart",
+    "TextBlockOutput",
     "TextDelta",
     "TextGenerationRequest",
     "TextInput",
@@ -208,6 +217,9 @@ __all__ = [
     "ToolCallArgumentsDelta",
     "ToolCallComplete",
     "ToolCallStarted",
+    "ToolJob",
+    "ToolJobStatus",
+    "ToolJobTimeout",
     "ToolResult",
     "TranscriptOutput",
     "TranscriptWord",

@@ -17,6 +17,9 @@ Routes (all under the base "/"):
   POST /api/generate/image       {target, model, prompt} -> InvocationResult
   POST /api/generate/video       {target, model, prompt} -> InvocationResult
   POST /api/generate/speech      {target, model, text, voice?} -> InvocationResult
+  POST /api/picture              {target, model, operation, image, ...} -> InvocationResult
+  GET  /api/tools?target=N       -> {tools: [...]}
+  POST /api/tools/run            {target, tool, files, fields} -> InvocationResult
   POST /api/transcribe/file      {target, model, audio_base64|url, diarize?}
                                   -> transcript with word timings and billing
   POST /api/dictate              {target, audio_base64, context_prompt?, keyterms?}
@@ -123,7 +126,9 @@ _COOKIE_NAME = "keycall_viewer_token"
 # Large enough for a base64-encoded photo from the Playground's image
 # picker (encoding costs about a third on top of the file size), small
 # enough that a single request can't exhaust memory on a local server.
-_MAX_BODY_BYTES = 8 * 1024 * 1024
+# Picture tasks post the source, a mask and up to 15 references as
+# base64, which outgrows the 8 MiB a text turn needs.
+_MAX_BODY_BYTES = 64 * 1024 * 1024
 _MAX_VERIFY_ATTEMPTS_DEFAULT = 8
 _MAX_VERIFY_ATTEMPTS = 32
 # Standing instructions for a realtime session; generous enough for a
@@ -595,6 +600,13 @@ class _Handler(BaseHTTPRequestHandler):
             result = _api.list_voices(self._registry, target_id)
             self._record(route=route, method="GET", started=started, body=None, result=result)
             self._send_json(result)
+        elif route == "/api/tools":
+            params = parse_qs(parsed.query)
+            target_id = self._target_id(params)
+            if target_id is None:
+                self._send_json({"error": {"code": "bad_request", "message": "target required"}}, 400)
+                return
+            self._send_json(_api.list_tools(self._registry, target_id))
         elif route == "/api/models":
             params = parse_qs(parsed.query)
             target_id = self._target_id(params)
@@ -602,10 +614,15 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": {"code": "bad_request", "message": "target required"}}, 400)
                 return
             category = params.get("category", [None])[0]
+            operation = params.get("operation", [None])[0]
             refresh = params.get("refresh", ["0"])[0] in ("1", "true")
             started = time.monotonic()
             result = _api.browse_models(
-                self._registry, target_id, category=category, refresh=refresh
+                self._registry,
+                target_id,
+                category=category,
+                refresh=refresh,
+                operation=operation,
             )
             self._record(
                 route=route,
@@ -717,6 +734,18 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             started = time.monotonic()
             result = _api.generate_image(self._registry, target_id, body)
+            self._record(route=route, method="POST", started=started, body=body, result=result)
+            self._send_json(result)
+        elif route == "/api/picture":
+            # Blocks like the video route: Ideogram's hosted models answer
+            # through a job polled server-side within the same call.
+            started = time.monotonic()
+            result = _api.picture_operation(self._registry, target_id, body)
+            self._record(route=route, method="POST", started=started, body=body, result=result)
+            self._send_json(result)
+        elif route == "/api/tools/run":
+            started = time.monotonic()
+            result = _api.run_tool(self._registry, target_id, body)
             self._record(route=route, method="POST", started=started, body=body, result=result)
             self._send_json(result)
         elif route == "/api/generate/speech":

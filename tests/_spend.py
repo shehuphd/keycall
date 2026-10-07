@@ -56,6 +56,9 @@ class _Entry:
     audio_seconds: float = 0.0
     images: int = 0
     video_seconds: float = 0.0
+    # A provider's own quoted price for the call, where it prices per
+    # call rather than per unit (Ideogram's per-clip video).
+    usd: float = 0.0
 
 
 LEDGER: list[_Entry] = []
@@ -74,6 +77,7 @@ def record(
     audio_seconds: float = 0.0,
     images: int = 0,
     video_seconds: float = 0.0,
+    usd: float = 0.0,
 ) -> None:
     """Add one billable observation to the run ledger. Every field is a
     measured quantity from a provider response; absent quantities stay zero."""
@@ -86,6 +90,7 @@ def record(
             audio_seconds=float(audio_seconds or 0.0),
             images=int(images or 0),
             video_seconds=float(video_seconds or 0.0),
+            usd=float(usd or 0.0),
         )
     )
 
@@ -98,6 +103,7 @@ def _entry_usd(e: _Entry) -> float:
         + e.audio_seconds * TRANSCRIBE_PER_SEC
         + e.images * IMAGE_PER_IMAGE
         + e.video_seconds * VIDEO_PER_SEC
+        + e.usd
     )
 
 

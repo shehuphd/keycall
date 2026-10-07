@@ -44,6 +44,9 @@ if "%SOURCE%"=="" (
     if exist keycall-test-keys.toml set "SOURCE=keycall-test-keys.toml"
 )
 if "%SOURCE%"=="" (
+    if exist project\keys.toml set "SOURCE=project\keys.toml"
+)
+if "%SOURCE%"=="" (
     if exist project\keycall-test-keys.toml set "SOURCE=project\keycall-test-keys.toml"
 )
 if "%SOURCE%"=="" (

@@ -11,12 +11,18 @@ import json
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
 from typing import Any
 
 from .._enums import Operation
 from .._errors import ErrorCode, KeyCallError
-from .._registry import ResolvedProvider, providers_with
+from .._registry import (
+    ImageOperationSupport,
+    ResolvedProvider,
+    providers_with,
+    providers_with_image_operation,
+)
 from .._sanitize import safe_request_id
 from .._transport import DownloadPlan, RequestSpec
 from .._types import (
@@ -27,6 +33,7 @@ from .._types import (
     DictationRequest,
     DictationResult,
     EmbeddingOutput,
+    ImageOperationRequest,
     ImageOutput,
     InvocationResult,
     JudgmentRequest,
@@ -41,6 +48,7 @@ from .._types import (
     ToolCallArgumentsDelta,
     ToolCallComplete,
     ToolCallStarted,
+    ToolJob,
     TranscriptionJob,
     TranscriptionRequest,
     TranscriptionResult,
@@ -454,6 +462,37 @@ def batch_line_entries(payload: Any) -> list[Mapping[str, Any]]:
     return entries
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PendingImageJob:
+    """A picture operation the provider accepted and will finish later.
+    The client polls it until it resolves; nothing here is public."""
+
+    job_id: str
+    model: str
+    operation: Operation
+    provider_request_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PendingImageDownloads:
+    """A finished picture operation whose pictures are links to fetch.
+    ``labels`` pairs with ``plans``; ``extra_parts`` are output parts that
+    need no download (layerize's text blocks)."""
+
+    plans: tuple[DownloadPlan, ...]
+    model: str
+    operation: Operation
+    labels: tuple[str | None, ...] = ()
+    usage: Usage = dataclass_field(default_factory=Usage)
+    provider_request_id: str | None = None
+    extra_parts: tuple[Any, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.labels:
+            object.__setattr__(self, "labels", (None,) * len(self.plans))
+
+
 class ProviderAdapter(ABC):
     """One instance per resolved provider profile. Stateless and pure."""
 
@@ -627,6 +666,187 @@ class ProviderAdapter(ABC):
             provider_request_id=provider_request_id,
             warnings=warnings,
         )
+
+    # --- picture operations ---
+    #
+    # Everything that takes a picture in: edit, upscale, expand, background
+    # removal and replacement, object erase, description, layerize. One
+    # pair of hooks serves them all; the request names the operation. A
+    # provider answers in one of three ways, and parse returns the matching
+    # value: the finished result, a job to poll (PendingImageJob), or links
+    # to download (PendingImageDownloads). The client drives the rest.
+
+    def image_operation_support(
+        self, operation: Operation, given: Sequence[str]
+    ) -> ImageOperationSupport:
+        """The catalog's record for a picture operation on this provider,
+        after refusing an operation it doesn't offer and any input it
+        doesn't honour. Each input changes the result, so one the provider
+        would ignore is refused before the request rather than dropped."""
+        support = self.resolved.capabilities.image_operations.get(operation.value)
+        if support is None:
+            offered = sorted(providers_with_image_operation(operation.value))
+            raise KeyCallError(
+                f"provider {self.resolved.provider!r} has no "
+                f"{operation.value.replace('_', ' ')} operation; it is offered on: "
+                + (", ".join(offered) or "no provider in this catalog"),
+                code=ErrorCode.UNSUPPORTED_OPERATION,
+                provider=self.resolved.provider,
+                operation=operation.value,
+            )
+        for name in given:
+            if name not in support.params:
+                honoured = sorted(providers_with_image_operation(operation.value, name))
+                raise KeyCallError(
+                    f"provider {self.resolved.provider!r} does not take {name} on "
+                    f"{operation.value.replace('_', ' ')}, and it changes the result, "
+                    f"so it isn't dropped. {name} is honoured on: "
+                    + (", ".join(honoured) or "no provider in this catalog"),
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    provider=self.resolved.provider,
+                    operation=operation.value,
+                )
+        return support
+
+    def merged_provider_options(
+        self,
+        body: Mapping[str, Any],
+        options: Mapping[str, Any] | None,
+        operation: Operation,
+    ) -> dict[str, Any]:
+        """A JSON body with the caller's provider_options added at its top
+        level. A name KeyCall already set is refused: two spellings of one
+        setting have no defined winner."""
+        merged = dict(body)
+        for name, value in (options or {}).items():
+            if name in merged:
+                raise KeyCallError(
+                    f"provider_options sets {name!r}, which KeyCall already sends from "
+                    "its own parameter or needs for the request itself; set it in one place",
+                    code=ErrorCode.UNSUPPORTED_OPERATION,
+                    provider=self.resolved.provider,
+                    operation=operation.value,
+                )
+            merged[name] = value
+        return merged
+
+    def refuse_size_form(self, model: str, size: str, wanted: str, operation: Operation) -> KeyCallError:
+        return KeyCallError(
+            f"model {model!r} takes size as {wanted}, not {size!r}",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=operation.value,
+        )
+
+    def build_image_operation_spec(self, request: ImageOperationRequest) -> RequestSpec:
+        self.image_operation_support(request.operation, ())
+        raise KeyCallError(
+            f"{request.operation.value} is not implemented for provider "
+            f"{self.resolved.provider!r}",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=request.operation.value,
+        )
+
+    def parse_image_operation(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        request: ImageOperationRequest,
+    ) -> InvocationResult | PendingImageJob | PendingImageDownloads:
+        raise KeyCallError(
+            f"{request.operation.value} is not implemented for provider "
+            f"{self.resolved.provider!r}",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=request.operation.value,
+        )
+
+    def build_image_job_status_spec(self, pending: PendingImageJob) -> RequestSpec:
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} has no picture jobs to poll",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=pending.operation.value,
+        )
+
+    def parse_image_job_status(
+        self,
+        payload: Any,
+        *,
+        headers: Mapping[str, str],
+        round_trip_duration_ms: float,
+        pending: PendingImageJob,
+    ) -> InvocationResult | PendingImageJob | PendingImageDownloads:
+        raise KeyCallError(
+            f"provider {self.resolved.provider!r} has no picture jobs to poll",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=pending.operation.value,
+        )
+
+    def image_download_result(
+        self,
+        pending: PendingImageDownloads,
+        downloads: Sequence[tuple[bytes, str]],
+        *,
+        round_trip_duration_ms: float,
+    ) -> InvocationResult:
+        """The finished result once every link has been fetched.
+        ``downloads`` is (bytes, media type) per plan, in plan order. The
+        provider's own link rides on each part for as long as the provider
+        keeps it alive."""
+        import base64 as _b64
+
+        parts: list[Any] = [
+            ImageOutput(
+                base64_data=_b64.b64encode(content).decode("ascii"),
+                media_type=media_type,
+                url=plan.url,
+                label=label,
+            )
+            for (content, media_type), plan, label in zip(
+                downloads, pending.plans, pending.labels
+            )
+        ]
+        parts.extend(pending.extra_parts)
+        return InvocationResult(
+            provider=self.resolved.provider,
+            model=pending.model,
+            operation=pending.operation,
+            parts=tuple(parts),
+            usage=pending.usage,
+            round_trip_duration_ms=round_trip_duration_ms,
+            provider_request_id=pending.provider_request_id,
+            warnings=pending.warnings,
+        )
+
+    # --- provider tools ---
+
+    def _tool_gate(self) -> KeyCallError:
+        return KeyCallError(
+            f"provider {self.resolved.provider!r} has no tools",
+            code=ErrorCode.UNSUPPORTED_OPERATION,
+            provider=self.resolved.provider,
+            operation=Operation.PROVIDER_TOOL.value,
+        )
+
+    def build_tool_start_spec(self, row: Mapping[str, Any], inputs: Mapping[str, Any]) -> RequestSpec:
+        raise self._tool_gate()
+
+    def parse_tool_start(self, payload: Any, *, tool: str) -> ToolJob:
+        raise self._tool_gate()
+
+    def build_tool_status_spec(self, job: ToolJob) -> RequestSpec:
+        raise self._tool_gate()
+
+    def parse_tool_status(self, payload: Any, *, job: ToolJob) -> ToolJob:
+        raise self._tool_gate()
+
+    def tool_downloads(self, job: ToolJob) -> PendingImageDownloads:
+        raise self._tool_gate()
 
     # --- speech generation ---
 
